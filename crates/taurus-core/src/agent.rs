@@ -1782,6 +1782,22 @@ impl Agent {
         }
     }
 
+    /// What the recent messages kept verbatim cost, calibrated: the part of
+    /// the history summarizing cannot touch.
+    fn tail_tokens(&self, session: &Session, keep_tokens: u32) -> u32 {
+        let (drop_count, _) = split_for_compaction(
+            &session.messages,
+            self.config.keep_recent_messages,
+            keep_tokens,
+        );
+        session.calibrated(
+            session.messages[drop_count..]
+                .iter()
+                .map(crate::session::estimate_message)
+                .sum(),
+        )
+    }
+
     fn reply_reserve(&self, window: u32) -> u32 {
         let wanted = self.config.max_tokens.unwrap_or(DEFAULT_REPLY_RESERVE);
         let floor = (window as f32 * MIN_RESERVE_SHARE) as u32;
@@ -1919,7 +1935,28 @@ impl Agent {
                 repeats_supersede: &repeats_supersede,
                 writes_to: &writes_to,
             };
-            session.trim_toward(kept, &rules, target)
+            let mut trimmed = session.trim_toward(kept, &rules, target);
+            // The pass above leaves the recent tail alone, and summarizing
+            // cannot reach it either — so a tail that is over budget on its own
+            // was a dead end. It is also the ordinary shape of a first turn
+            // that reads a lot: three reads of one large file are eight
+            // messages, every one of them recent, and nothing in the turn was
+            // old enough to cut. Here the tail gives way too, down to the one
+            // exchange the model is in the middle of.
+            if session
+                .calibrated(session.estimated_tokens())
+                .saturating_add(overhead)
+                >= budget
+                && self
+                    .tail_tokens(session, keep_tokens)
+                    .saturating_add(overhead)
+                    >= budget
+            {
+                let deeper = session.trim_toward(crate::session::MIN_KEEP, &rules, target);
+                trimmed.results += deeper.results;
+                trimmed.tokens_saved += deeper.tokens_saved;
+            }
+            trimmed
         };
         if !trimmed.is_empty() {
             info!(
@@ -1968,13 +2005,10 @@ impl Agent {
         // Summarizing replaces the head with a paragraph; it cannot touch the
         // tail. If the tail alone will not fit, the request will not fit
         // however good the summary is — so say so once rather than spending a
-        // request per iteration proving it.
-        let tail: u32 = session.calibrated(
-            session.messages[drop_count..]
-                .iter()
-                .map(crate::session::estimate_message)
-                .sum(),
-        );
+        // request per iteration proving it. By here the tail's older tool
+        // output has already been shortened, so what is left is the latest
+        // exchange itself, or messages that are not tool output at all.
+        let tail = self.tail_tokens(session, keep_tokens);
         if tail.saturating_add(overhead) >= budget {
             warn!(
                 tail,
@@ -1983,12 +2017,18 @@ impl Agent {
             let _ = ui
                 .send(UiEvent::Error {
                     message: format!(
-                        "The {kept} most recent messages come to about {tail} tokens on their \
-                         own, which with the system prompt and tools leaves no room in this \
-                         model's window. Summarizing the earlier ones cannot make room — \
-                         something recent is very large, a whole file or a long command's \
-                         output. A model with a bigger window, or a smaller read, is what gets \
-                         past this."
+                        "The {kept} most recent messages come to about {tail} tokens even with \
+                         this turn's older tool output shortened, which with the system prompt \
+                         and tools leaves no room in this model's window. Summarizing the \
+                         earlier ones cannot make room — the latest result is very large on \
+                         its own, a whole file or a long command's output. {way_out}",
+                        way_out = if window < caps.context_length {
+                            "A smaller read, or a larger working context in Settings → \
+                             Behavior, is what gets past this."
+                        } else {
+                            "A smaller read, or a model with a bigger window, is what gets past \
+                             this."
+                        }
                     ),
                 })
                 .await;
