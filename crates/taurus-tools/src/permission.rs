@@ -75,7 +75,9 @@ pub struct PermissionRequest {
     /// False in an untrusted workspace, which has no layer to keep a standing
     /// decision in. A frontend that shows the button anyway does no harm — the
     /// engine narrows the decision to this call — but it would be offering a
-    /// permanence it cannot deliver, so it is told not to.
+    /// permanence it cannot deliver, so it is told not to. The global grant is
+    /// withheld there too, so false with no [`Self::beyond_grant`] means the
+    /// workspace is untrusted.
     #[serde(default = "offered_by_default")]
     pub offer_always: bool,
     /// Why no standing grant can cover this call, when none can. Finishes the
@@ -344,8 +346,12 @@ impl PermissionEngine {
             return Ok(());
         }
 
-        let offer_global = keys.beyond.is_none() && global_offerable(tool.effect());
+        // Neither grant in an untrusted workspace, not just the one with no
+        // layer to keep it in. A standing decision made from a project you have
+        // not decided to trust must not reach every other one, and a prompt
+        // whose only "always" is the widest one there is steers toward it.
         let offer_workspace = keys.beyond.is_none() && self.workspace_rules;
+        let offer_global = offer_workspace && global_offerable(tool.effect());
         let request = PermissionRequest {
             id: Uuid::new_v4().to_string(),
             tool: tool.name().to_string(),
@@ -1504,6 +1510,42 @@ mod tests {
         engine.grant(&["run_command:cargo".to_string()]).await;
         assert!(!homes.wrote_workspace());
         assert!(engine.allowed_rules().await.is_empty());
+    }
+
+    /// Neither "always" from a workspace you have not trusted, and a frontend
+    /// that sends the wide one anyway gets this call and nothing standing.
+    #[tokio::test]
+    async fn an_untrusted_workspace_is_offered_no_standing_grant() {
+        let homes = Homes::new();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes
+            .engine(Box::new(Asked { seen: seen.clone() }))
+            .with_workspace_rules(false);
+        let write = Fake {
+            name: "write_file",
+            effect: Effect::Write,
+        };
+        engine
+            .check(&write, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
+        let request = seen.lock().await.take().unwrap();
+        assert!(!request.offer_always);
+        assert_eq!(request.always_global_scope, None);
+        assert_eq!(request.beyond_grant, None);
+
+        let engine = homes
+            .engine(Box::new(Counting {
+                decision: PermissionDecision::AllowAlwaysGlobal,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }))
+            .with_workspace_rules(false);
+        engine
+            .check(&write, &serde_json::json!({}), &Asking::default())
+            .await
+            .unwrap();
+        assert!(!homes.wrote_global());
+        assert!(!homes.wrote_workspace());
     }
 
     /// Keeps whether a standing grant was offered and how it was described.

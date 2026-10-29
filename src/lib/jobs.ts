@@ -122,13 +122,16 @@ export function sameJobs(
  *
  * It sits beside the number rather than after the command, where it read as
  * punctuation somebody had typed.
+ *
+ * `!` for a failure, not `✗`: the strip ends in the dock's `✕`, and a cross
+ * on a tab reads as the button that closes it.
  */
 export function mark(job: BackgroundJob): string {
   if (job.running) return "";
   // A stop has no verdict in it — the command was ended, not judged — so it
   // gets neither of the two marks that are one.
   if (job.stopped) return "–";
-  return job.code === 0 ? "✓" : "✗";
+  return job.code === 0 ? "✓" : "!";
 }
 
 /**

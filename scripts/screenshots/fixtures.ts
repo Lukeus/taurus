@@ -509,6 +509,9 @@ export const PERMISSION = {
   preview: "Edit crates/taurus-core/src/agent.rs",
   always_scope: "Allows edit_file in this workspace",
   always_global_scope: "Allows edit_file in every workspace",
+  // A trusted workspace, so both standing grants are on offer. Left out, it
+  // read as false and the shot showed an untrusted prompt's buttons.
+  offer_always: true,
   input: {},
   diff: {
     path: "crates/taurus-core/src/agent.rs",
@@ -1002,6 +1005,17 @@ export const USAGE = {
   reported_in: 312_151,
   reported_out: 3_385,
   cached_in: 214_000,
+  cache_write_in: null,
+  // One model, all of it attributed: a conversation started since spending
+  // was kept by model, which is every new one.
+  models: [
+    {
+      provider: "ollama",
+      model: "qwen3.6:27b",
+      usage: { input_tokens: 312_151, output_tokens: 3_385, cache_read_input_tokens: 214_000 },
+    },
+  ],
+  unattributed: { input_tokens: 0, output_tokens: 0 },
   history: 39_612,
   tools: [
     { name: "read_file", calls: 11, tokens: 34_954, failures: 0, share: 82 },

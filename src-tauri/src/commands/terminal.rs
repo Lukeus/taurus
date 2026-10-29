@@ -71,6 +71,24 @@ pub async fn terminal_open(
         .open(&cwd, rows, cols, integrate, &chosen, on_event)
 }
 
+/// The shell the dock would start, and whether its commands can be marked.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct TerminalShell {
+    /// The program's name: `zsh`, `fish`, `pwsh`.
+    pub name: String,
+    /// Whether "Mark each command" can do anything for it: zsh and bash.
+    pub marks: bool,
+}
+
+/// Which shell Settings › Terminal would start, without starting it.
+#[tauri::command]
+pub async fn terminal_shell(state: State<'_, Arc<AppState>>) -> CmdResult<TerminalShell> {
+    let chosen = state.host.settings().await.terminal_shell;
+    let (name, marks) = crate::terminal::would_start(&chosen);
+    Ok(TerminalShell { name, marks })
+}
+
 /// A command and what it printed, escape sequences stripped.
 #[derive(Serialize, TS)]
 #[ts(export)]

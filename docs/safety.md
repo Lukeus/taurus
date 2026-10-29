@@ -89,9 +89,12 @@ consults both:
 | **Always here** | `<workspace>/.taurus/permissions.json` | Yes |
 | **Always everywhere** | `~/.taurus/permissions.json` | No |
 
-**Always here is not offered in an untrusted workspace.** Taurus isn't reading
-that file there, so a standing decision would have nowhere to live. See
-[Trusting a workspace](#trusting-a-workspace). The call itself is still
+**Neither standing grant is offered in an untrusted workspace.** Taurus isn't
+reading that workspace's file, so "always here" would have nowhere to live.
+"Always everywhere" is withheld too: a decision made from a project you haven't
+vouched for shouldn't reach every other one. The prompt says so, and offers
+**Allow once** and **Deny**. See [Trusting a workspace](#trusting-a-workspace).
+If you answer "always" anyway (from an older client, say), the call is still
 allowed. Only the standing part of your answer is dropped.
 
 **Everywhere is not offered for running commands.** A workspace grant for `git`
