@@ -98,9 +98,11 @@ the backlog, and they're the minority.
 
   What's left is that it's one ratio for a whole session. A conversation whose
   last turn was minified JSON and whose next one is prose gets the JSON's
-  correction applied to the prose. It lags by a request, it needs a few
-  hundred tokens of history before it means anything, and it's held between
-  one and three times so a stale reading can't run away with the budget.
+  correction applied to the prose. It lags by a request. It's drawn from the
+  difference between two requests where it can be, so the fixed part's own
+  error cancels, and until there are two it needs messages at least as large
+  as the fixed part before it means anything. It's held between one and three
+  times so a stale reading can't run away with the budget.
   Closing the rest takes one of two things: a tokenizer per model in the
   harness, kept in step with every backend forever, or a count-tokens round
   trip before each request, which is the cost the estimate exists to avoid.

@@ -191,6 +191,34 @@ pub struct Measured {
     /// answered request replaces the whole reading.
     #[serde(default)]
     pub estimated_overhead: u32,
+    /// An earlier request with the same fixed part, as `(input_tokens,
+    /// estimated_messages)`: the second point [`Session::calibration`] draws
+    /// its line through.
+    ///
+    /// The fixed part is the same on both, so whatever the anchor got wrong
+    /// about it cancels in the difference, and what is left is the tokenizer.
+    /// A lone reading can't do that: it charges the anchor's whole error to
+    /// the messages, and early in a turn — a few short messages beside a
+    /// workspace's worth of tool schemas — that error is most of the reading.
+    /// It is how a first turn came to price its own reads at nearly twice
+    /// their size and report a window it had not filled.
+    #[serde(default)]
+    pub before: Option<(u32, u32)>,
+}
+
+impl Measured {
+    /// Tokens counted per token estimated, from the difference between this
+    /// request and [`Self::before`]. `None` where there is no earlier point,
+    /// or the two are too close together to say anything.
+    fn marginal(&self) -> Option<f32> {
+        let (input, messages) = self.before?;
+        let estimated = self.estimated_messages as f32 - messages as f32;
+        if estimated.abs() < MIN_CALIBRATION_SPAN as f32 {
+            return None;
+        }
+        let ratio = (self.input_tokens as f32 - input as f32) / estimated;
+        (ratio > 0.0).then_some(ratio)
+    }
 }
 
 /// The least estimated history a calibration may be drawn from.
@@ -201,6 +229,14 @@ pub struct Measured {
 /// anchor than about the tokenizer, and 1.0 is the better answer. A working
 /// session passes this within a turn or two.
 const MIN_CALIBRATION_SAMPLE: u32 = 500;
+
+/// How far apart, in estimated message tokens, two readings must be for the
+/// difference between them to be a measurement.
+///
+/// The difference cancels the fixed part but not the small things that ride
+/// along with each request — a reply's envelope, a block the estimate
+/// rounds — and over a span this wide those are a few percent at most.
+const MIN_CALIBRATION_SPAN: u32 = 2_000;
 
 /// How far a calibration may correct an estimate, at each end.
 ///
@@ -280,10 +316,26 @@ impl Session {
         if input_tokens == 0 {
             return;
         }
+        let estimated_messages = self.estimated_tokens();
+        // The earlier point is the last request, unless that one is too close
+        // to this to measure from — two short rounds in a row — in which case
+        // the point before it is kept, so the span keeps growing until it is
+        // wide enough. A changed fixed part starts the line over.
+        let before = self
+            .last_request
+            .filter(|last| last.estimated_overhead == estimated_overhead)
+            .map(|last| {
+                let span = last.estimated_messages.abs_diff(estimated_messages);
+                match last.before {
+                    Some(older) if span < MIN_CALIBRATION_SPAN => older,
+                    _ => (last.input_tokens, last.estimated_messages),
+                }
+            });
         self.last_request = Some(Measured {
             input_tokens,
-            estimated_messages: self.estimated_tokens(),
+            estimated_messages,
             estimated_overhead,
+            before,
         });
     }
 
@@ -303,12 +355,18 @@ impl Session {
         let Some(m) = self.last_request else {
             return 1.0;
         };
+        if let Some(ratio) = m.marginal() {
+            return ratio.clamp(CALIBRATION_BOUNDS.0, CALIBRATION_BOUNDS.1);
+        }
         // No anchor, nothing to divide, or an anchor that claims the fixed
         // part was the whole request. The last is not arithmetic being
         // careful: it is what a stale reading looks like after the tool set
-        // grew, and dividing through it would invert the correction.
+        // grew, and dividing through it would invert the correction. And
+        // messages smaller than the fixed part: an anchor that is a fifth off
+        // on thirty thousand tokens of tool schemas is six thousand tokens of
+        // error, which beside a few thousand of messages is the reading.
         if m.estimated_overhead == 0
-            || m.estimated_messages < MIN_CALIBRATION_SAMPLE
+            || m.estimated_messages < MIN_CALIBRATION_SAMPLE.max(m.estimated_overhead)
             || m.input_tokens <= m.estimated_overhead
         {
             return 1.0;
@@ -830,7 +888,7 @@ pub fn split_for_compaction(
 /// exchange is the call the model just made and the answer it got, and taking
 /// that away to save room would leave it summarizing its way around the thing
 /// it is in the middle of.
-const MIN_KEEP: usize = 2;
+pub(crate) const MIN_KEEP: usize = 2;
 
 /// How many of the most recent messages to keep verbatim.
 ///
@@ -1542,6 +1600,7 @@ mod tests {
             input_tokens: estimated + 4_000,
             estimated_messages: estimated,
             estimated_overhead: 0,
+            before: None,
         });
         assert_eq!(session.calibration(), 1.0);
     }
@@ -1585,6 +1644,75 @@ mod tests {
         // when the anchor is the thing that is off.
         session.record_request(estimated / 2 + 300, 300);
         assert_eq!(session.calibration(), CALIBRATION_BOUNDS.0);
+    }
+
+    #[test]
+    fn two_readings_cancel_what_the_anchor_got_wrong() {
+        // The first turn that reported a window it had not filled: a
+        // workspace's tool schemas estimated at 30,000 tokens and really
+        // 40,000, and a tokenizer 1.25 times denser than the estimate over the
+        // messages. A lone reading early in the turn charges the missing
+        // 10,000 to a few thousand tokens of messages.
+        const DENSITY: f32 = 1.25;
+        let (anchor, real) = (30_000, 40_000);
+        let mut session = sized(3_000);
+        let early = session.estimated_tokens();
+        session.record_request((early as f32 * DENSITY) as u32 + real, anchor);
+        assert_eq!(
+            session.calibration(),
+            1.0,
+            "messages this small beside the fixed part are not a reading"
+        );
+
+        // A large read arrives, and the next request is measured too.
+        session.push(Message::user("q".repeat(60_000 * 4)));
+        let later = session.estimated_tokens();
+        session.record_request((later as f32 * DENSITY) as u32 + real, anchor);
+
+        let lone = ((later as f32 * DENSITY) as u32 + real - anchor) as f32 / later as f32;
+        assert!(lone > 1.4, "the setup has to fool a lone reading: {lone}");
+        assert!(
+            (session.calibration() - DENSITY).abs() < 0.01,
+            "{} is not the tokenizer",
+            session.calibration()
+        );
+    }
+
+    #[test]
+    fn readings_too_close_together_keep_the_older_point() {
+        // Two short rounds in a row are too near each other to measure from,
+        // and dropping the earlier point for the nearer one would never let
+        // the span grow wide enough.
+        const DENSITY: f32 = 1.3;
+        let overhead = 500;
+        let mut session = sized(1_000);
+        for _ in 0..4 {
+            let estimated = session.estimated_tokens();
+            session.record_request((estimated as f32 * DENSITY) as u32 + 2_000, overhead);
+            session.push(Message::user("w".repeat(900 * 4)));
+        }
+        let estimated = session.estimated_tokens();
+        session.record_request((estimated as f32 * DENSITY) as u32 + 2_000, overhead);
+        assert!(
+            (session.calibration() - DENSITY).abs() < 0.01,
+            "{}",
+            session.calibration()
+        );
+    }
+
+    #[test]
+    fn a_changed_fixed_part_starts_the_line_over() {
+        // A tool set that grew between two requests: their difference would
+        // charge the new schemas to the messages.
+        let mut session = sized(10_000);
+        let estimated = session.estimated_tokens();
+        session.record_request(estimated + 300, 300);
+        session.push(Message::user("v".repeat(10_000 * 4)));
+        let estimated = session.estimated_tokens();
+        session.record_request((estimated as f32 * 1.2) as u32 + 9_000, 9_000);
+        let m = session.last_request.unwrap();
+        assert_eq!(m.before, None);
+        assert!((session.calibration() - 1.2).abs() < 0.01);
     }
 
     #[test]

@@ -2897,6 +2897,85 @@ async fn a_tail_that_really_is_too_big_still_says_so() {
     );
 }
 
+#[tokio::test]
+async fn a_turn_whose_own_reads_fill_the_window_trims_inside_the_tail() {
+    // A first turn: one question, then four reads of a large file, every one
+    // of them recent. The trim pass used to leave the recent tail alone and
+    // summarizing cannot reach it, so the turn reported a window too small
+    // for its own reads — when shortening the reads it was finished with
+    // made room.
+    const DENSITY: f32 = 2.5;
+    let system_prompt = "x".repeat(4_000);
+    let h = harness_on(
+        FakeProvider::dense(vec![ScriptedTurn::text("Done.")], 32_768, DENSITY),
+        Box::new(AllowAll),
+        AgentConfig {
+            system_prompt: system_prompt.clone(),
+            ..Default::default()
+        },
+    );
+
+    let mut session = Session::new("fake");
+    session.push(Message::user("why is the supplier id empty?"));
+    for i in 0..4 {
+        session.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                format!("r{i}"),
+                "read_file",
+                serde_json::json!({ "path": "advisor.py", "offset": i * 400 }),
+            )],
+        ));
+        session.push(Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result(
+                format!("r{i}"),
+                format!("def part_{i}():\n    return {i}\n").repeat(500),
+            )],
+        ));
+    }
+    let overhead = fixed_part(&system_prompt);
+    let estimated = session.estimated_tokens();
+    session.record_request((estimated as f32 * DENSITY) as u32 + overhead, overhead);
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let complaints: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        complaints.is_empty(),
+        "shortening the turn's earlier reads made room: {complaints:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::ContextTrimmed { results, .. } if *results >= 2)),
+        "the reads inside the tail were not trimmed: {events:?}"
+    );
+
+    // The read the model is in the middle of is kept whole.
+    let latest = session
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if tool_use_id == "r3" => Some(content.to_text()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(latest.contains("def part_3") && latest.len() > 10_000);
+}
+
 /// A read-only tool that says, per call, whether it may share its round, and
 /// counts how many of its calls were ever running at the same moment.
 struct Probe {

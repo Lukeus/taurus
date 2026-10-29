@@ -989,6 +989,16 @@ the estimate for the same messages is how far four characters a token is off
 here. Every later estimate is scaled by it, which is self-correcting per
 provider and per conversation.
 
+The fixed part is an estimate too, though, and a lone reading charges
+whatever it got wrong to the messages. Early in a turn that's most of the
+reading: a workspace with several MCP servers can carry tens of thousands of
+tokens of tool schemas beside a few thousand of messages, so being a fifth off
+on the schemas used to price a first turn's reads at nearly twice their size.
+So once two requests with the same fixed part are at least 2,000 estimated
+tokens of messages apart, the ratio comes from the *difference* between them.
+The fixed part is in both, so its error cancels. Until then a lone reading
+only counts once the messages are at least as large as the fixed part.
+
 Keeping the two apart is what makes the harder question answerable. "Does the
 whole prompt fit" comes out right either way, because the drift is added back
 to a conversation about the size it was measured on. "Would the recent
@@ -1048,8 +1058,12 @@ and so do the tool output caps below.
 **And it either makes room or says why it can't.** The verbatim tail is
 bounded by tokens as well as message count. Eight recent messages can be
 eight large tool results, and a tail bigger than the budget makes summarizing
-achieve nothing, once per iteration. Where no boundary helps, it says so once.
-Either the recent messages are too large on their own, or the system prompt
+achieve nothing, once per iteration. When the tail alone is over budget,
+trimming reaches inside it too, down to the latest call and its result. That's
+the usual shape of a first turn that reads a lot: four reads of one large file
+are all recent, and nothing in the turn is old enough to cut otherwise. Where
+no boundary helps, it says so once. Either the latest result is too large on
+its own, or the system prompt
 and tool schemas fill the window alone. That second case is a model too small
 for this agent, not a conversation that grew.
 
