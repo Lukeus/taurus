@@ -1022,9 +1022,9 @@ the backlog, and they're the minority.
   the note. Rewriting other notes to follow the rename would mean the app
   editing prose somebody else wrote.
 - **The model can't see a sketch.** There's no picture of one to give it, only
-  the scene. What reaches it is the text written on each sketch a note
-  embeds, through `read_note`. A sketch on screen with no note around it
-  tells the model nothing, and there's no Ask about this on one.
+  the scene. What reaches it is the text written on the sketch, through
+  `read_note`, whether it's open on screen or embedded in a note. A sketch
+  with no words on it tells the model only that it's there.
 - **A global note written by the model can't be rewound.** It's outside every
   workspace, so the checkpoint recorder has nothing to copy it into. The
   permission prompt shows the diff, and that's all the safety there is.

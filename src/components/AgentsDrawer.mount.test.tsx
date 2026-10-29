@@ -120,7 +120,7 @@ const mountLoaded = async () => {
 };
 
 const iterations = (host: HTMLElement, name: string): HTMLInputElement => {
-  const input = host.querySelector(`input[aria-label="Max iterations for ${name}"]`);
+  const input = host.querySelector(`input[aria-label="Max round trips for ${name}"]`);
   if (!input) throw new Error(`no field for ${name} in: ${host.innerHTML}`);
   return input as HTMLInputElement;
 };
@@ -239,7 +239,7 @@ describe("retuning an agent from the roster", () => {
     // agent's ceiling and wonders why the turn that spawned it still stops.
     roster = [agent()];
     const host = await mountLoaded();
-    expect(host.textContent).toMatch(/25 steps of its own/);
+    expect(host.textContent).toMatch(/25 round\s+trips of its own/);
   });
 });
 

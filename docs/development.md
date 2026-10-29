@@ -767,7 +767,7 @@ cargo run -p taurus-tools --example path_rescan
 # nobody reads, and nothing in the first turn's output would say so.
 taurus run --model qwen3.6:27b "Read api.py. The bug on line 2 is real but do not fix it now. \
   Leave a note so the next conversation knows about it, then stop."
-taurus notes list
+taurus memory list
 taurus run --model qwen3.6:27b "Without reading any files: is there anything I should know \
   about this project before I start?"
 

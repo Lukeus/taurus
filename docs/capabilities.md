@@ -124,14 +124,14 @@ explaining, again, what you were doing and how far it got. Nothing tells it
 the auth refactor is half applied, or that the flaky test was traced to a
 clock and not to the code.
 
-So the model can write a note with `remember` when it works out something that
+So the model can write a memory with `remember` when it works out something that
 outlives the conversation:
 
 - work left half-done, and where it stopped
 - a decision, and the reason for it
 - a dead end worth not repeating
 
-Notes are kept per workspace. They're read into the system prompt of every
+Memories are kept per workspace. They're read into the system prompt of every
 later conversation there, newest first, under a heading that says what they
 are. The heading also says they were true when written, not necessarily now.
 
@@ -140,50 +140,50 @@ are. The heading also says they were true when written, not necessarily now.
 ```
 
 The file sits beside the transcripts and checkpoints, keyed the same way, for
-the same reason. A note is prose about the contents of your project, and a
+the same reason. A memory is prose about the contents of your project, and a
 file in the project gets committed. It's one JSON object per line and meant to
-be readable. A line you write yourself, without the `id` the model's own notes
+be readable. A line you write yourself, without the `id` the model's own memories
 carry, loads like any other.
 
 **Nothing is written behind your back, and nothing is written *for* you.** A
-note isn't a proposal you approve, the way a skill is. You'd learn to dismiss
+memory isn't a proposal you approve, the way a skill is. You'd learn to dismiss
 a dialog on something written this often. Instead it happens where you can
 see it:
 
-- The call appears in the transcript as it's made, marked as a note rather
+- The call appears in the transcript as it's made, marked as a memory rather
   than folded in with the reads.
-- Every note is listed in the **Memory** drawer with the conversation it came
+- Every memory is listed in the **Memory** drawer with the conversation it came
   from and a button to forget it.
 
-The same list is `taurus notes list`, and the same button is
-`taurus notes forget <id>`.
+The same list is `taurus memory list`, and the same button is
+`taurus memory forget <id>`.
 
 **You can write one too, and change any of them.** The drawer has a box for a
-note of your own, and every note has an **Edit** button. A note of yours is
+memory of your own, and every memory has an **Edit** button. A memory of yours is
 carried into every later conversation here exactly as the model's are, so a
 fact like "staging has the migration, production doesn't" is said once rather
 than at the top of every conversation. It's marked **by you**, because the
-model's notes are the ones worth checking. An edit keeps the note's place in
+model's memories are the ones worth checking. An edit keeps the memory's place in
 the order: it's still as old as when it was first written, so changing an old
-note can't push a newer one out of the prompt.
+memory can't push a newer one out of the prompt.
 
 ```bash
-taurus notes add "Staging has the 0042 migration; production doesn't."
-taurus notes edit 7bd2 "Staging and production both have the 0042 migration."
+taurus memory add "Staging has the 0042 migration; production doesn't."
+taurus memory edit 7bd2 "Staging and production both have the 0042 migration."
 ```
 
 The same 2 KB limit applies to yours.
 
-![The Memory drawer: a note you wrote, marked by you, above two the model
+![The Memory drawer: a memory you wrote, marked by you, above two the model
 wrote, each with Edit and Forget](screenshots/memory.png)
 
-Notes are capped at 2 KB. A longer one is refused, not truncated, because a
-note cut off mid-sentence still reads like a fact. The prompt carries the
+Memories are capped at 2 KB. A longer one is refused, not truncated, because a
+memory cut off mid-sentence still reads like a fact. The prompt carries the
 newest twelve under a 4 KB ceiling, and the file keeps the newest 200. That's
 the same bargain the standing brief makes, for the same reason: these bytes
 are paid on every request of every turn.
 
-A conversation is never handed its own notes. They're already in its
+A conversation is never handed its own memories. They're already in its
 transcript. Repeating them under a heading that says they came from an earlier
 conversation would mean the harness telling the model something untrue.
 

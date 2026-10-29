@@ -280,6 +280,16 @@ struct Header {
     /// as itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forked_from: Option<Box<ForkedFrom>>,
+    /// How many lines after this header a fork copied from the conversation
+    /// it came from.
+    ///
+    /// For its title. A fork starts as a copy, so its first question is its
+    /// parent's, and two rows in the rail read the same. [`read_meta`] skips
+    /// this many lines and titles the fork by the first question asked in it,
+    /// falling back to the shared one until there is one. `None` on anything
+    /// that isn't a fork, and on a fork written before this was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    copied: Option<usize>,
 }
 
 /// Where a fork came from: the conversation, and the turn it was forked before.
@@ -833,6 +843,7 @@ fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> He
         agent: None,
         call: None,
         forked_from: None,
+        copied: None,
     }
 }
 
@@ -1121,6 +1132,12 @@ pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String
     header.started = now();
     header.title = None;
     header.forked_from = Some(Box::new(from.clone()));
+    header.copied = Some(
+        lines[..cut]
+            .iter()
+            .filter(|line| !matches!(serde_json::from_str::<Record>(line), Ok(Record::Header(_))))
+            .count(),
+    );
     let mut out = serde_json::to_string(&Record::Header(header))
         .map_err(|e| format!("could not write the fork's header: {e}"))?;
     out.push('\n');
@@ -1463,6 +1480,11 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
 
     let mut header: Option<Header> = None;
     let mut title: Option<String> = None;
+    // A fork's parent's first question: its title until it has one of its own.
+    let mut inherited: Option<String> = None;
+    // The header's line. Usually 0, but a listing reads one wherever it sits,
+    // as `load` does.
+    let mut header_at = 0;
 
     // One pass for both, stopping as soon as nothing worth finding is left. A
     // transcript normally opens with its header and reaches the first question
@@ -1472,12 +1494,25 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         .map_while(Result::ok)
         .enumerate()
     {
+        // What a fork copied, the lines after its header. Read for the
+        // inherited title and then passed over unparsed.
+        let copied = header.as_ref().and_then(|found| found.copied).unwrap_or(0);
+        let in_copy = header.is_some() && index > header_at && index <= header_at + copied;
+        if in_copy && inherited.is_some() {
+            continue;
+        }
         match serde_json::from_str::<Record>(&line) {
-            Ok(Record::Header(found)) => header = Some(found),
+            Ok(Record::Header(found)) => {
+                header = Some(found);
+                header_at = index;
+            }
             // Tool results are skipped: a resumed turn can begin with one, and
             // titling a session with the contents of a file it happened to read
             // tells the user nothing about what they asked for. `first_text`
             // returns `None` for those, which leaves the search running.
+            Ok(Record::Message(message)) if in_copy && message.role == Role::User => {
+                inherited = first_text(&message);
+            }
             Ok(Record::Message(message)) if title.is_none() && message.role == Role::User => {
                 title = first_text(&message);
             }
@@ -1488,7 +1523,9 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
         let named = header
             .as_ref()
             .is_some_and(|found| found.title.as_ref().is_some_and(|t| !t.trim().is_empty()));
-        if header.is_some() && (named || title.is_some() || index + 1 >= TITLE_SCAN_LINES) {
+        if header.is_some()
+            && (named || title.is_some() || index + 1 >= header_at + TITLE_SCAN_LINES + copied)
+        {
             break;
         }
     }
@@ -1512,6 +1549,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
             .title
             .filter(|given| !given.trim().is_empty())
             .or(title)
+            .or(inherited)
             .unwrap_or_default(),
         branch: header.branch,
         agent: header.agent,
@@ -2895,6 +2933,7 @@ mod tests {
             agent: None,
             call: None,
             forked_from: None,
+            copied: None,
         }))
         .unwrap();
         std::fs::write(dir.join("ooo1.jsonl"), format!("{message}\n{header}\n")).unwrap();

@@ -246,7 +246,7 @@ describe("the canvas", () => {
     const onAsk = vi.fn();
     const host = canvas({ onAsk });
     select(host, 0, 11);
-    act(() => (host.querySelector(".canvas-ask-go") as HTMLButtonElement).click());
+    act(() => (host.querySelector(".canvas-ask .pill") as HTMLButtonElement).click());
     expect(onAsk).toHaveBeenCalledWith("About line 1 of main.rs: ");
   });
 

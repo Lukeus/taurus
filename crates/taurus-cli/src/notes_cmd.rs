@@ -1,4 +1,4 @@
-//! `taurus notes` — what earlier conversations left for the next one.
+//! `taurus memory` — what earlier conversations left for the next one.
 //!
 //! The desktop app keeps these in a drawer. They are the same file, read the
 //! same way, so a note written in the app is one a scripted run inherits and
@@ -14,22 +14,22 @@ use taurus_host::Host;
 pub enum NotesCommand {
     /// List what has been written down for this workspace, newest first.
     List,
-    /// Write a note of your own. It's read into every later conversation in
-    /// this workspace, the way the model's own notes are.
+    /// Write a memory of your own. It's read into every later conversation in
+    /// this workspace, the way the model's own are.
     Add {
         /// What to carry forward: a sentence or two, up to 2 KB.
         text: String,
     },
-    /// Change one note's text, by the id `list` prints.
+    /// Change one memory's text, by the id `list` prints.
     Edit {
-        /// The id shown in the first column of `taurus notes list`.
+        /// The id shown in the first column of `taurus memory list`.
         id: String,
-        /// The note's new text.
+        /// The memory's new text.
         text: String,
     },
-    /// Remove one note, by the id `list` prints.
+    /// Remove one memory, by the id `list` prints.
     Forget {
-        /// The id shown in the first column of `taurus notes list`.
+        /// The id shown in the first column of `taurus memory list`.
         id: String,
     },
 }
@@ -43,7 +43,7 @@ pub async fn run(host: &Host, command: NotesCommand) -> Result<ExitCode, String>
                 println!(
                     "The model writes these itself, with `remember`, when it learns something \
                      worth carrying to the next conversation. Write one yourself with \
-                     `taurus notes add`."
+                     `taurus memory add`."
                 );
                 return Ok(ExitCode::SUCCESS);
             }
@@ -108,7 +108,7 @@ fn one_note<'a>(notes: &'a [taurus_host::Note], id: &str) -> Option<&'a taurus_h
     let matched: Vec<_> = notes.iter().filter(|n| n.id.starts_with(id)).collect();
     match matched.as_slice() {
         [] => {
-            println!("No note here starts with {id}.");
+            println!("No memory here starts with {id}.");
             None
         }
         [note] => Some(note),

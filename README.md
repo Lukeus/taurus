@@ -88,7 +88,7 @@ taurus run --json "count the rust files" | jq   # for scripts
 taurus rewind --to last                         # undo what the last turn wrote
 taurus fork --at last                           # try it again, keeping the first try
 taurus plugin add <folder or git URL>           # a Claude Code plugin, as it is
-taurus notes add "staging has the migration"    # tell the next conversation something
+taurus memory add "staging has the migration"   # tell the next conversation something
 ```
 
 Both use `~/.taurus`, so they share providers, skills, and the permission

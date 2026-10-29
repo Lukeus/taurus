@@ -273,13 +273,18 @@ function AgentNode({
   const doing = state === "running" ? currentTool(run) : undefined;
   const transcript = call.transcript ?? (run?.session && agent ? { session: run.session, agent } : undefined);
 
+  // The numbers first and the model last. The model is usually the same on
+  // every row, and the numbers are what somebody opened this to read: led by
+  // the model, a narrow panel cut off the time, the calls and the tokens.
   const facts = [
-    run?.model,
-    run && run.round > 0 ? `round ${run.round}${run.maxRounds ? ` of ${run.maxRounds}` : ""}` : null,
     elapsed !== null ? duration(elapsed) : null,
+    run && run.round > 0
+      ? `round trip ${run.round}${run.maxRounds ? ` of ${run.maxRounds}` : ""}`
+      : null,
     run?.tools.length ? plural(run.tools.length, "call") : null,
     run?.usage ? `${short(run.usage.input + run.usage.output)} tokens` : null,
     run?.detached ? "background" : null,
+    run?.model,
   ].filter(Boolean);
 
   return (

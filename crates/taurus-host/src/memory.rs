@@ -75,7 +75,7 @@ pub struct Note {
     /// readable and editable by hand, and dropping such a line for missing a
     /// field they had no reason to know about would make that a lie. [`load`]
     /// fills one in, derived from the note itself rather than generated, so the
-    /// id `taurus notes list` prints is the same one `taurus notes forget`
+    /// id `taurus memory list` prints is the same one `taurus memory forget`
     /// accepts a moment later.
     #[serde(default)]
     pub id: String,
@@ -173,7 +173,7 @@ pub const BY_YOU: &str = "";
 fn checked(text: &str) -> Result<&str, String> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("A note needs something in it.".into());
+        return Err("A memory needs something in it.".into());
     }
     if text.len() > MAX_NOTE_BYTES {
         return Err(format!(
@@ -222,7 +222,7 @@ pub fn edit(workspace: &Path, id: &str, text: &str) -> Result<Vec<Note>, String>
     let note = notes
         .iter_mut()
         .find(|note| note.id == id)
-        .ok_or("That note isn't there any more. It may have been forgotten in another window.")?;
+        .ok_or("That memory isn't there any more. It may have been forgotten in another window.")?;
     note.text = text.to_string();
     write(workspace, &notes)?;
     Ok(notes)
@@ -252,9 +252,9 @@ fn write(workspace: &Path, notes: &[Note]) -> Result<(), String> {
     }
 
     let temporary = dir.join("notes.jsonl.tmp");
-    std::fs::write(&temporary, body).map_err(|e| format!("could not write a note: {e}"))?;
+    std::fs::write(&temporary, body).map_err(|e| format!("could not write a memory: {e}"))?;
     std::fs::rename(&temporary, notes_path(workspace))
-        .map_err(|e| format!("could not save a note: {e}"))
+        .map_err(|e| format!("could not save a memory: {e}"))
 }
 
 /// The prompt section, or `None` when there is nothing to carry.

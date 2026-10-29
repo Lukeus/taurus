@@ -192,6 +192,10 @@ enum Command {
         session: SessionArgs,
     },
     /// Read, write or prune what earlier conversations left for the next one.
+    ///
+    /// `taurus notes` is the same command under its old name, kept so
+    /// scripts that use it still work.
+    #[command(name = "memory", alias = "notes")]
     Notes {
         #[command(subcommand)]
         command: notes_cmd::NotesCommand,
