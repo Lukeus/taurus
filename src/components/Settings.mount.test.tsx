@@ -1014,6 +1014,27 @@ describe("the terminal tab", () => {
     expect(input.value).toBe("24");
   });
 
+  const opening = (shell: { name: string; marks: boolean }) =>
+    invoke.mockImplementation((...args: unknown[]) =>
+      args[0] === "terminal_shell" ? Promise.resolve(shell) : Promise.resolve([]),
+    );
+
+  it("says when the shell it opens can't be marked", async () => {
+    opening({ name: "fish", marks: false });
+    const host = await mount();
+    click(host, "Terminal");
+    await act(async () => {});
+    expect(host.textContent).toContain("fish doesn't mark commands yet");
+  });
+
+  it("says nothing of the kind for zsh", async () => {
+    opening({ name: "zsh", marks: true });
+    const host = await mount();
+    click(host, "Terminal");
+    await act(async () => {});
+    expect(host.textContent).not.toContain("doesn't mark commands");
+  });
+
   it("has the command-marking switch, which left Behavior for it", async () => {
     const host = await mount();
     click(host, "Behavior");

@@ -427,13 +427,13 @@ export const Rail = memo(function Rail({
           The conversations, which get the room that is left and a floor under
           it.
 
-          The floor is the point. The footer below is eight rows and three
-          headers, and at the window's 520px minimum it wants more height than
-          the rail has — so without `min-h-24` the list it is supposed to sit
-          under is squeezed to nothing and the footer overflows the rail
-          instead. Conversations are the app's spine; they are the one thing
-          here that must still be on screen when everything is competing for
-          the same pixels, so the footer is what gives way.
+          The floor is the point. The folds below are eight rows and three
+          headers, and at the window's 520px minimum they want more height than
+          the rail has — so without `min-h-24` the list they sit under is
+          squeezed to nothing. Conversations are the app's spine; they are the
+          one thing here that must still be on screen when everything is
+          competing for the same pixels, so the folds are what give way. See
+          `rail-folds` for the order they give it in.
       */}
       <div className="rail-scroll flex-auto min-h-24 overflow-y-auto">
         {sessions.length === 0 && (
@@ -467,16 +467,21 @@ export const Rail = memo(function Rail({
       </div>
 
       {/*
-          The panels, the way out, and the provider.
+          The panels.
 
-          `flex-initial` rather than a fixed height: it shrinks and scrolls
-          instead of holding its full size, which is what keeps it from pushing
-          the conversation list off the bottom of a short window. It takes what
-          it needs whenever there is room — every window that is not close to
-          the 520px minimum — so the scrolling is a floor under the worst case
-          rather than something anybody meets in normal use.
+          It gives way first. Both this and the list above shrink when the
+          rail is short, and a flex item shrinks in proportion to its size, so
+          a long list of conversations used to give up most of the height
+          itself: a window 840px tall showed about three. The weight of 1000
+          makes this box take nearly all of the shrinking, down to its floor
+          of 30% of the rail, and only then does the list give way. A floor on
+          the list instead held empty space under a short one while the folds
+          scrolled. Only the folds scroll. Settings, the theme and the
+          provider sit in `rail-foot` below, which never does: they were inside
+          this box once, and on a window 840px tall they were scrolled out of
+          view, which is the one place the way out of a state must never be.
       */}
-      <div className="rail-foot flex-initial overflow-y-auto border-t border-rule p-2 flex flex-col gap-px">
+      <div className="rail-folds flex-initial shrink-[1000] min-h-[30%] overflow-y-auto border-t border-rule p-2 flex flex-col gap-px">
         {/*
             The eight panels, in three folds rather than one.
 
@@ -628,29 +633,36 @@ export const Rail = memo(function Rail({
             <b className="flex-1 font-normal">Traces</b>
           </button>
         </Section>
+      </div>
 
-        <button
-          className={LINK}
-          onClick={onSettings}
-          data-tip="Providers, models, permissions and everything else"
-        >
-          <span className={`${GLYPH} text-faint`}>
-            <SlidersIcon />
-          </span>
-          <b className="flex-1 font-normal">Settings</b>
-        </button>
-        {/* Three preferences on one row, so it cycles rather than toggles.
-            A light/dark switch here would quietly throw away "follow the
-            system", which is both the default and the only one of the three
-            that can change on its own. */}
-        <button
-          className={LINK}
-          data-tip={THEME_HINT[theme]}
-          onClick={() => onTheme(NEXT_THEME[theme])}
-        >
-          <span className={`${GLYPH} text-faint`}>{themeIcon(theme)}</span>
-          <b className="flex-1 font-normal">{THEME_LABEL[theme]}</b>
-        </button>
+      {/* Never scrolls and never shrinks: see `rail-folds`. Settings and the
+          theme share a row, which is what pays for keeping them on screen.
+          Settings keeps its natural width so the theme's longer label fits. */}
+      <div className="rail-foot flex-none border-t border-rule p-2 flex flex-col gap-px">
+        <div className="flex gap-px">
+          <button
+            className={`${LINK} flex-none`}
+            onClick={onSettings}
+            data-tip="Providers, models, permissions and everything else"
+          >
+            <span className={`${GLYPH} text-faint`}>
+              <SlidersIcon />
+            </span>
+            <b className="font-normal">Settings</b>
+          </button>
+          {/* Three preferences on one row, so it cycles rather than toggles.
+              A light/dark switch here would quietly throw away "follow the
+              system", which is both the default and the only one of the three
+              that can change on its own. */}
+          <button
+            className={`${LINK} flex-1 min-w-0`}
+            data-tip={THEME_HINT[theme]}
+            onClick={() => onTheme(NEXT_THEME[theme])}
+          >
+            <span className={`${GLYPH} text-faint`}>{themeIcon(theme)}</span>
+            <b className="flex-1 min-w-0 truncate font-normal">{THEME_LABEL[theme]}</b>
+          </button>
+        </div>
         <div className="rail-status flex items-center gap-2 py-2 px-3" data-tip={healthTitle(health)}>
           <span className={`dot ml-1 ${healthDot(health)}`} />
           <span className="font-mono text-10-5 text-faint truncate">{healthLabel(health)}</span>

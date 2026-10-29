@@ -230,6 +230,9 @@ const ANSWERS: Record<string, unknown> = {
   programs_on_path: ["npx"],
   search_sessions: SEARCH_HITS,
   usage_report: USAGE,
+  // The fixture's settings name fish, which the dock can't mark: the state
+  // the Terminal tab's warning is for.
+  terminal_shell: { name: "fish", marks: false },
   tool_switches: TOOL_SWITCHES,
   hook_list: HOOKS,
   trace_report: TRACES,

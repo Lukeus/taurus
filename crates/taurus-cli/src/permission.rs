@@ -122,6 +122,8 @@ impl TerminalPrompt {
         // Without it, a prompt with only [y] and [n] reads as a bug.
         if let Some(reason) = &request.beyond_grant {
             let _ = writeln!(err, "  asked every time: this one {reason}");
+        } else if !request.offer_always {
+            let _ = writeln!(err, "  asked every time: {UNTRUSTED}");
         }
         // Both standing options appear only where the engine offers them, so
         // the prompt never advertises a key that would be quietly narrowed.
@@ -156,6 +158,10 @@ impl TerminalPrompt {
         }
     }
 }
+
+/// Why an untrusted workspace offers no standing grant. The same words as
+/// the app's permission dialog.
+const UNTRUSTED: &str = "this workspace isn't trusted, so nothing decided here is kept";
 
 /// The change, as `diff` would print it.
 ///

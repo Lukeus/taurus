@@ -46,7 +46,7 @@ describe("what a finished command's tab shows", () => {
     // The diff's argument: a strip where a failure and a run differ only in
     // hue says nothing in a screenshot or to a reader who cannot tell the two
     // apart.
-    expect(mark(job({ running: false, code: 1 }))).toBe("✗");
+    expect(mark(job({ running: false, code: 1 }))).toBe("!");
     expect(tone(job({ running: false, code: 1 }))).toBe("failed");
   });
 

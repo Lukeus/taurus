@@ -292,65 +292,75 @@ export function Transcript({
   }
 
   return (
-    <div
-      className={`transcript${pending ? " pending" : ""}`}
-      aria-busy={pending || undefined}
-      ref={container}
-    >
-      {conversation.map((turn, i) => (
-        <TurnView
-          key={turn.prompt?.id ?? `preamble-${i}`}
-          turn={turn}
-          // Only ever the last one: the thing still being worked on is the
-          // question most recently asked, and the marker belongs on its rail
-          // rather than floating under the conversation as a whole.
-          found={i === found}
-          latest={i === conversation.length - 1}
-          working={busy && i === conversation.length - 1}
-          stopping={stopping}
-          onAnswer={answer}
-          onOpenDelegate={openDelegate}
-          onOpenDataset={openDataset}
-          onOpenDocument={openDocument}
-          onOpenNote={openNote}
-          onRunQuery={runQuery}
-          // The newest turn and nothing else. See the prop.
-          onRetry={i === conversation.length - 1 ? onRetry : undefined}
-          onEditPrompt={editPrompt}
-          onForkPrompt={forkPrompt}
-        />
-      ))}
-      <div ref={bottom} />
+    <>
+      <div
+        className={`transcript${pending ? " pending" : ""}`}
+        aria-busy={pending || undefined}
+        ref={container}
+      >
+        {conversation.map((turn, i) => (
+          <TurnView
+            key={turn.prompt?.id ?? `preamble-${i}`}
+            turn={turn}
+            // Only ever the last one: the thing still being worked on is the
+            // question most recently asked, and the marker belongs on its rail
+            // rather than floating under the conversation as a whole.
+            found={i === found}
+            latest={i === conversation.length - 1}
+            working={busy && i === conversation.length - 1}
+            stopping={stopping}
+            onAnswer={answer}
+            onOpenDelegate={openDelegate}
+            onOpenDataset={openDataset}
+            onOpenDocument={openDocument}
+            onOpenNote={openNote}
+            onRunQuery={runQuery}
+            // The newest turn and nothing else. See the prop.
+            onRetry={i === conversation.length - 1 ? onRetry : undefined}
+            onEditPrompt={editPrompt}
+            onForkPrompt={forkPrompt}
+          />
+        ))}
+        <div ref={bottom} />
+      </div>
 
-      {/*
-        * The way back to the live edge.
-        *
-        * Scrolling up mid-turn is the ordinary thing to do — the model says
-        * something worth re-reading three tool calls ago — and doing it used
-        * to be one-way: the follow stops, correctly, and then nothing on
-        * screen says the conversation has moved on or offers to catch up.
-        *
-        * Only where there is a foot to return to. A delegate's transcript is
-        * a finished record read from the top, and a control saying "jump to
-        * the end" on a page that is not being written is furniture.
-        */}
-      {follow && adrift && (
-        <button
-          className={`to-foot${busy ? " live" : ""}`}
-          onClick={() => {
-            // Set here as well as by the scroll it starts, because the effect
-            // that follows the stream reads the ref and a smooth scroll takes
-            // longer than the next token does to arrive.
-            pinned.current = true;
-            setAdrift(false);
-            bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-          }}
-        >
-          {busy ? "Jump to the live edge" : "Jump to the end"}
-          <span className="to-foot-arrow">↓</span>
-        </button>
-      )}
-    </div>
+        {/*
+          * The way back to the live edge.
+          *
+          * Scrolling up mid-turn is the ordinary thing to do — the model says
+          * something worth re-reading three tool calls ago — and doing it used
+          * to be one-way: the follow stops, correctly, and then nothing on
+          * screen says the conversation has moved on or offers to catch up.
+          *
+          * Only where there is a foot to return to. A delegate's transcript is
+          * a finished record read from the top, and a control saying "jump to
+          * the end" on a page that is not being written is furniture.
+          *
+          * Under the scrolling column, not inside it. It was sticky to the
+          * column's foot once, and so it sat on whatever had scrolled under it:
+          * a question's options, a chart's axis, a button somebody was reaching
+          * for. Here the column gives up the strip's height while it shows, and
+          * nothing in the conversation can be behind it.
+          */}
+        {follow && adrift && (
+          <div className="to-foot-bar">
+            <button
+              className={`to-foot${busy ? " live" : ""}`}
+              onClick={() => {
+                // Set here as well as by the scroll it starts, because the effect
+                // that follows the stream reads the ref and a smooth scroll takes
+                // longer than the next token does to arrive.
+                pinned.current = true;
+                setAdrift(false);
+                bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+              }}
+            >
+              {busy ? "Jump to the live edge" : "Jump to the end"}
+              <span className="to-foot-arrow">↓</span>
+            </button>
+          </div>
+        )}
+    </>
   );
 }
 
