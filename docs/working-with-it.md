@@ -584,7 +584,7 @@ and the key in the keychain](screenshots/speech.png)
 | --- | --- | --- |
 | Built in | macOS's voices through `say`, the Windows speech synthesizer, or `espeak-ng` on Linux. The default. | Nothing |
 | ElevenLabs | Any voice on your ElevenLabs account, including ones you've added there. Settings lists them once a key is stored, and picks the first. | Each sentence of a reply |
-| OpenAI or a compatible server | OpenAI's `/v1/audio/speech`, or any server with the same shape, such as Kokoro-FastAPI running locally. Set its address, model and voice. | Each sentence, to the address you set |
+| OpenAI or a compatible server | OpenAI's `/v1/audio/speech`, or any server with the same shape, such as Kokoro-FastAPI running locally or an Azure deployment behind APIM ([which needs a key header](configuration.md#reading-replies-aloud-through-the-same-gateway)). Set its address, model and voice. | Each sentence, to the address you set |
 
 Only the sentence being spoken is sent, never the rest of the conversation.
 Keys go in the OS keychain, as provider keys do. ElevenLabs also reads

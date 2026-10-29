@@ -11,6 +11,9 @@
 //! OPENAI_API_KEY=… cargo run -p taurus-speech --example speak -- --engine openai --voice coral "Hi."
 //! cargo run -p taurus-speech --example speak -- --engine openai --base-url http://localhost:8880/v1 \
 //!     --model kokoro --voice af_bella "Hi."
+//! OPENAI_API_KEY=<subscription key> cargo run -p taurus-speech --example speak -- --engine openai \
+//!     --base-url "https://<apim>.azure-api.net/openai/deployments/<tts>?api-version=2025-03-01-preview" \
+//!     --key-header Ocp-Apim-Subscription-Key "Hi."
 //! ```
 //!
 //! Prints each sentence as the filter hands it out, how long the first sound
@@ -35,6 +38,7 @@ async fn run() -> Result<(), String> {
     let mut voice: Option<String> = None;
     let mut model: Option<String> = None;
     let mut base_url: Option<String> = None;
+    let mut key_header: Option<String> = None;
     let mut text = String::new();
     let mut list = false;
     let mut dry = false;
@@ -47,6 +51,7 @@ async fn run() -> Result<(), String> {
             "--voice" => voice = Some(value()?),
             "--model" => model = Some(value()?),
             "--base-url" => base_url = Some(value()?),
+            "--key-header" => key_header = Some(value()?),
             "--file" => {
                 let path = value()?;
                 text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
@@ -74,6 +79,7 @@ async fn run() -> Result<(), String> {
             model: model.unwrap_or_else(|| "gpt-4o-mini-tts".into()),
             voice: voice.unwrap_or_else(|| "alloy".into()),
             key: env("OPENAI_API_KEY"),
+            key_header,
         }),
         other => {
             return Err(format!(

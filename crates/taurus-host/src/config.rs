@@ -1721,6 +1721,12 @@ pub struct OpenAiSpeech {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub api_key_env: Option<String>,
+    /// Sends the key bare in this header instead of as a bearer token, like a
+    /// provider's `api_key_header`: `Ocp-Apim-Subscription-Key` for an Azure
+    /// APIM gateway, `api-key` for Azure OpenAI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub api_key_header: Option<String>,
 }
 
 impl Default for OpenAiSpeech {
@@ -1730,6 +1736,7 @@ impl Default for OpenAiSpeech {
             model: default_openai_speech_model(),
             voice: default_openai_speech_voice(),
             api_key_env: None,
+            api_key_header: None,
         }
     }
 }
@@ -2610,6 +2617,21 @@ mod tests {
             speech.elevenlabs.api_key_env.as_deref(),
             Some("ELEVENLABS_API_KEY")
         );
+    }
+
+    #[test]
+    fn a_speech_key_header_is_read_and_left_out_when_unset() {
+        let stored: StoredSettings = serde_json::from_str(
+            r#"{"speech": {"openai": {"api_key_header": "Ocp-Apim-Subscription-Key"}}}"#,
+        )
+        .unwrap();
+        let speech = stored.resolve().speech;
+        assert_eq!(
+            speech.openai.api_key_header.as_deref(),
+            Some("Ocp-Apim-Subscription-Key")
+        );
+        let unset = serde_json::to_value(OpenAiSpeech::default()).unwrap();
+        assert!(unset.get("api_key_header").is_none(), "{unset}");
     }
 
     #[test]

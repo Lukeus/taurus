@@ -49,6 +49,11 @@ pub struct OpenAi {
     pub voice: String,
     /// `None` for a local server that takes no key.
     pub key: Option<String>,
+    /// The header the key goes in, bare, instead of `Authorization: Bearer`.
+    /// `Ocp-Apim-Subscription-Key` for an Azure APIM gateway, `api-key` for
+    /// Azure OpenAI itself. The same rule as a model provider's
+    /// `api_key_header`.
+    pub key_header: Option<String>,
 }
 
 /// The voices OpenAI's speech models have. Suggestions: a server of the same
@@ -156,7 +161,15 @@ pub async fn openai(
         "response_format": "pcm",
     }));
     if let Some(key) = &voice.key {
-        request = request.bearer_auth(key);
+        request = match voice.key_header.as_deref().map(str::trim) {
+            None | Some("") => request.bearer_auth(key),
+            Some(name) => match sensitive(key) {
+                Some(value) => request.header(name, value),
+                // Sent without, so it comes back a 401 that says to check
+                // the key, rather than failing here over a pasted newline.
+                None => request,
+            },
+        };
     }
     let response = request
         .timeout(SENTENCE_WITHIN)
@@ -184,6 +197,14 @@ async fn stream_pcm(response: Response, url: &Url, play: &mut Sink<'_>) -> Resul
         play(&crate::wav::from_i16_le(&data))?;
     }
     Ok(())
+}
+
+/// A key as a header value that a debug print shows redacted, or `None` for
+/// one no header can carry.
+fn sensitive(key: &str) -> Option<reqwest::header::HeaderValue> {
+    let mut value = reqwest::header::HeaderValue::from_str(key).ok()?;
+    value.set_sensitive(true);
+    Some(value)
 }
 
 /// `base` with `segments` added to its path, whatever it ended in.
@@ -383,6 +404,7 @@ mod tests {
             model: "kokoro".into(),
             voice: "af_bella".into(),
             key: None,
+            key_header: None,
         };
         let (_, mut play) = collect();
         openai(&reqwest::Client::new(), &voice, "Hi.", &mut play)
@@ -395,6 +417,36 @@ mod tests {
             !request.to_ascii_lowercase().contains("authorization"),
             "{request}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_apim_gateway_gets_its_header_and_keeps_its_api_version() {
+        let (base, server) = serve("200 OK", vec![vec![0, 0]]).await;
+        let voice = OpenAi {
+            base_url: format!("{base}/openai/deployments/tts?api-version=2025-03-01-preview"),
+            model: "gpt-4o-mini-tts".into(),
+            voice: "alloy".into(),
+            key: Some("sub-key".into()),
+            key_header: Some(" Ocp-Apim-Subscription-Key ".into()),
+        };
+        let (_, mut play) = collect();
+        openai(&reqwest::Client::new(), &voice, "Hi.", &mut play)
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with(
+                "POST /openai/deployments/tts/audio/speech?api-version=2025-03-01-preview "
+            ),
+            "{request}"
+        );
+        let lower = request.to_ascii_lowercase();
+        // Bare, and instead of the bearer token rather than beside it.
+        assert!(
+            lower.contains("ocp-apim-subscription-key: sub-key\r\n"),
+            "{request}"
+        );
+        assert!(!lower.contains("authorization"), "{request}");
     }
 
     #[tokio::test]
@@ -431,6 +483,7 @@ mod tests {
             model: "m".into(),
             voice: "v".into(),
             key: Some("k".into()),
+            key_header: None,
         };
         let (_, mut play) = collect();
         let err = openai(&reqwest::Client::new(), &voice, "Hi.", &mut play)
@@ -451,6 +504,7 @@ mod tests {
             model: "m".into(),
             voice: "v".into(),
             key: None,
+            key_header: None,
         };
         let (_, mut play) = collect();
         let err = openai(&reqwest::Client::new(), &voice, "Hi.", &mut play)
