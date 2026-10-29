@@ -235,6 +235,7 @@ fn resolve(speech: &SpeechSettings) -> CmdResult<Engine> {
                 model: openai.model.clone(),
                 voice: openai.voice.clone(),
                 key: Host::speech_key(SpeechEngine::OpenAi, openai.api_key_env.as_deref()),
+                key_header: openai.api_key_header.clone(),
             })
         }
     })

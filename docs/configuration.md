@@ -22,7 +22,7 @@ would write one project's overrides into the file every other project reads.
 | `providers.json` | Backends, including the header a key is sent in. Never the key itself, which lives in the OS keychain or an env var. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars. The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself, which lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
-| `settings.json` | Last workspace, the two synthesis toggles, `shell_integration` (whether the terminal dock marks each command; on by default), theme and theme id, fallback model, `max_iterations`, `max_concurrent_agents` (how many sub-agents one message runs at once, 2 by default, 1 to 8, see [how many run at once](capabilities.md#how-many-run-at-once)), `context_strategy` (`compact` or `relay`, see [the context window](working-with-it.md#the-context-window)), `context_limit` (the working context in tokens, 200,000 by default, `0` for the model's whole window), `plugins`, which plugins are switched on or off, `voice_model`, the speech model the mic transcribes with (`base.en` by default, see [Talking instead of typing](working-with-it.md#talking-instead-of-typing)), `notify_when_done` (on by default), `ui_scale` (the interface size in percent, 75 to 150), `terminal_shell` (read from this file only, never a project's), `terminal_font` and `terminal_font_size`, and `speech`, which reads replies aloud: `read_aloud` (off by default), `engine` (`system`, `elevenlabs` or `openai`), and each engine's own voice, model and `api_key_env`, kept so switching engines loses nothing (see [Hearing replies read aloud](working-with-it.md#hearing-replies-read-aloud)). A file that doesn't parse is shown at the top of **Settings › Behavior**, and the app won't write to it until you fix or delete it, so a typo never costs you the rest of the file. | The provider and model this project was last worked in, a step limit for turns here, how many sub-agents run at once, the context strategy, and the working context. Settings always writes the global file; when this one sets a value, **Settings › Behavior** says so under that control, because this one wins here. |
+| `settings.json` | Last workspace, the two synthesis toggles, `shell_integration` (whether the terminal dock marks each command; on by default), theme and theme id, fallback model, `max_iterations`, `max_concurrent_agents` (how many sub-agents one message runs at once, 2 by default, 1 to 8, see [how many run at once](capabilities.md#how-many-run-at-once)), `context_strategy` (`compact` or `relay`, see [the context window](working-with-it.md#the-context-window)), `context_limit` (the working context in tokens, 200,000 by default, `0` for the model's whole window), `plugins`, which plugins are switched on or off, `voice_model`, the speech model the mic transcribes with (`base.en` by default, see [Talking instead of typing](working-with-it.md#talking-instead-of-typing)), `notify_when_done` (on by default), `ui_scale` (the interface size in percent, 75 to 150), `terminal_shell` (read from this file only, never a project's), `terminal_font` and `terminal_font_size`, and `speech`, which reads replies aloud: `read_aloud` (off by default), `engine` (`system`, `elevenlabs` or `openai`), and each engine's own voice, model and `api_key_env` (plus `base_url` and `api_key_header` for `openai`, see [Reading replies aloud through the same gateway](#reading-replies-aloud-through-the-same-gateway)), kept so switching engines loses nothing (see [Hearing replies read aloud](working-with-it.md#hearing-replies-read-aloud)). A file that doesn't parse is shown at the top of **Settings › Behavior**, and the app won't write to it until you fix or delete it, so a typo never costs you the rest of the file. | The provider and model this project was last worked in, a step limit for turns here, how many sub-agents run at once, the context strategy, and the working context. Settings always writes the global file; when this one sets a value, **Settings › Behavior** says so under that control, because this one wins here. |
 | `themes/` | Custom palettes, typefaces, wordmarks and corner radii. See [Themes](#themes). | Themes that travel with the project, so a repository can brand the app for everyone who opens it. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. A file that doesn't parse grants nothing, is named in the log, and is never written over, so its rules are still there once you fix it. | "Always here" decisions, read the same way. |
@@ -1490,6 +1490,31 @@ Other fields matter more here than elsewhere:
   starts, naming the picture, instead of a round trip later with a wire error
   naming a field. Other kinds ignore it: Ollama reports vision per model, and
   every model Anthropic and Gemini serve reads images.
+
+### Reading replies aloud through the same gateway
+
+The OpenAI-shaped voice in **Settings › Voice** takes the same header, as
+`api_key_header` under `speech.openai` in `settings.json`, or the **API key
+header** field. Its address keeps any query string, so an Azure speech
+deployment is reachable directly or through APIM, `api-version` included:
+
+```jsonc
+"speech": {
+  "engine": "openai",
+  "openai": {
+    "base_url": "https://my-gateway.azure-api.net/openai/deployments/tts?api-version=2025-03-01-preview",
+    "model": "gpt-4o-mini-tts",
+    "voice": "alloy",
+    "api_key_header": "Ocp-Apim-Subscription-Key"
+  }
+}
+```
+
+Taurus adds `/audio/speech` to the path, so this asks
+`…/deployments/tts/audio/speech?api-version=…`. Store the subscription key in
+**Settings › Voice**, not in the address: APIM also accepts it as a
+`subscription-key` query parameter, but there it sits in plain text in
+`settings.json` and shows up in any error that names the address.
 
 ## Intel hardware, and other backends
 

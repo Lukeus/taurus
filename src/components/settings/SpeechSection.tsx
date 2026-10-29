@@ -341,7 +341,7 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
             <div className="card-body">
               <Field
                 label="Address"
-                hint="Up to and including /v1. A local server such as Kokoro-FastAPI works too, at its own address."
+                hint="Up to and including /v1. An Azure deployment or APIM gateway works too, with its ?api-version= on the end, and so does a local server such as Kokoro-FastAPI."
               >
                 <input
                   value={draft.openai.base_url}
@@ -397,6 +397,23 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
                   onChange={(e) =>
                     patch({
                       openai: { ...draft.openai, api_key_env: blank(e.target.value) ?? undefined },
+                    })
+                  }
+                  onBlur={() => void save(draft)}
+                />
+              </Field>
+              <Field
+                label="API key header"
+                hint="Empty sends the key as a bearer token. An Azure APIM gateway wants Ocp-Apim-Subscription-Key, Azure OpenAI wants api-key."
+              >
+                <input
+                  value={draft.openai.api_key_header ?? ""}
+                  disabled={busy}
+                  spellCheck={false}
+                  placeholder="Authorization: Bearer"
+                  onChange={(e) =>
+                    patch({
+                      openai: { ...draft.openai, api_key_header: blank(e.target.value) ?? undefined },
                     })
                   }
                   onBlur={() => void save(draft)}

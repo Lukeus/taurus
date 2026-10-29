@@ -53,3 +53,53 @@ describe("the system voice", () => {
     act(() => root.unmount());
   });
 });
+
+describe("the OpenAI-shaped voice", () => {
+  it("saves a key header for a gateway, and drops it when emptied", async () => {
+    const saved: unknown[] = [];
+    invoke.mockImplementation((command: string, args?: { settings?: unknown }) => {
+      if (command === "speech_status") {
+        return Promise.resolve({
+          ...STATUS,
+          settings: {
+            ...STATUS.settings,
+            engine: "openai",
+            openai: { ...STATUS.settings.openai, base_url: "https://api.openai.com/v1" },
+          },
+        });
+      }
+      if (command === "save_speech_settings") saved.push(args?.settings);
+      return Promise.resolve([]);
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<SpeechSection keychain />));
+    await act(async () => {});
+
+    const field = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("API key header"))
+      ?.querySelector("input");
+    expect(field).toBeTruthy();
+    const type = async (value: string) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        setter.call(field, value);
+        field!.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => {
+        field!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      });
+    };
+
+    await type("Ocp-Apim-Subscription-Key");
+    expect(saved.at(-1)).toMatchObject({
+      openai: { api_key_header: "Ocp-Apim-Subscription-Key" },
+    });
+    await type("  ");
+    expect((saved.at(-1) as { openai: { api_key_header?: string } }).openai.api_key_header).toBe(
+      undefined,
+    );
+    act(() => root.unmount());
+  });
+});
