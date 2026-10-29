@@ -330,6 +330,17 @@ pub fn apply_ui_scale(window: &tauri::WebviewWindow, percent: u32) {
     }
 }
 
+/// Saves which model each kind of job runs on. See
+/// [`taurus_host::ModelRoutes`].
+#[tauri::command]
+pub async fn set_routes(state: State<'_, Arc<AppState>>, routes: ModelRoutes) -> CmdResult<()> {
+    state.host.set_routes(routes).await?;
+    // The status carries the problem list, which is where a route that can't
+    // be used says so.
+    emit_status(&state).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn set_terminal_shell(state: State<'_, Arc<AppState>>, program: String) -> CmdResult<()> {
     state.host.set_terminal_shell(&program).await?;

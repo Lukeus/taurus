@@ -41,9 +41,9 @@ use taurus_host::trust::TrustStatus;
 use taurus_host::usage::{self, UsageReport};
 use taurus_host::{
     sessions, Attachment, BackendKind, Checkpoint, Commit, CustomTheme, Document, Host, KeyStatus,
-    McpServerDraft, McpServerRef, McpServerView, Note, Page, PageKind, PageRef, PageSaved,
-    PlanEditMark, Problem, ProviderConfig, Repo, RepoStatus, Rewind, Saved, SessionLog,
-    SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
+    McpServerDraft, McpServerRef, McpServerView, ModelRoutes, Note, Page, PageKind, PageRef,
+    PageSaved, PlanEditMark, Problem, ProviderConfig, Repo, RepoStatus, Rewind, RouteJob, Saved,
+    SessionLog, SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
 };
 
 use crate::live::Live;

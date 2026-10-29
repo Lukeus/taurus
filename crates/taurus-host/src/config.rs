@@ -1163,6 +1163,124 @@ pub enum Theme {
     Dark,
 }
 
+/// One kind of job sent to a model other than the conversation's.
+///
+/// A provider and a model together, because a model id means nothing without
+/// the backend that serves it: `gemini-2.5-flash` on Gemini and on a gateway
+/// are two different bills.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelRoute {
+    /// A configured provider's id. Empty means the conversation's provider,
+    /// which is how a different model on the same local server is named.
+    #[serde(default)]
+    pub provider: String,
+    pub model: String,
+}
+
+impl ModelRoute {
+    /// How a route is named on screen and in a problem: `gemini/flash`, or
+    /// the model alone when it rides the conversation's provider.
+    pub fn label(&self) -> String {
+        if self.provider.is_empty() {
+            self.model.clone()
+        } else {
+            format!("{}/{}", self.provider, self.model)
+        }
+    }
+}
+
+/// Which model each kind of job runs on, when it shouldn't be the
+/// conversation's. Every route is optional, and an unset one is the
+/// conversation's model.
+///
+/// Routed by job rather than by guessing how hard each message is. A job
+/// that starts a fresh context — a delegate, a review, a draft — can go to
+/// any backend without losing anything. Switching the conversation's own
+/// model mid-turn would lose its prompt cache, which belongs to one model,
+/// and the reasoning a backend hands back for its own eyes only.
+///
+/// Compaction isn't routable, on purpose. A summary reads the conversation's
+/// cached history, and on a hosted model a cache read costs a tenth of a fresh
+/// one, so a cheaper model reading it uncached is usually the dearer choice as
+/// well as the worse one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelRoutes {
+    /// One-off writing jobs with no tools: drafting an agent or a skill in its
+    /// editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub utility: Option<ModelRoute>,
+    /// Reviewing a turn's changes. Often worth a *different* strong model
+    /// rather than a cheaper one, so the work isn't marked by the model that
+    /// did it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review: Option<ModelRoute>,
+    /// Every sub-agent that doesn't name its own model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delegate: Option<ModelRoute>,
+    /// One sub-agent by name, over [`Self::delegate`].
+    ///
+    /// An agent file's own `model:` wins over both while its provider is
+    /// usable. The file is the more specific statement, and somebody wrote it
+    /// for that agent. When it names a provider this machine doesn't have,
+    /// the agent runs on its route instead of the conversation's model.
+    ///
+    /// Always written, even empty, so a frontend reading the routes never
+    /// finds the field missing.
+    #[serde(default)]
+    pub agents: BTreeMap<String, ModelRoute>,
+}
+
+impl ModelRoutes {
+    /// The route for one sub-agent, by name or else for every delegate.
+    pub fn for_agent(&self, name: &str) -> Option<&ModelRoute> {
+        self.agents.get(name).or(self.delegate.as_ref())
+    }
+
+    /// Every route that's set, by the name a problem or an error calls it:
+    /// `utility`, `review`, `delegate`, or `agents.<name>`.
+    pub fn named(&self) -> Vec<(String, &ModelRoute)> {
+        let jobs = [
+            ("utility", &self.utility),
+            ("review", &self.review),
+            ("delegate", &self.delegate),
+        ];
+        jobs.into_iter()
+            .filter_map(|(job, route)| Some((job.to_string(), route.as_ref()?)))
+            .chain(
+                self.agents
+                    .iter()
+                    .map(|(name, route)| (format!("agents.{name}"), route)),
+            )
+            .collect()
+    }
+
+    /// Drops routes with no model, and trims what's left. An empty model is
+    /// a cleared field in Settings, and the same thing as no route.
+    pub fn normalized(mut self) -> Self {
+        fn clean(route: ModelRoute) -> Option<ModelRoute> {
+            let model = route.model.trim().to_string();
+            (!model.is_empty()).then(|| ModelRoute {
+                provider: route.provider.trim().to_string(),
+                model,
+            })
+        }
+        self.utility = self.utility.and_then(clean);
+        self.review = self.review.and_then(clean);
+        self.delegate = self.delegate.and_then(clean);
+        self.agents = std::mem::take(&mut self.agents)
+            .into_iter()
+            .filter_map(|(name, route)| Some((name.trim().to_string(), clean(route)?)))
+            .filter(|(name, _)| !name.is_empty())
+            .collect();
+        self
+    }
+}
+
 /// Preferences that survive a restart, with both layers already resolved.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -1363,6 +1481,13 @@ pub struct Settings {
     /// Per-layer, so one project that needs the whole window can have it.
     #[serde(default = "default_context_limit")]
     pub context_limit: u32,
+    /// Which model each kind of job runs on. See [`ModelRoutes`].
+    ///
+    /// Read from your own settings only, never a project's. A route decides
+    /// which backend your code is sent to and whose bill it lands on, and a
+    /// cloned repository has no business choosing either.
+    #[serde(default)]
+    pub routes: ModelRoutes,
     /// The speech model the composer's mic transcribes with, by the name
     /// Settings › Voice lists: `tiny.en`, `base.en`, `small.en`, or `base`.
     ///
@@ -1661,6 +1786,7 @@ impl Default for Settings {
             max_concurrent_agents: default_max_concurrent_agents(),
             context_strategy: taurus_core::ContextStrategy::Compact,
             context_limit: default_context_limit(),
+            routes: ModelRoutes::default(),
             voice_model: default_voice_model(),
             speech: SpeechSettings::default(),
             plugins: BTreeMap::new(),
@@ -1739,6 +1865,10 @@ pub struct StoredSettings {
     /// See [`Settings::context_limit`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_limit: Option<u32>,
+    /// See [`Settings::routes`]. Ignored in a project's file; see
+    /// [`load_settings`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routes: Option<ModelRoutes>,
     /// See [`Settings::voice_model`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_model: Option<String>,
@@ -1794,6 +1924,9 @@ impl StoredSettings {
         self.max_concurrent_agents = other.max_concurrent_agents.or(self.max_concurrent_agents);
         self.context_strategy = other.context_strategy.or(self.context_strategy);
         self.context_limit = other.context_limit.or(self.context_limit);
+        // Whole, like the speech settings: the routes are one decision about
+        // where work goes.
+        self.routes = other.routes.or(self.routes.take());
         self.voice_model = other.voice_model.or(self.voice_model.take());
         // Whole, like the rest: a voice is chosen as a set of fields that
         // belong together, and half of one project's ElevenLabs settings over
@@ -1857,6 +1990,10 @@ impl StoredSettings {
             context_limit: clamp_context_limit(
                 self.context_limit.unwrap_or(defaults.context_limit),
             ),
+            routes: self
+                .routes
+                .map(ModelRoutes::normalized)
+                .unwrap_or(defaults.routes),
             // Empty is the default rather than "off": the mic is always
             // there, and a model it can't name would only fail when pressed.
             voice_model: self
@@ -1947,8 +2084,9 @@ pub fn load_settings(workspace: Option<&Path>) -> Settings {
     let workspace = crate::trust::for_reading(workspace);
     let mut merged = read_settings(Scope::Global, workspace);
     let mut project = read_settings(Scope::Workspace, workspace);
-    // Never a project's. See `Settings::terminal_shell`.
+    // Never a project's. See `Settings::terminal_shell` and `Settings::routes`.
     project.terminal_shell = None;
+    project.routes = None;
     let from_project = project.keys();
     merged.overlay(project);
     Settings {
@@ -2243,6 +2381,20 @@ mod tests {
             max_concurrent_agents: Some(4),
             context_strategy: Some(taurus_core::ContextStrategy::Relay),
             context_limit: Some(120_000),
+            routes: Some(ModelRoutes {
+                utility: Some(ModelRoute {
+                    provider: "gemini".into(),
+                    model: "flash".into(),
+                }),
+                agents: BTreeMap::from([(
+                    "coder".into(),
+                    ModelRoute {
+                        provider: String::new(),
+                        model: "qwen3-coder".into(),
+                    },
+                )]),
+                ..Default::default()
+            }),
             voice_model: Some("small.en".into()),
             speech: Some(SpeechSettings {
                 read_aloud: true,
@@ -2849,6 +3001,54 @@ mod tests {
             // Global alone has no project to name.
             assert!(load_settings(None).from_project.is_empty());
         });
+    }
+
+    #[test]
+    fn routes_are_read_from_your_own_settings_and_never_a_projects() {
+        with_home(|home| {
+            let ws = trusted_workspace();
+            write(
+                home.join("settings.json"),
+                r#"{"routes": {"delegate": {"provider": "ollama", "model": "qwen3:8b"}}}"#,
+            );
+            write(
+                workspace_dir(ws.path()).join("settings.json"),
+                r#"{"routes": {"delegate": {"provider": "gateway", "model": "big"}}}"#,
+            );
+
+            let routes = load_settings(Some(ws.path())).routes;
+            assert_eq!(routes.delegate.unwrap().label(), "ollama/qwen3:8b");
+        });
+    }
+
+    #[test]
+    fn a_route_with_no_model_is_no_route_and_an_agent_route_beats_the_delegate_one() {
+        let routes = ModelRoutes {
+            utility: Some(ModelRoute {
+                provider: "gemini".into(),
+                model: "  ".into(),
+            }),
+            delegate: Some(ModelRoute {
+                provider: " ollama ".into(),
+                model: " small ".into(),
+            }),
+            agents: BTreeMap::from([(
+                "coder".into(),
+                ModelRoute {
+                    provider: "anthropic".into(),
+                    model: "big".into(),
+                },
+            )]),
+            ..Default::default()
+        }
+        .normalized();
+
+        assert_eq!(routes.utility, None);
+        assert_eq!(routes.for_agent("coder").unwrap().label(), "anthropic/big");
+        assert_eq!(
+            routes.for_agent("explorer").unwrap().label(),
+            "ollama/small"
+        );
     }
 
     #[test]

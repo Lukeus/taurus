@@ -27,6 +27,8 @@ const report = (patch: Partial<UsageReport> = {}): UsageReport => ({
   reported_out: 6_000,
   cached_in: null,
   cache_write_in: null,
+  models: [],
+  unattributed: { input_tokens: 0, output_tokens: 0 },
   history: 41_000,
   tools: [
     { name: "read_file", calls: 9, tokens: 30_000, failures: 0, share: 75 },
@@ -134,6 +136,36 @@ describe("the context account", () => {
     expect((await mount()).text()).toContain(
       "10% of input came from cache, 80% was written to it",
     );
+  });
+
+  it("splits the bill by model once there is more than one", async () => {
+    const spend = (provider: string, model: string, input_tokens: number) => ({
+      provider,
+      model,
+      usage: { input_tokens, output_tokens: 1_000 },
+    });
+    invoke.mockResolvedValue(report({ models: [spend("anthropic", "opus", 150_000)] }));
+    expect((await mount()).text()).not.toContain("Billed by model");
+
+    invoke.mockResolvedValue(
+      report({
+        models: [spend("anthropic", "opus", 150_000), spend("ollama", "qwen3:8b", 30_000)],
+      }),
+    );
+    const ui = await mount();
+    expect(ui.text()).toContain("Billed by model");
+    expect(ui.text()).toContain("anthropic/opus");
+    expect(ui.text()).toContain("ollama/qwen3:8b");
+  });
+
+  it("owns up to spending recorded before it was kept by model", async () => {
+    invoke.mockResolvedValue(
+      report({
+        models: [{ provider: "ollama", model: "qwen3:8b", usage: { input_tokens: 9, output_tokens: 1 } }],
+        unattributed: { input_tokens: 170_000, output_tokens: 5_000 },
+      }),
+    );
+    expect((await mount()).text()).toContain("earlier turns");
   });
 
   it("calls out repeated calls, which are the part that is pure waste", async () => {

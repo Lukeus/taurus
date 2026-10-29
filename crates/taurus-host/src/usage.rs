@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use taurus_core::{estimate_block, estimate_message, estimate_tokens, Session};
-use taurus_provider::{ContentBlock, Role, ToolDef};
+use taurus_provider::{ContentBlock, ModelSpend, Role, Spend, TokenUsage, ToolDef};
 
 use crate::sessions;
 
@@ -123,6 +123,15 @@ pub struct UsageReport {
     /// conversation that re-writes its whole history every step and reads
     /// back only the system prompt still shows a healthy share from cache.
     pub cache_write_in: Option<u32>,
+    /// The billed totals above, by the model that spent them, heaviest first.
+    ///
+    /// More than one entry once delegates or reviews are routed to another
+    /// model, or the conversation was switched partway. That split is the
+    /// point of routing, so it's reported rather than left inside the total.
+    pub models: Vec<ModelSpend>,
+    /// What the totals hold that no model is named for: turns recorded before
+    /// spending was kept by model. Zero on any conversation started since.
+    pub unattributed: TokenUsage,
     /// What the transcript holds now, estimated.
     pub history: u32,
     /// Heaviest first, then by name so the order is stable between runs.
@@ -249,6 +258,8 @@ struct Tally {
     reported_out: u32,
     cached_in: Option<u32>,
     cache_write_in: Option<u32>,
+    models: Spend,
+    unattributed: TokenUsage,
     history: u32,
     by_tool: HashMap<String, ToolUsage>,
     repeats: u32,
@@ -266,6 +277,16 @@ impl Tally {
         if let Some(written) = session.usage.cache_creation_input_tokens {
             *self.cache_write_in.get_or_insert(0) += written;
         }
+        self.models.merge(&session.spend);
+        let named = session.spend.total();
+        self.unattributed.input_tokens += session
+            .usage
+            .input_tokens
+            .saturating_sub(named.input_tokens);
+        self.unattributed.output_tokens += session
+            .usage
+            .output_tokens
+            .saturating_sub(named.output_tokens);
         self.messages += session.messages.len() as u32;
 
         // Tool name and cost, keyed by the call id its result will carry.
@@ -345,6 +366,14 @@ impl Tally {
             };
         }
 
+        let mut models = self.models.0;
+        models.sort_by(|a, b| {
+            b.usage
+                .total()
+                .cmp(&a.usage.total())
+                .then_with(|| a.model.cmp(&b.model))
+        });
+
         UsageReport {
             sessions: self.sessions,
             turns: self.turns,
@@ -353,6 +382,8 @@ impl Tally {
             reported_out: self.reported_out,
             cached_in: self.cached_in,
             cache_write_in: self.cache_write_in,
+            models,
+            unattributed: self.unattributed,
             history: self.history,
             tools,
             repeats: self.repeats,
@@ -411,6 +442,28 @@ mod tests {
         let cost = tool(&report, "read_file");
         assert_eq!(cost.calls, 1);
         assert!(cost.tokens >= 1000, "{} tokens", cost.tokens);
+    }
+
+    #[test]
+    fn spending_is_reported_by_model_heaviest_first() {
+        let mut session = session_with(vec![]);
+        let used = |input, output| TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            ..Default::default()
+        };
+        session.add_usage("gemini", "flash", used(100, 10));
+        session.add_usage("anthropic", "opus", used(900, 90));
+        // A conversation from before spending was kept by model: in the
+        // total, named nowhere.
+        session.usage.add(&used(50, 5));
+
+        let report = of_session(&session, &nothing_fixed());
+        let models: Vec<&str> = report.models.iter().map(|m| m.model.as_str()).collect();
+        assert_eq!(models, ["opus", "flash"]);
+        assert_eq!(report.reported_in, 1050);
+        assert_eq!(report.unattributed.input_tokens, 50);
+        assert_eq!(report.unattributed.output_tokens, 5);
     }
 
     #[test]

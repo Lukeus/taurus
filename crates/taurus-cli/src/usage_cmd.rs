@@ -48,6 +48,33 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
+/// The billed totals by model, once there's more than one to tell apart. With
+/// a single model the split is the total, already printed above it.
+fn print_models(report: &UsageReport) {
+    let earlier = report.unattributed.total() > 0;
+    if report.models.len() + usize::from(earlier) < 2 {
+        return;
+    }
+    println!("By model");
+    let rows = report
+        .models
+        .iter()
+        .map(|m| (format!("{}/{}", m.provider, m.model), m.usage))
+        .chain(earlier.then(|| {
+            (
+                "earlier turns, not recorded by model".to_string(),
+                report.unattributed,
+            )
+        }));
+    for (name, usage) in rows {
+        println!(
+            "  {name:<36} {} in / {} out",
+            thousands(usage.input_tokens),
+            thousands(usage.output_tokens)
+        );
+    }
+}
+
 fn print_report(report: &UsageReport) {
     println!(
         "Turns              {}\nMessages           {}",
@@ -75,6 +102,7 @@ fn print_report(report: &UsageReport) {
             thousands(written)
         );
     }
+    print_models(report);
     println!("Transcript holds   ~{} tokens\n", thousands(report.history));
 
     if report.tools.is_empty() {

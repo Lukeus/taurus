@@ -37,12 +37,12 @@ pub mod usage;
 
 pub use attach::Attachment;
 pub use command::{CommandError, CommandKind, CommandSummary, Invocation};
-pub use config::{ProviderConfig, ProviderKind, Scope, Settings, Theme};
+pub use config::{ModelRoute, ModelRoutes, ProviderConfig, ProviderKind, Scope, Settings, Theme};
 pub use document::{Document, Saved};
 pub use fork::{Comparison, Forked, Side, Switched};
 pub use git::{Commit, Repo, RepoStatus};
 pub use host::{
-    Host, PermissionPromptFactory, TurnRef, MAX_CONCURRENT_SUBAGENTS,
+    Host, PermissionPromptFactory, RouteJob, TurnRef, MAX_CONCURRENT_SUBAGENTS,
     MAX_CONCURRENT_SUBAGENTS_LIMIT,
 };
 pub use instructions::{Instructions, InstructionsOrigin, InstructionsSource, InstructionsTier};

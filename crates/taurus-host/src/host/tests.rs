@@ -806,6 +806,175 @@ async fn an_agent_naming_an_unconfigured_provider_loads_degraded() {
     assert!(agent_problems(&host.problems().await).is_empty());
 }
 
+fn write_providers(workspace: &Path, json: &str) {
+    std::fs::create_dir_all(workspace.join(".taurus")).unwrap();
+    std::fs::write(workspace.join(".taurus/providers.json"), json).unwrap();
+}
+
+fn route(provider: &str, model: &str) -> crate::config::ModelRoute {
+    crate::config::ModelRoute {
+        provider: provider.into(),
+        model: model.into(),
+    }
+}
+
+/// Where each agent will run, as `provider/model`, or `session/model` for a
+/// model on the conversation's provider. Absent means the conversation's own.
+async fn runs_on(host: &Host, agent: &str) -> Option<String> {
+    let models = host.agent_models.read().await;
+    let over = models.get(agent)?;
+    let provider = over.provider.as_ref().map_or("session", |p| p.id());
+    Some(format!("{provider}/{}", over.model))
+}
+
+#[tokio::test]
+async fn delegates_follow_their_routes_but_a_usable_file_model_wins() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    write_providers(
+        &workspace,
+        r#"[{"id": "local", "kind": "ollama", "base_url": "http://127.0.0.1:9"}]"#,
+    );
+    write_agent(&workspace, "plain", "");
+    write_agent(&workspace, "special", "");
+    write_agent(&workspace, "pinned", "model: big\nprovider: local\n");
+    write_agent(
+        &workspace,
+        "stranded",
+        "model: gpt-5\nprovider: not-configured\n",
+    );
+
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+    host.set_routes(crate::config::ModelRoutes {
+        delegate: Some(route("local", "small")),
+        agents: BTreeMap::from([("special".into(), route("", "mid"))]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        runs_on(&host, "plain").await.as_deref(),
+        Some("local/small")
+    );
+    // By name, over the route for every delegate; an empty provider is the
+    // conversation's.
+    assert_eq!(
+        runs_on(&host, "special").await.as_deref(),
+        Some("session/mid")
+    );
+    // The file is the more specific statement, and it can be honored.
+    assert_eq!(runs_on(&host, "pinned").await.as_deref(), Some("local/big"));
+    // It can't be here, so the route takes over rather than the session.
+    assert_eq!(
+        runs_on(&host, "stranded").await.as_deref(),
+        Some("local/small")
+    );
+
+    let agents = host.agents().await;
+    let find = |name: &str| agents.iter().find(|a| a.name == name).unwrap();
+    assert_eq!(find("plain").route.as_deref(), Some("local/small"));
+    assert_eq!(find("pinned").route, None, "its own file decided");
+    let reason = find("stranded").degraded.as_deref().unwrap();
+    assert!(
+        reason.contains("its Settings route, local/small"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_route_to_a_provider_that_isnt_configured_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (host, _home) = host(dir.path());
+    host.reload().await;
+
+    let err = host
+        .set_routes(crate::config::ModelRoutes {
+            review: Some(route("nowhere", "m")),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("review route") && err.contains("'nowhere'"),
+        "{err}"
+    );
+    assert_eq!(host.routes().await, crate::config::ModelRoutes::default());
+}
+
+#[tokio::test]
+async fn a_route_whose_provider_has_no_key_is_a_problem_and_its_job_falls_back() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    write_providers(
+        &workspace,
+        r#"[{"id": "local", "kind": "ollama", "base_url": "http://127.0.0.1:9"},
+            {"id": "route-test-keyless", "kind": "anthropic", "base_url": "http://127.0.0.1:9"}]"#,
+    );
+    write_agent(&workspace, "plain", "");
+
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+    host.set_routes(crate::config::ModelRoutes {
+        delegate: Some(route("route-test-keyless", "haiku")),
+        review: Some(route("route-test-keyless", "opus")),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let problems: Vec<String> = host
+        .problems()
+        .await
+        .into_iter()
+        .filter(|p| p.source == ProblemSource::Routes)
+        .map(|p| p.message)
+        .collect();
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("has no API key"), "{problems:?}");
+    assert!(problems[0].contains("conversation's model"), "{problems:?}");
+
+    // Neither job is refused: each runs on the conversation's model.
+    assert_eq!(runs_on(&host, "plain").await, None);
+    let conversation = host.provider("local").await.unwrap();
+    let (provider, model) = host
+        .routed(RouteJob::Review, conversation, "qwen3:8b")
+        .await;
+    assert_eq!((provider.id(), model.as_str()), ("local", "qwen3:8b"));
+}
+
+#[tokio::test]
+async fn a_job_with_a_usable_route_runs_on_it() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    write_providers(
+        &workspace,
+        r#"[{"id": "local", "kind": "ollama", "base_url": "http://127.0.0.1:9"},
+            {"id": "other", "kind": "ollama", "base_url": "http://127.0.0.1:10"}]"#,
+    );
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+    host.set_routes(crate::config::ModelRoutes {
+        utility: Some(route("other", "gemma3")),
+        review: Some(route("", "qwen3:32b")),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let conversation = host.provider("local").await.unwrap();
+    let (provider, model) = host
+        .routed(RouteJob::Utility, conversation.clone(), "qwen3:8b")
+        .await;
+    assert_eq!((provider.id(), model.as_str()), ("other", "gemma3"));
+    // An empty provider is a different model on the conversation's.
+    let (provider, model) = host
+        .routed(RouteJob::Review, conversation, "qwen3:8b")
+        .await;
+    assert_eq!((provider.id(), model.as_str()), ("local", "qwen3:32b"));
+}
+
 #[tokio::test]
 async fn an_oversized_roster_reports_what_it_costs() {
     let dir = TempDir::new().unwrap();

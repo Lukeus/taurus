@@ -200,8 +200,13 @@ pub async fn review_turn(
     check_workspace(&entry.workspace, &state.host.workspace().await)?;
 
     let provider_id = entry.provider_id.lock().await.clone();
-    let provider = state.host.provider(&provider_id).await?;
-    let model = session_model(&entry).await;
+    let conversation = state.host.provider(&provider_id).await?;
+    // The review route, when one is set: often a different strong model, so
+    // the work isn't marked by the model that did it.
+    let (provider, model) = state
+        .host
+        .routed(RouteJob::Review, conversation, &session_model(&entry).await)
+        .await;
 
     // A token of its own rather than the conversation's. Stopping a turn must
     // not kill a review of an earlier one, and closing a review must not stop

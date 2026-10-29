@@ -242,7 +242,7 @@ pub async fn generate_agent(
         description.trim(),
         available.join(", ")
     );
-    let text = one_shot(
+    let (text, model) = one_shot(
         &state,
         AGENT_DRAFT,
         &provider_id,
@@ -290,7 +290,10 @@ pub async fn generate_agent(
 }
 
 /// One completion with no tools, for an editor's Generate button. Answers with
-/// the text, or says it was stopped.
+/// the text and the model that wrote it, or says it was stopped.
+///
+/// Runs on the utility route when one is set, and on the conversation's model
+/// otherwise. See [`taurus_host::config::ModelRoutes::utility`].
 ///
 /// Filed in [`AppState::stoppable`] under `key`, where the editor can reach it.
 /// A draft on a local model takes minutes, and closing the editor has to be
@@ -302,9 +305,14 @@ async fn one_shot(
     model: &str,
     system: String,
     prompt: String,
-) -> CmdResult<String> {
-    let provider = state.host.provider(provider_id).await?;
-    let mut request = ChatRequest::new(model, vec![Message::user(prompt)]);
+) -> CmdResult<(String, String)> {
+    let conversation = state.host.provider(provider_id).await?;
+    let (provider, model) = state
+        .host
+        .routed(RouteJob::Utility, conversation, model)
+        .await;
+    let provider_id = provider.id().to_string();
+    let mut request = ChatRequest::new(&model, vec![Message::user(prompt)]);
     request.system = Some(system);
 
     let running = state.stoppable.start(key);
@@ -326,7 +334,7 @@ async fn one_shot(
     if stop == StopReason::Canceled {
         return Err("Drafting stopped.".into());
     }
-    Ok(acc.finish().0.text())
+    Ok((acc.finish().0.text(), model))
 }
 
 #[derive(Deserialize)]
@@ -686,7 +694,7 @@ pub async fn generate_skill(
         return Err("describe what the skill should do first".into());
     }
     let prompt = format!("Draft a skill for: {}", description.trim());
-    let text = one_shot(
+    let (text, model) = one_shot(
         &state,
         SKILL_DRAFT,
         &provider_id,

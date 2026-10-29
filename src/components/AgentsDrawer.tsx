@@ -239,7 +239,11 @@ function AgentCard({
   // iteration limit used to sit here too and now has its own control — a
   // number you can change does not belong in a row of facts you cannot.
   const meta = [
-    agent.model && `runs on ${agent.model}`,
+    // The route when one decided, which is also the case of a file naming a
+    // model this machine can't run: the file's model isn't where it runs.
+    agent.route
+      ? `runs on ${agent.route} (Settings › Routing)`
+      : agent.model && `runs on ${agent.model}`,
     agent.shadows && `replaces the ${TIER_LABEL[agent.shadows]} agent`,
     agent.path,
   ].filter(Boolean);

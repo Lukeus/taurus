@@ -115,7 +115,8 @@ datacenter.** Every decision here is shaped around an 8k context window:
   is read back from the provider's prompt cache, not re-sent at full price,
   and a 200,000-token working context keeps a million-token model from
   re-sending 900,000 tokens on every step. Compaction summaries and
-  sub-agents are counted in the conversation that asked for them.
+  sub-agents are counted in the conversation that asked for them, split by
+  the model that spent them.
 - Tool schemas are slimmed on the way out, and old tool results shrink before
   anything gets summarized.
 - A long turn can start over from a brief instead of being summarized
@@ -440,6 +441,10 @@ any sketch a note embeds.
 web search.
 
 - Local Ollama, anything OpenAI-compatible, Anthropic, or Google Gemini.
+- [**Sending jobs to other models**](docs/configuration.md#sending-jobs-to-other-models):
+  sub-agents, reviews and drafts each on their own provider and model, so a
+  cheap or local one does the small work and a strong one does the work that
+  counts.
 - [**OpenAI's reasoning models**](docs/configuration.md#openais-reasoning-models)
   call tools while they reason, over the Responses API.
 - Keys live in the OS keychain or an env var, never in a config file.

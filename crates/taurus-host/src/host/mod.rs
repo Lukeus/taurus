@@ -7,7 +7,7 @@
 //! so it is built once here and the frontends supply only what genuinely
 //! differs: how to ask the user for permission, and where skill proposals go.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -199,6 +199,10 @@ pub struct Host {
     /// roster's fingerprint before rescanning it. See
     /// [`Self::refresh_for_turn`].
     agent_models: RwLock<ModelOverrides>,
+    /// The Settings route each agent ended up on, as `provider/model`, for
+    /// the drawer. Only agents a route decided; see
+    /// [`taurus_agents::AgentSummary::route`].
+    agent_routes: RwLock<HashMap<String, String>>,
     /// What the held roster was scanned from. Compared per turn; the scan it
     /// guards parses every agent file, cross-checks each one's tools, and can
     /// reach the OS keychain, so learning that nothing moved has to be cheaper
@@ -359,6 +363,7 @@ impl Host {
             profile: RwLock::new(Profile::default()),
             agents: Arc::new(RwLock::new(AgentCatalog::default())),
             agent_models: RwLock::new(ModelOverrides::new()),
+            agent_routes: RwLock::new(HashMap::new()),
             agents_seen: RwLock::new(Freshness::default()),
             skills_seen: RwLock::new(Freshness::default()),
             hooks_seen: RwLock::new(Freshness::default()),
@@ -472,6 +477,7 @@ impl Host {
             ProblemSource::Settings,
             config::settings_problems(Some(&workspace)),
         ));
+        problems.extend(self.route_problems().await);
 
         // Through the same two loaders a turn calls, so a reload and a turn
         // cannot come to disagree about what is installed — and so that both
@@ -1064,10 +1070,18 @@ impl Host {
     /// so the fallback is visible without the status strip claiming something
     /// is broken when nothing is.
     async fn resolve_agent_models(&self, agents: &mut AgentCatalog) {
+        let routes = self.settings.read().await.routes.clone();
         let mut resolved = ModelOverrides::new();
+        let mut routed = HashMap::new();
 
         for agent in agents.iter_mut() {
+            let name = agent.name().to_string();
             let Some(model) = agent.frontmatter.model.clone() else {
+                // Nothing named in the file: the Settings route, if any.
+                if let Some((label, over)) = self.agent_route(&routes, &name).await {
+                    resolved.insert(name.clone(), over);
+                    routed.insert(name, label);
+                }
                 continue;
             };
             let Some(provider_id) = agent.frontmatter.provider.clone() else {
@@ -1075,7 +1089,7 @@ impl Host {
                 // provider the session is using, which is not known until a turn
                 // starts. Nothing to resolve, and nothing that can fail here.
                 resolved.insert(
-                    agent.name().to_string(),
+                    name,
                     AgentModel {
                         provider: None,
                         model,
@@ -1084,27 +1098,40 @@ impl Host {
                 continue;
             };
 
-            match self.provider(&provider_id).await {
+            // The file wins while it can be honored. It's the more specific
+            // statement, and somebody wrote it for this agent.
+            match self.usable_provider(&provider_id).await {
                 Ok(provider) => {
                     resolved.insert(
-                        agent.name().to_string(),
+                        name,
                         AgentModel {
                             provider: Some(provider),
                             model,
                         },
                     );
                 }
-                Err(e) => degrade(
-                    agent,
-                    format!(
-                        "wants {model} on provider '{provider_id}', which is not usable here \
-                         ({e}); it will run on the session's model instead"
-                    ),
-                ),
+                Err(e) => {
+                    let instead = match self.agent_route(&routes, &name).await {
+                        Some((label, over)) => {
+                            resolved.insert(name.clone(), over);
+                            routed.insert(name, label.clone());
+                            format!("its Settings route, {label}")
+                        }
+                        None => "the session's model".to_string(),
+                    };
+                    degrade(
+                        agent,
+                        format!(
+                            "wants {model} on provider '{provider_id}', which is not usable here \
+                             ({e}); it will run on {instead} instead"
+                        ),
+                    );
+                }
             }
         }
 
         *self.agent_models.write().await = resolved;
+        *self.agent_routes.write().await = routed;
     }
 
     /// Everything that failed to load, tagged with where it came from.
@@ -1383,7 +1410,10 @@ mod library;
 mod mcp;
 mod notes;
 mod providers;
+mod routes;
 mod settings;
+
+pub use routes::Job as RouteJob;
 mod turn;
 mod workspace;
 

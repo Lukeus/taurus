@@ -75,6 +75,69 @@ impl TokenUsage {
     }
 }
 
+/// What one model spent, on one backend.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelSpend {
+    /// The configured provider's id, as `providers.json` names it.
+    pub provider: String,
+    pub model: String,
+    pub usage: TokenUsage,
+}
+
+/// What was spent, by the model that spent it.
+///
+/// Kept beside a session's [`TokenUsage`] total rather than in place of it.
+/// One conversation can run on three models: its own, the one its delegates
+/// are routed to, and whatever it was switched to halfway. A single total
+/// can't say which of them the tokens went to, and that is the question
+/// somebody routing work to a cheaper model is asking.
+///
+/// A list rather than a map because a provider and a model together are the
+/// key, and JSON has no such key. There are rarely more than three entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(export)]
+pub struct Spend(pub Vec<ModelSpend>);
+
+impl Spend {
+    /// Adds one request's usage against the model that served it.
+    pub fn add(&mut self, provider: &str, model: &str, usage: &TokenUsage) {
+        match self
+            .0
+            .iter_mut()
+            .find(|s| s.provider == provider && s.model == model)
+        {
+            Some(entry) => entry.usage.add(usage),
+            None => self.0.push(ModelSpend {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                usage: *usage,
+            }),
+        }
+    }
+
+    /// Adds everything another spend holds, model by model.
+    pub fn merge(&mut self, other: &Spend) {
+        for entry in &other.0 {
+            self.add(&entry.provider, &entry.model, &entry.usage);
+        }
+    }
+
+    /// Every model's usage added together.
+    pub fn total(&self) -> TokenUsage {
+        let mut total = TokenUsage::default();
+        for entry in &self.0 {
+            total.add(&entry.usage);
+        }
+        total
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 fn accumulate(total: &mut Option<u32>, reported: Option<u32>) {
     let Some(reported) = reported else { return };
     *total = Some(total.unwrap_or(0).saturating_add(reported));

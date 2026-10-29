@@ -117,6 +117,9 @@ import type { SearchSettings } from "../bindings/SearchSettings";
 import type { SequenceMessage } from "../bindings/SequenceMessage";
 import type { ServerStatus } from "../bindings/ServerStatus";
 import type { ModelEntry } from "../bindings/ModelEntry";
+import type { ModelRoute } from "../bindings/ModelRoute";
+import type { ModelRoutes } from "../bindings/ModelRoutes";
+import type { ModelSpend } from "../bindings/ModelSpend";
 import type { SessionMeta } from "../bindings/SessionMeta";
 import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
@@ -270,6 +273,9 @@ export type {
   MessageKind,
   ModelEntry,
   ModelInfo,
+  ModelRoute,
+  ModelRoutes,
+  ModelSpend,
   Note,
   Page,
   PageKind,
@@ -1096,6 +1102,10 @@ export const setNotifyWhenDone = (on: boolean) => invoke<void>("set_notify_when_
 export const setUiScale = (percent: number) => invoke<void>("set_ui_scale", { percent });
 
 /** The program the terminal starts. Empty is the login shell. */
+/** Which model each kind of job runs on. See `ModelRoutes`. */
+export const setRoutes = (routes: ModelRoutes) =>
+  invoke<void>("set_routes", { routes });
+
 export const setTerminalShell = (program: string) =>
   invoke<void>("set_terminal_shell", { program });
 

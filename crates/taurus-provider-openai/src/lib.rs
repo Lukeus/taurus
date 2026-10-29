@@ -886,7 +886,7 @@ fn normalize_prefix(prefix: &str) -> String {
 
 /// Whether a base URL is OpenAI's own API rather than something speaking its
 /// shape.
-fn is_openai_itself(base_url: &str) -> bool {
+pub fn is_openai_itself(base_url: &str) -> bool {
     let host = base_url
         .split_once("://")
         .map_or(base_url, |(_, rest)| rest)

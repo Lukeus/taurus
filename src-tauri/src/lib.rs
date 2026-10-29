@@ -373,6 +373,7 @@ pub fn run() {
             commands::set_hook,
             commands::set_notify_when_done,
             commands::set_ui_scale,
+            commands::set_routes,
             commands::set_terminal_shell,
             commands::set_terminal_font,
             commands::get_profile,
