@@ -631,7 +631,7 @@ let initialized = false;
  * that conversation after looking elsewhere attaches a second. Only the newest
  * folds. Without this the round in progress would be drawn twice, interleaved.
  */
-let watching: object | null = null;
+let watching: ReturnType<typeof batchEvents> | null = null;
 
 /**
  * Folds one turn's events into the conversation on screen, a frame at a time.
@@ -657,10 +657,8 @@ function turnStream(
    */
   speak = false,
 ) {
-  const token = {};
-  watching = token;
-  return batchEvents((events) => {
-    if (watching !== token || get().session?.id !== sessionId) return;
+  const stream = batchEvents((events) => {
+    if (watching !== stream || get().session?.id !== sessionId) return;
     // Checked per batch rather than once, so switching it off mid-reply
     // stops feeding the rest. What's already queued is the Stop button's.
     if (speak && get().status?.settings.speech?.read_aloud) speech.hear(events);
@@ -704,6 +702,8 @@ function turnStream(
       });
     }
   });
+  watching = stream;
+  return stream;
 }
 
 /**
@@ -840,7 +840,12 @@ export const useStore = create<Store>((set, get) => ({
     // This is what ends a turn on screen that this window did not start — one
     // it attached to after a reload, or after looking at something else — and
     // what keeps the composer from offering to send into a turn still running.
-    api.onTurn(({ session, turn }) =>
+    api.onTurn(({ session, turn }) => {
+      // The end of a turn overtakes the last of what it said, which is still
+      // waiting out its frame in the batch. Closed first, that tail opened a
+      // bubble of its own, cutting the answer's last sentence in two on screen
+      // until the transcript was next read.
+      if (!turn && get().session?.id === session) watching?.flush();
       set((s) => {
         const running = turn
           ? s.running.includes(session)
@@ -852,8 +857,8 @@ export const useStore = create<Store>((set, get) => ({
         // The open bubble is closed here as well as in `send`, because the
         // window watching a turn end is not always the one that started it.
         return { running, busy: false, turn: null, entries: closeOpen(s.entries) };
-      }),
-    );
+      });
+    });
 
     // What was already running when this window opened. Everything after it is
     // the push above; this is the one read.
