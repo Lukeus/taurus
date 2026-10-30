@@ -235,6 +235,22 @@ impl UiSessionLog {
     }
 }
 
+/// A listing entry in the form the window compares it in.
+///
+/// The window drops a pushed conversation whose workspace is not the one it has
+/// open, and it knows that one from the status, which is `plain`. A transcript's
+/// header holds the canonical path, which on Windows is `\\?\C:\...`. The
+/// two never matched, so on Windows no pushed conversation reached the rail and
+/// each one waited for the next full listing.
+///
+/// Here and not in the listing itself, because the CLI reads a checkpoint store
+/// by `SessionMeta::workspace`, and that store is keyed on the canonical path.
+pub fn for_the_window(mut meta: sessions::SessionMeta) -> sessions::SessionMeta {
+    let plain = taurus_tools::path_guard::plain(std::path::Path::new(&meta.workspace));
+    meta.workspace = plain.display().to_string();
+    meta
+}
+
 #[async_trait]
 impl TurnRecorder for UiSessionLog {
     async fn record(&self, session: &Session) {
@@ -259,7 +275,7 @@ impl TurnRecorder for UiSessionLog {
         let Some(meta) = announced else {
             return;
         };
-        if let Err(e) = self.app.emit(EVENT_SESSION, &meta) {
+        if let Err(e) = self.app.emit(EVENT_SESSION, &for_the_window(meta)) {
             // The conversation is on disk regardless; the rail catches up on
             // the next thing that lists it.
             warn!(error = %e, "could not announce a new conversation");
@@ -300,6 +316,21 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_pushed_conversation_names_its_workspace_as_the_status_does() {
+        let meta: sessions::SessionMeta = serde_json::from_value(serde_json::json!({
+            "id": "s1",
+            "workspace": r"\\?\C:\Users\me\repo",
+            "model": "m",
+            "started": 0,
+            "updated": 0,
+            "title": "",
+        }))
+        .unwrap();
+        assert_eq!(for_the_window(meta).workspace, r"C:\Users\me\repo");
+    }
 
     #[tokio::test]
     async fn a_question_whose_wait_is_dropped_leaves_nothing_parked() {

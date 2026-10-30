@@ -330,7 +330,10 @@ pub async fn emit_session(state: &AppState, session_id: &str) {
     let Ok(Some(meta)) = off_runtime(move || Ok(sessions::meta(&id))).await else {
         return;
     };
-    if let Err(e) = state.app.emit(crate::bridge::EVENT_SESSION, &meta) {
+    if let Err(e) = state.app.emit(
+        crate::bridge::EVENT_SESSION,
+        &crate::bridge::for_the_window(meta),
+    ) {
         tracing::warn!(error = %e, "could not push a conversation to the window");
     }
 }
