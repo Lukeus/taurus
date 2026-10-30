@@ -125,6 +125,16 @@ export function PermissionDialog({
             Asked every time: this one {request.beyond_grant}.
           </p>
         )}
+        {/* The other way to get no standing grant. The engine withholds both
+            in an untrusted workspace, "everywhere" included: a decision made
+            from a project nobody has vouched for must not reach every other
+            one. Same words as the CLI prompt. */}
+        {!request.offer_always && !request.beyond_grant && (
+          <p className="dialog-footnote">
+            Asked every time: this workspace isn't trusted, so nothing decided
+            here is kept.
+          </p>
+        )}
 
         <div className="dialog-actions">
           {/* Not `autoFocus`. Focus lands on the dialog itself — see `Modal` —
@@ -150,7 +160,8 @@ export function PermissionDialog({
             </button>
           )}
           {/* Absent where the wider grant is not on offer — running commands,
-              where "every project you ever open" is the wrong unit. */}
+              where "every project you ever open" is the wrong unit, and an
+              untrusted workspace, where "here" is absent too. */}
           {request.always_global_scope && (
             <button
               onClick={() => onDecide("allow_always_global")}

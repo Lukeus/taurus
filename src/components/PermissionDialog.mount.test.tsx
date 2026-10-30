@@ -160,3 +160,27 @@ describe("a call no standing grant can cover", () => {
     expect(host.textContent).not.toContain("Asked every time");
   });
 });
+
+describe("an untrusted workspace", () => {
+  const UNTRUSTED = {
+    ...WRITE,
+    offer_always: false,
+    always_global_scope: null,
+  } as unknown as PermissionRequest;
+
+  it("says why there is only Allow once", () => {
+    const { host } = mount(UNTRUSTED);
+    expect(host.textContent).toContain(
+      "Asked every time: this workspace isn't trusted, so nothing decided here is kept.",
+    );
+    expect(host.textContent).not.toContain("Always");
+  });
+
+  it("gives one reason, not two, for a line beyond any grant", () => {
+    const { host } = mount({
+      ...UNTRUSTED,
+      beyond_grant: "runs code written into the line",
+    } as unknown as PermissionRequest);
+    expect(host.textContent).not.toContain("isn't trusted");
+  });
+});

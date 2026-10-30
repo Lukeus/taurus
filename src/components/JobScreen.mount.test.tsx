@@ -97,7 +97,7 @@ describe("the tab strip", () => {
     );
     const tab = host.querySelectorAll(".dock-tab")[1];
     expect(tab.className).toContain("failed");
-    expect(tab.querySelector(".dock-tab-mark")?.textContent).toBe("✗");
+    expect(tab.querySelector(".dock-tab-mark")?.textContent).toBe("!");
   });
 });
 

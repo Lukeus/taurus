@@ -644,6 +644,43 @@ fn default_shell(integrate: bool) -> (CommandBuilder, String) {
     }
 }
 
+/// The shell the dock would start for `chosen`, by name, and whether its
+/// commands can be marked.
+///
+/// For Settings to warn before the shell opens: "Mark each command" on with a
+/// fish shell otherwise looks like a switch that does nothing. The same
+/// resolution as [`shell`], without starting anything. A chosen shell that
+/// can't be found is judged by its name, since that is what the field says.
+pub fn would_start(chosen: &str) -> (String, bool) {
+    use taurus_tools::shell_integration::{name_of, Kind};
+    let marks = |program: &str| (name_of(program), Kind::of(program).is_some());
+    match chosen_shell(chosen, taurus_tools::login_path::which) {
+        Ok(Some(path)) => marks(&path.to_string_lossy()),
+        Err(_) => marks(chosen.trim()),
+        Ok(None) => default_name(),
+    }
+}
+
+/// The login shell's name, and whether it can be marked. See [`default_shell`].
+fn default_name() -> (String, bool) {
+    #[cfg(windows)]
+    {
+        // Never integrated: see `default_shell`.
+        let name = windows_shell(taurus_tools::login_path::which)
+            .map(|path| taurus_tools::shell_integration::name_of(&path.to_string_lossy()))
+            .unwrap_or_else(|| "cmd".into());
+        (name, false)
+    }
+    #[cfg(not(windows))]
+    {
+        let program = CommandBuilder::new_default_prog().get_shell();
+        (
+            taurus_tools::shell_integration::name_of(&program),
+            taurus_tools::shell_integration::Kind::of(&program).is_some(),
+        )
+    }
+}
+
 /// What the read loop hands to the forwarder.
 enum Pump {
     Data(Vec<u8>),

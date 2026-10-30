@@ -43,6 +43,23 @@ export function TerminalTab() {
   useEffect(() => setFamily(savedFont), [savedFont]);
   useEffect(() => setSize(String(savedSize)), [savedSize]);
 
+  // Which shell that is, asked of the host because an empty field is the
+  // login shell and only the host knows which one that is. Re-asked when the
+  // saved shell changes. A failure leaves it unknown, which warns of nothing:
+  // the warning is a courtesy, and a wrong one would be worse than none.
+  const [opens, setOpens] = useState<api.TerminalShell | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .terminalShell()
+      .then((next) => live && setOpens(next))
+      .catch(() => live && setOpens(null));
+    return () => {
+      live = false;
+    };
+  }, [savedShell]);
+  const integration = settings?.shell_integration ?? true;
+
   const commitShell = async () => {
     if (shell.trim() === savedShell) return setShell(savedShell);
     setShellError(null);
@@ -138,7 +155,7 @@ export function TerminalTab() {
       <label className="settings-check">
         <input
           type="checkbox"
-          checked={settings?.shell_integration ?? true}
+          checked={integration}
           onChange={(e) => {
             const on = e.target.checked;
             setError(null);
@@ -157,6 +174,15 @@ export function TerminalTab() {
         </span>
       </label>
       <FromProject field="shell_integration" />
+      {/* Said, not left to be found: the switch is on, the shell opens, and
+          nothing is marked, which looks like the switch is broken. */}
+      {integration && opens?.marks === false && (
+        <Problem>
+          {opens.name} doesn't mark commands yet, so this does nothing there.
+          The terminal still works, but Ask Taurus and the model can't see the
+          commands you run. Choose zsh or bash above to use it.
+        </Problem>
+      )}
 
       {error && <Problem>{error}</Problem>}
     </>

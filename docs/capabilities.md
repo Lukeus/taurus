@@ -966,7 +966,7 @@ Each tab shows:
 - how it's doing, in the same words `check_command` gives the model
 - a **Stop** button while it's still going
 
-A finished one is marked as well as colored: `✓` clean, `✗` a non-zero exit,
+A finished one is marked as well as colored: `✓` clean, `!` a non-zero exit,
 `–` stopped. So the strip reads on a projector, and for someone who can't tell
 the two colors apart.
 
@@ -996,8 +996,8 @@ system would clean up on its own.
 ### The commands you ran
 
 ![The terminal dock after a failed test run: a red mark in the margin beside
-the `cargo test` line, a tick on the scrollbar, and the command in the bar
-with its exit code, its time and an Ask Taurus
+the `cargo test` line, a tick on the scrollbar, and the command in a strip
+under the tabs with its exit code, its time and an Ask Taurus
 button](screenshots/terminal-blocks.png)
 
 A terminal's output is one stream. The prompt, what you typed, what the
@@ -1014,11 +1014,12 @@ What that gets you:
   it on. Green passed, red failed, blue is still running. A failure also
   leaves a tick on the scrollbar, so a red build an hour of scrollback ago
   can still be found by eye.
-- **The last command in the bar**, with its exit code and time. Click a mark
+- **The last command in a strip under the tabs**, with its exit code and
+  time. Click a mark
   to put that command there instead. <kbd>⌘</kbd>+<kbd>↑</kbd> and
   <kbd>⌘</kbd>+<kbd>↓</kbd> step between commands (<kbd>Ctrl</kbd>+
   <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> on Windows and Linux).
-- **Ask Taurus**, beside the command in the bar. It puts a draft in the
+- **Ask Taurus**, beside the command in that strip. It puts a draft in the
   composer: the command and the end of its output, quoted, with "What went
   wrong?" after a failure. It's a draft, not a send, so you can say what you
   actually want to know. The message carries its own evidence, so it still

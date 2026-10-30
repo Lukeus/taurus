@@ -121,9 +121,10 @@ workspace loads its skills and agents and connects its servers. Revoking
 unloads them and shuts the servers down.
 
 In an untrusted workspace, the permission prompt offers **Allow once** and
-**Deny** but not **Always here**. There's no workspace layer to keep a
-standing decision in, and a button promising permanence it can't deliver would
-be worse than none.
+**Deny**, and neither **Always here** nor **Always everywhere**. There's no
+workspace layer to keep a standing decision in, and a grant for every project
+shouldn't be made from one you haven't trusted. The prompt says why, so a lone
+**Allow once** doesn't read as a bug.
 
 ## Hooks
 

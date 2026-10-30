@@ -532,36 +532,6 @@ export function TerminalDock({
                 : `shell exited ${ended}`}
           </span>
         )}
-        {onShell && current && (
-          <span className="dock-block" data-state={blockState(current)}>
-            <span className="dock-block-mark" aria-hidden="true">
-              {blockMark(current)}
-            </span>
-            <code className="dock-block-command" data-tip={describeBlock(current)}>
-              {current.command || "(command line not reported)"}
-            </code>
-            <span className="dock-block-meta">
-              {current.running
-                ? "running"
-                : [
-                    current.exit !== undefined && current.exit !== 0
-                      ? `exit ${current.exit}`
-                      : null,
-                    current.duration_ms !== undefined ? duration(current.duration_ms) : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-            </span>
-            <button
-              className="pill"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => ask(current)}
-              aria-label={`Ask Taurus about ${describeBlock(current)}`}
-            >
-              Ask Taurus
-            </button>
-          </span>
-        )}
         <div className="spacer" />
         {onShell && ended !== null && (
           <button
@@ -587,6 +557,39 @@ export function TerminalDock({
           ✕
         </button>
       </header>
+      {/* Its own strip, not a slot in the bar. It sat between the tabs and
+          the ✕ once, and a command line, its exit, its time and a button
+          were four more things in a row that already ends in a close. */}
+      {onShell && current && (
+        <div className="dock-block" data-state={blockState(current)}>
+          <span className="dock-block-mark" aria-hidden="true">
+            {blockMark(current)}
+          </span>
+          <code className="dock-block-command" data-tip={describeBlock(current)}>
+            {current.command || "(command line not reported)"}
+          </code>
+          <span className="dock-block-meta">
+            {current.running
+              ? "running"
+              : [
+                  current.exit !== undefined && current.exit !== 0
+                    ? `exit ${current.exit}`
+                    : null,
+                  current.duration_ms !== undefined ? duration(current.duration_ms) : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+          </span>
+          <button
+            className="pill"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => ask(current)}
+            aria-label={`Ask Taurus about ${describeBlock(current)}`}
+          >
+            Ask Taurus
+          </button>
+        </div>
+      )}
       {onShell && problem && (
         <p className="dock-problem flex items-center gap-2" role="alert">
           <span>{sentence(problem)}</span>

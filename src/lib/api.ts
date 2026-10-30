@@ -140,6 +140,7 @@ import type { ForkedFrom } from "../bindings/ForkedFrom";
 import type { TurnMark } from "../bindings/TurnMark";
 import type { Switched } from "../bindings/Switched";
 import type { TerminalBlock } from "../bindings/TerminalBlock";
+import type { TerminalShell } from "../bindings/TerminalShell";
 import type { Block } from "../bindings/Block";
 import type { Theme } from "../bindings/Theme";
 import type { CustomTheme } from "../bindings/CustomTheme";
@@ -324,6 +325,7 @@ export type {
   TurnMark,
   Switched,
   TerminalBlock,
+  TerminalShell,
   Block,
   Theme,
   Finding,
@@ -1108,6 +1110,9 @@ export const setRoutes = (routes: ModelRoutes) =>
 
 export const setTerminalShell = (program: string) =>
   invoke<void>("set_terminal_shell", { program });
+
+/** The shell the dock would start, by name, and whether it can be marked. */
+export const terminalShell = () => invoke<TerminalShell>("terminal_shell");
 
 /** The terminal's font family (empty for the app's own) and size. */
 export const setTerminalFont = (family: string, size: number) =>

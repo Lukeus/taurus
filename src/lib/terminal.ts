@@ -170,7 +170,7 @@ export function blockMark(block: { running: boolean; exit?: number }): string {
     case "ok":
       return "✓";
     case "failed":
-      return "✗";
+      return "!";
     case "unknown":
       return "–";
     default:
