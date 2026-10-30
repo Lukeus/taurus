@@ -1174,7 +1174,8 @@ the backlog, and they're the minority.
   at the operators that start another command and keys each part by its
   program's name, which is what lets one grant cover `cd x && cargo test`. It
   knows the handful of programs whose whole job is to run the rest of the line
-  (`sh -c`, `sudo`, `xargs`, `python3 -c`, `find -exec`), and nothing about
+  (`sh -c`, `sudo`, `xargs`, `python3 -c`, `powershell -Command`, `find -exec`),
+  and nothing about
   the rest. `make`, `npm run`, `cargo run` and a `git` alias all run what the
   project says, and a grant for one of them is a grant for that. A heredoc is
   never covered either, because the body of `python3 <<EOF` is a script. The

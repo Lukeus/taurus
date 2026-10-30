@@ -1414,6 +1414,11 @@ mod tests {
                 Some("runs code written into the line"),
             ),
             ("cargo test 2>&1 | tail -20", None),
+            ("pwsh -File build.ps1", None),
+            (
+                "pwsh -Command Remove-Item",
+                Some("hands the rest of the line to another program"),
+            ),
         ] {
             engine
                 .check(

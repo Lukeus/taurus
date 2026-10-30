@@ -205,7 +205,8 @@ pub fn build(
 /// otherwise emit `ls` on Windows or backslash paths on Linux.
 fn platform_description() -> &'static str {
     if cfg!(target_os = "windows") {
-        "Windows (commands run through cmd.exe; use Windows path separators)"
+        "Windows (commands run through cmd.exe, not PowerShell; use Windows path separators and \
+         2>nul; for PowerShell, write a .ps1 file and run powershell -NoProfile -File script.ps1)"
     } else if cfg!(target_os = "macos") {
         "macOS (commands run through /bin/sh; BSD versions of coreutils)"
     } else {
