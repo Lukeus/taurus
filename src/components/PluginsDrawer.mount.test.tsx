@@ -95,6 +95,15 @@ describe("the plugins drawer", () => {
     expect(drawer.text()).toContain("at 0123456789ab");
   });
 
+  it("lists what's installed before the forms that add to it", async () => {
+    backend([plugin()]);
+    const drawer = await mount();
+    const list = drawer.host.querySelector(".card-list");
+    const form = drawer.host.querySelector(".plugin-add");
+    expect(list && form).toBeTruthy();
+    expect(list!.compareDocumentPosition(form!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("switches a plugin off in the scope it lives in", async () => {
     backend([plugin({ scope: "workspace" })], [plugin({ scope: "workspace", enabled: false })]);
     const drawer = await mount();

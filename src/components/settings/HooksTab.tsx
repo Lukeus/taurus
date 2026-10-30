@@ -100,11 +100,14 @@ export function HooksTab() {
                 <div className="card-row">
                   <span
                     className={`card-title font-mono text-12-5 min-w-0 wrap-anywhere${
-                      hook.enabled ? "" : " text-faint line-through"
+                      hook.enabled ? "" : " text-faint"
                     }`}
                   >
                     {hook.hook.name}
                   </span>
+                  {/* Said, not struck through: a line through a name reads as
+                      deleted, and this one is a click from running again. */}
+                  {!hook.enabled && <span className="tag warn">off</span>}
                   <span className={`tag${hook.defined_in.kind === "workspace" ? " project" : ""}`}>
                     {from(hook.defined_in)}
                   </span>

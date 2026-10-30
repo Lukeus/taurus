@@ -163,9 +163,11 @@ describe("permission dialog", () => {
       <PermissionDialog request={request()} onDecide={() => {}} />,
     );
     expect(shown(html)).toContain("let x = 2;");
-    // The one-line preview stays: it names the tool and the size, which the
-    // diff does not.
-    expect(html).toContain("Write src/widget.rs (2140 bytes)");
+    // The diff's head names the file, so the one-line preview, which only
+    // says the path again, gives way to it. The tool is named in the
+    // footnote, and the +/- count says more about the size than bytes did.
+    expect(html).not.toContain("Write src/widget.rs (2140 bytes)");
+    expect(html.match(/src\/widget\.rs/g)?.length).toBe(2); // head + aria-label
   });
 
   it("shows no diff frame for a call that has no before and after", () => {

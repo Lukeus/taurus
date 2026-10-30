@@ -132,6 +132,9 @@ describe("the hooks tab", () => {
     const host = await mount();
     const lint = card(host, "lint:check");
     expect(lint.textContent).toContain("plugin lint ships it switched off");
+    // Tagged off, not struck through, which reads as deleted.
+    expect(lint.querySelector(".tag.warn")?.textContent).toBe("off");
+    expect(lint.innerHTML).not.toContain("line-through");
 
     await press(lint, "Switch on");
     expect(invoke).toHaveBeenCalledWith("set_hook", {

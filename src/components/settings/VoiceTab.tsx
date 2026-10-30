@@ -125,7 +125,7 @@ export function VoiceTab() {
 
       {status && (
         <section className="section">
-          <span className="micro">Files</span>
+          <span className="micro">On this machine</span>
           <dl className="voice-files m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
             <dt>Microphone</dt>
             <dd>{status.microphone ?? "none found"}</dd>

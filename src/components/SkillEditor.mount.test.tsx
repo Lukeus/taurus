@@ -114,11 +114,11 @@ describe("the skill editor", () => {
 
   it("offers a plugin you made, and not one fetched from somewhere", async () => {
     const { host } = await mount();
-    expect(() => button(host, "kit")).not.toThrow();
+    expect(() => button(host, "plugin kit")).not.toThrow();
     expect(() => button(host, "ops")).toThrow();
 
     await fill(host);
-    await press(host, "kit");
+    await press(host, "plugin kit");
     await press(host, "Save skill");
     const call = invoke.mock.calls.find(([cmd]) => cmd === "create_skill");
     expect(call?.[1]).toMatchObject({ plugin: "kit" });
@@ -165,7 +165,7 @@ describe("the skill editor", () => {
       onSubmit: submit,
     });
     expect(host.querySelector(".agent-generate")).toBeNull();
-    expect(() => button(host, "kit")).toThrow();
+    expect(() => button(host, "plugin kit")).toThrow();
     await press(host, "Save skill");
     expect(submit).toHaveBeenCalledWith(
       expect.objectContaining({ name: "cut-release" }),

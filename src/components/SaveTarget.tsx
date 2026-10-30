@@ -69,7 +69,7 @@ export function SaveTargetPills({
           className={`pill${value === to ? " on" : ""}`}
           onClick={() => onChange(to)}
         >
-          {to === "project" ? "this project" : to === "user" ? "all projects" : split(to).plugin}
+          {to === "project" ? "this project" : label(to)}
         </button>
       ))}
     </>
