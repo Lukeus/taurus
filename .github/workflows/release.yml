@@ -116,11 +116,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 is Apple Silicon. Left to itself the bundle it produces is
+          # macos-26 is Apple Silicon. Left to itself the bundle it produces is
           # arm64-only, so an Intel Mac gets nothing out of the release at all —
           # the universal target is what puts both architectures in one .dmg,
           # and it needs both Rust targets installed to build.
-          - os: macos-14
+          - os: macos-26
             args: --target universal-apple-darwin
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
           # Matching the CI profile exactly, down to the runner image.
