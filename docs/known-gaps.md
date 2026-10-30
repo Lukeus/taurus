@@ -878,7 +878,7 @@ the backlog, and they're the minority.
   `providers.json` while the app is open is the case that waits.
 
 - **Only zsh and bash mark their commands.** The dock's blocks, the
-  **Ask Taurus** button and `read_terminal` all come from shell integration:
+  **Ask about this** button and `read_terminal` all come from shell integration:
   hooks that mark where each command starts and ends. They're written for zsh
   and bash. fish has its own event hooks and PowerShell can wrap its prompt
   function, and both are the next shells to write. Neither is here yet,

@@ -51,7 +51,7 @@ import { DockTabs, JobScreen, panelId, tabId } from "./JobScreen";
  * and ends (see `crates/taurus-tools/src/shell_integration.rs`). The backend turns those
  * marks into blocks; this pane draws a mark in the left margin beside each
  * command's line, colored by how it ended, and keeps one command in the bar —
- * the latest, or whichever mark was clicked — with **Ask Taurus** beside it.
+ * the latest, or whichever mark was clicked — with **Ask about this** beside it.
  * ⌘↑ and ⌘↓ (Ctrl+Shift off macOS) step between commands.
  *
  * The line a mark belongs on is only known here, because only the emulator
@@ -584,9 +584,9 @@ export function TerminalDock({
             className="pill"
             onMouseDown={(e) => e.stopPropagation()}
             onClick={() => ask(current)}
-            aria-label={`Ask Taurus about ${describeBlock(current)}`}
+            aria-label={`Ask about ${describeBlock(current)}`}
           >
-            Ask Taurus
+            Ask about this
           </button>
         </div>
       )}
