@@ -7,7 +7,15 @@ export function when(seconds: number): string {
   if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
   if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h ago`;
   if (elapsed < 604800) return `${Math.floor(elapsed / 86400)}d ago`;
-  return new Date(seconds * 1000).toLocaleDateString();
+  // "Oct 9", with the year only once it isn't this one. The locale's numeric
+  // date read as 10/9/2025 beside a column of "2d ago", and it is ambiguous
+  // between month-first and day-first readers.
+  const then = new Date(seconds * 1000);
+  return then.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(then.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+  });
 }
 
 /** True for a timestamp falling on today's calendar date, not within 24h. */

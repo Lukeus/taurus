@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { csvOf, duration, plural } from "./format";
+import { csvOf, duration, plural, when } from "./format";
 
 describe("rows as csv", () => {
   it("quotes only the cells that need it, and doubles the quotes inside", () => {
@@ -39,5 +39,19 @@ describe("how long something took", () => {
     // the app has to be able to print. `127m 4s` is arithmetic, not a reading.
     expect(duration(3_600_000)).toBe("1h");
     expect(duration(7_624_000)).toBe("2h 7m");
+  });
+});
+
+describe("an older date", () => {
+  it("says the month by name, and the year only when it isn't this one", () => {
+    const now = new Date();
+    const lastMonth = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 40);
+    const older = new Date(now.getFullYear() - 1, 9, 9);
+    const said = when(lastMonth.getTime() / 1000);
+    expect(said).not.toMatch(/\d+\/\d+/);
+    if (lastMonth.getFullYear() === now.getFullYear()) {
+      expect(said).not.toContain(String(now.getFullYear()));
+    }
+    expect(when(older.getTime() / 1000)).toContain(String(now.getFullYear() - 1));
   });
 });

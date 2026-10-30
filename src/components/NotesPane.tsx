@@ -428,7 +428,17 @@ export function NotesPane({
               // The line a note needs to show this sketch, rather than a button
               // that picks a note and edits it. Which note, and where in it, is
               // the writer's call — and the line is the whole of the syntax.
-              <CopyButton className="pill" label="Copy embed" text={embedFor(page.name)} />
+              <>
+                <CopyButton className="pill" label="Copy embed" text={embedFor(page.name)} />
+                {/* As a note has. The model reads the words written on the
+                    drawing, which is most of what a question about one needs. */}
+                <button
+                  className="pill"
+                  onClick={() => onAsk(draftFor(page.scope, page.name, "sketch"))}
+                >
+                  Ask about this
+                </button>
+              </>
             )}
             {renaming === null && (
               <button className="pill" onClick={() => setRenaming(page.name)}>
@@ -714,7 +724,7 @@ function Group({
  * Deliberately unfinished: the person is about to say what they actually want
  * to know, and the cursor is left at the end for them to do it.
  */
-export function draftFor(scope: Scope, name: string): string {
+export function draftFor(scope: Scope, name: string, kind: "note" | "sketch" = "note"): string {
   const which = scope === "workspace" ? "project" : "global";
-  return `About my ${which} note "${name}": `;
+  return `About my ${which} ${kind} "${name}": `;
 }

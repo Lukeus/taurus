@@ -284,6 +284,13 @@ export function Settings({
               onClick={() => setTab(value)}
             >
               {label}
+              {/* Edits that wait for Save are visible from every other tab,
+                  so they aren't forgotten behind one. */}
+              {value === "models" && dirty && (
+                <span className="text-accent" aria-label="unsaved changes">
+                  {" "}•
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -320,10 +327,16 @@ export function Settings({
                 </div>
               )}
 
+              {/* The one tab that waits for Save, said where it applies. A
+                  provider is checked as a whole, and saving on every keystroke
+                  would hand a running turn a half-typed address. */}
               <p className="drawer-intro">
-                Saved to <code>~/.taurus/providers.json</code>, shared with the
-                CLI. Keys never go in that file: store one below and it goes to
-                your OS keychain, or name an environment variable that holds it.
+                Changes here wait for <b>Save</b>, unlike the other tabs: a
+                provider is checked as a whole, so a half-typed address never
+                reaches a running conversation. Saved to{" "}
+                <code>~/.taurus/providers.json</code>, shared with the CLI. Keys
+                never go in that file: store one below and it goes to your OS
+                keychain, or name an environment variable that holds it.
               </p>
 
               {/* A providers.json that will not parse is why the list below can
@@ -616,18 +629,18 @@ export function IterationLimit({
       await refresh();
     } catch (e) {
       setDraft(String(limit));
-      onError?.(`Steps per message stayed at ${limit}: ${e}`);
+      onError?.(`Round trips per message stayed at ${limit}: ${e}`);
     }
   };
 
   return (
     <Field
-      label="Steps per message"
-      hint={`How many times the model may act before Taurus stops the turn. Raise it for long refactors; lower it to catch a model going in circles sooner. 1–${MAX_ITERATIONS_LIMIT}, ${DEFAULT_MAX_ITERATIONS} by default.`}
+      label="Round trips per message"
+      hint={`How many times the model may call tools and read the results before Taurus stops the turn. Raise it for long refactors; lower it to catch a model going in circles sooner. 1–${MAX_ITERATIONS_LIMIT}, ${DEFAULT_MAX_ITERATIONS} by default.`}
     >
       <input
         inputMode="numeric"
-        aria-label="Steps per message"
+        aria-label="Round trips per message"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}

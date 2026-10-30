@@ -616,6 +616,11 @@ pub struct ReadNoteInput {
     /// The note's name, spelled exactly as it was given — this is its filename
     /// without the extension, so it is case-sensitive and may contain spaces.
     pub name: String,
+    /// Read a sketch of that name instead of a note. A sketch is a drawing:
+    /// what comes back is the text written on it, since the picture itself
+    /// can't be read.
+    #[serde(default)]
+    pub sketch: bool,
 }
 
 #[async_trait::async_trait]
@@ -629,7 +634,9 @@ impl taurus_tools::Tool for ReadNote {
          notebooks: `workspace` notes live with the project and are committed with it, `global` \
          notes follow the user between projects. Use this when a message refers to \"my note\", or \
          when the notes pane says which note is on screen. A note may contain mermaid diagrams, \
-         which are drawn for the user but reach you as their source. Do not guess a note's path \
+         which are drawn for the user but reach you as their source. Set `sketch` to read one \
+         of the user's sketches by name, when a message refers to \"my sketch\": you get the \
+         text written on it, not the drawing. Do not guess a note's path \
          and read it with read_file: a global note is outside the workspace and read_file cannot \
          reach it."
     }
@@ -655,6 +662,31 @@ impl taurus_tools::Tool for ReadNote {
         ctx: &taurus_tools::ToolContext,
     ) -> taurus_tools::ToolResult {
         let input: ReadNoteInput = taurus_tools::tool::parse_input(input)?;
+        if input.sketch {
+            let page = read(
+                input.scope,
+                Some(&self.workspace),
+                PageKind::Sketch,
+                &input.name,
+            )
+            .map_err(taurus_tools::ToolError::InvalidInput)?;
+            let labels = sketch_text(&page.text);
+            return Ok(if labels.is_empty() {
+                format!(
+                    "The sketch '{}' is drawn for the user and you cannot see it, and it has no \
+                     text written on it. Ask what it shows rather than guessing.",
+                    page.name
+                )
+            } else {
+                format!(
+                    "The sketch '{}' is drawn for the user and you cannot see it; the text written \
+                     on it, in the order it was drawn, is: {}.",
+                    page.name,
+                    labels.join(" · ")
+                )
+            }
+            .into());
+        }
         // The error this gives already names the note and says what to do, so it
         // is passed through rather than wrapped in a second sentence about it.
         let page = read(
@@ -1602,6 +1634,34 @@ mod tests {
                 text.contains("'Gone' that is not in this notebook"),
                 "{text}"
             );
+        });
+    }
+
+    #[test]
+    fn read_note_reads_the_words_on_a_sketch_when_asked_for_one() {
+        isolated(|w| {
+            let sketch = create(Scope::Workspace, Some(w), PageKind::Sketch, "Auth flow").unwrap();
+            save(
+                Scope::Workspace,
+                Some(w),
+                PageKind::Sketch,
+                "Auth flow",
+                r#"{"type":"excalidraw","elements":[{"type":"text","text":"Gateway"}]}"#,
+                &sketch.fingerprint,
+            )
+            .unwrap();
+            use taurus_tools::Tool;
+            let input =
+                serde_json::json!({ "scope": "workspace", "name": "Auth flow", "sketch": true });
+            let text = block(ReadNote::new(w).execute(input, &context(w)))
+                .map(|out| out.as_text().unwrap_or_default().to_string())
+                .unwrap();
+            assert!(
+                text.contains("the text written on it, in the order it was drawn, is: Gateway"),
+                "{text}"
+            );
+            // Without the flag the same name is a note, and there isn't one.
+            assert!(block(read_tool(w, Scope::Workspace, "Auth flow")).is_err());
         });
     }
 

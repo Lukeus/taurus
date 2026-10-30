@@ -570,7 +570,7 @@ describe("the query view", () => {
     await run(host);
 
     const ask = [...host.querySelectorAll(".data-problem button")].find(
-      (b) => b.textContent === "Ask Taurus",
+      (b) => b.textContent === "Ask about this",
     ) as HTMLButtonElement;
     await act(async () => {
       ask.click();
@@ -609,7 +609,7 @@ describe("the query view", () => {
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
     const ask = [...host.querySelectorAll(".data-problem button")].find(
-      (b) => b.textContent === "Ask Taurus",
+      (b) => b.textContent === "Ask about this",
     ) as HTMLButtonElement;
     await act(async () => {
       ask.click();
@@ -821,7 +821,7 @@ describe("the recipes view", () => {
         Promise.resolve({ recipes: [CLEAN], problems: [] }),
     });
     const host = await recipesTab();
-    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+    const button = [...host.querySelectorAll(".recipe-head button")].find((b) =>
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     expect(button.textContent).toContain("data/clean.parquet");
@@ -884,7 +884,7 @@ describe("the recipes view", () => {
         }),
     });
     const host = await recipesTab([EVENTS]);
-    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+    const button = [...host.querySelectorAll(".recipe-head button")].find((b) =>
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     await act(async () => button.click());
@@ -919,7 +919,7 @@ describe("the recipes view", () => {
     });
     const host = await recipesTab([EVENTS]);
 
-    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+    const button = [...host.querySelectorAll(".recipe-head button")].find((b) =>
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     await act(async () => {
@@ -949,7 +949,7 @@ describe("the recipes view", () => {
     });
     const drafts: string[] = [];
     const host = await recipesTab([EVENTS], (text) => drafts.push(text));
-    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+    const button = [...host.querySelectorAll(".recipe-head button")].find((b) =>
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     await act(async () => {
@@ -957,7 +957,7 @@ describe("the recipes view", () => {
     });
 
     const fix = [...host.querySelectorAll(".data-problem button")].find(
-      (b) => b.textContent === "Fix this",
+      (b) => b.textContent === "Ask about this",
     ) as HTMLButtonElement;
     await act(async () => {
       fix.click();
@@ -1008,7 +1008,7 @@ describe("the recipes view", () => {
     await act(async () => {
       tab.click();
     });
-    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+    const button = [...host.querySelectorAll(".recipe-head button")].find((b) =>
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     await act(async () => {
@@ -1025,7 +1025,7 @@ describe("the recipes view", () => {
         Promise.reject("step 2 (typo) will not run: No field named nope."),
     });
     const host = await recipesTab();
-    const button = [...host.querySelectorAll("button.primary")].find((b) =>
+    const button = [...host.querySelectorAll(".recipe-head button")].find((b) =>
       b.textContent?.startsWith("Run"),
     ) as HTMLButtonElement;
     await act(async () => {

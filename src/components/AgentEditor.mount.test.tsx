@@ -159,7 +159,7 @@ describe("the agent editor", () => {
     await press(host, "Generate");
 
     expect(field(host, "Name").value).toBe("diff-reviewer");
-    expect(field(host, "Max iterations").value).toBe("25");
+    expect(field(host, "Max round trips").value).toBe("25");
     expect(button(host, "read_file").className).toContain("on");
 
     await type(field(host, "Name"), "my-reviewer");

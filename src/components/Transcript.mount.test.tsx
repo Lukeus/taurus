@@ -477,7 +477,7 @@ describe("a delegation", () => {
     expect(host.querySelector(".run-row")?.classList.contains("running")).toBe(true);
     expect(host.querySelector(".run-row-status")?.textContent).toBe("…");
     // Its round and its last calls, read from what the delegate reported.
-    expect(host.querySelector(".run-agent-meta")?.textContent).toContain("round 2 of 20");
+    expect(host.querySelector(".run-agent-meta")?.textContent).toContain("round trip 2 of 20");
     expect(host.querySelector(".run-agent-calls")?.textContent).toContain("Search for parse");
     useStore.setState({ agents: {} });
   });

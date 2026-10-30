@@ -281,6 +281,8 @@ window.__TAURI_INTERNALS__ = {
         {
           ...SESSIONS[0],
           id: "s4",
+          // Titled by the question asked in it, the way a fork is listed.
+          title: "Try it with sccache instead",
           updated: SESSIONS[0].updated + 30,
           forked_from: { session: "s1", turn: "t2", checkpoint: 2 },
         },
@@ -666,7 +668,7 @@ requestAnimationFrame(() => {
       recipes: async () => {
         (await click(".pane-switch .seg", (b) => b.startsWith("Data")))();
         (await click(".data-switch .seg", (b) => b === "Recipes"))();
-        (await click(".recipe button.primary", (b) => b.startsWith("Run")))();
+        (await click(".recipe-head button", (b) => b.startsWith("Run")))();
         // And the report itself, which arrives a round trip after the click.
         await until(() => document.querySelector(".recipe-run"));
       },

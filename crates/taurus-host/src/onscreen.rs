@@ -186,6 +186,11 @@ pub struct NoteOnScreen {
     /// indefinitely: a save refused because somebody else wrote the note, where
     /// the screen and the disk hold different things until a person decides.
     pub unsaved: bool,
+    /// A sketch rather than a note. Read with `read_note` and `sketch` set,
+    /// which gives the words on the drawing.
+    #[serde(default)]
+    #[ts(optional)]
+    pub sketch: Option<bool>,
 }
 
 impl NoteOnScreen {
@@ -198,6 +203,14 @@ impl NoteOnScreen {
             Scope::Workspace => "project",
             Scope::Global => "global",
         };
+        if self.sketch == Some(true) {
+            return Some(format!(
+                "The notes pane was open on the {which} sketch '{name}' when this message was \
+                 sent. Unless the message names another, \"this sketch\" and \"the drawing\" mean \
+                 that one. Read it with read_note and `sketch: true`: you get the text written on \
+                 it, not the picture, so say what you can't see rather than guessing."
+            ));
+        }
         let stale = if self.unsaved {
             " The editor holds unsaved changes, so what read_note returns is **not** what is on \
              screen — say so rather than answering from the file."
@@ -542,8 +555,18 @@ mod tests {
                 scope: Scope::Workspace,
                 name: "Auth redesign".into(),
                 unsaved: false,
+                sketch: None,
             }),
         }
+    }
+
+    #[test]
+    fn a_sketch_on_screen_is_read_as_a_sketch() {
+        let mut on = noting();
+        on.note.as_mut().unwrap().sketch = Some(true);
+        let said = on.describe().unwrap();
+        assert!(said.contains("sketch 'Auth redesign'"), "{said}");
+        assert!(said.contains("`sketch: true`"), "{said}");
     }
 
     #[test]

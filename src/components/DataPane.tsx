@@ -701,7 +701,7 @@ function Query({
               Handing the whole thing to the model is faster than reading it,
               and the model is the one that has to learn the lesson anyway. */}
           <button className="pill" onClick={() => onAsk(askAboutFailure(ran, problem))}>
-            Ask Taurus
+            Ask about this
           </button>
         </p>
       )}
@@ -1053,8 +1053,9 @@ function RecipeCard({
         {/* The path is on the button, not in a dialog after it. This writes a
             file, and what it writes is the thing worth reading before
             clicking. */}
+        {/* Not primary: every recipe has one, and a column of filled buttons
+            has no first thing to press. The path on it is what says which. */}
         <button
-          className="primary"
           disabled={running}
           data-tip={`Run ${recipe.steps.length} steps over ${recipe.source} and write ${recipe.output}`}
           onClick={() => void go()}
@@ -1064,7 +1065,7 @@ function RecipeCard({
       </div>
 
       {recipe.description && (
-        <p className="micro recipe-note">{recipe.description}</p>
+        <p className="recipe-note recipe-about">{recipe.description}</p>
       )}
 
       {open && recipe.tables.length > 0 && (
@@ -1106,7 +1107,7 @@ function RecipeCard({
             className="pill"
             onClick={() => onAsk(askAboutRun(recipe.name, recipe.path, problem))}
           >
-            Fix this
+            Ask about this
           </button>
         </p>
       )}

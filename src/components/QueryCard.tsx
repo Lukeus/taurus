@@ -34,7 +34,7 @@ type QueryView = Extract<TranscriptView, { type: "query" }>;
  * SQL is the *input*, and a failure does not make it wrong to want it — but
  * the case barely arises. A model handed a `No field named` error fixes it and
  * calls again, so the card that matters appears a moment later; and a query
- * the *person* wrote and could not run has `Ask Taurus` on it already, in the
+ * the *person* wrote and could not run has `Ask about this` on it already, in the
  * pane, next to the error itself.
  */
 export function QueryCard({

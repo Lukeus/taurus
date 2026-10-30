@@ -108,7 +108,7 @@ describe("the agent activity panel", () => {
     const text = ui.host.textContent ?? "";
     expect(text).toContain("find the port");
     expect(text).toContain("explorer");
-    expect(text).toContain("round 3 of 20");
+    expect(text).toContain("round trip 3 of 20");
     // The call it's in the middle of.
     expect(text).toContain("read src/config.rs");
     expect(text).toContain("waiting for a slot");

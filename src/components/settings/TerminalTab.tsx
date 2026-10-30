@@ -179,8 +179,9 @@ export function TerminalTab() {
       {integration && opens?.marks === false && (
         <Problem>
           {opens.name} doesn't mark commands yet, so this does nothing there.
-          The terminal still works, but Ask Taurus and the model can't see the
-          commands you run. Choose zsh or bash above to use it.
+          The terminal still works, but neither the model nor the dock's Ask
+          about this button can see the commands you run. Choose zsh or bash
+          above to use it.
         </Problem>
       )}
 
