@@ -17,6 +17,11 @@
 //!
 //! Below both `taurus-tools` and `taurus-hooks`, so the gate and the hooks
 //! agree about what `git status; rm -rf ~` runs.
+//!
+//! The line is read by the rules of the shell that will run it. `cmd.exe` is
+//! not a POSIX shell with different programs: a single quote quotes nothing, a
+//! backslash escapes nothing, and `%VAR%` is pasted in before the line is read
+//! at all, so reading its lines by `sh`'s rules names the wrong programs.
 
 /// The programs a command line runs, by name, in the order they appear.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -36,6 +41,23 @@ const HANDS_OVER: &str = "hands the rest of the line to another program";
 const INLINE_CODE: &str = "runs code written into the line";
 const VARIABLE: &str = "names its program through a variable";
 const NOTHING: &str = "names no program";
+const EXPANDS: &str = "pastes a variable into the line before the line is read";
+
+/// Whose rules a line is read by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialect {
+    Posix,
+    Cmd,
+}
+
+impl Dialect {
+    /// The shell `run_command` starts on this platform.
+    const HOST: Self = if cfg!(windows) {
+        Self::Cmd
+    } else {
+        Self::Posix
+    };
+}
 
 /// Programs whose whole job is to run the rest of their command line.
 ///
@@ -69,6 +91,16 @@ const WRAPPERS: &[&str] = &[
     "pwsh",
 ];
 
+/// What `cmd.exe` adds to [`WRAPPERS`]. `for` and `if` are built in, and each
+/// runs the command written after it.
+const CMD_WRAPPERS: &[&str] = &[
+    "start", "call", "for", "if", "runas", "forfiles", "wsl", "rundll32", "mshta",
+];
+
+/// The wrappers that can also run one script file and nothing else, which is
+/// what `python3 script.py` does and is as grantable.
+const POWERSHELL: &[&str] = &["powershell", "pwsh"];
+
 /// Proxies that run their argument line as the command, unchanged.
 ///
 /// Unlike a wrapper, the program after one of these is the program the user
@@ -99,12 +131,17 @@ const FIND_RUNS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
 impl Programs {
     /// Takes `command` apart and names what it runs.
     pub fn of(command: &str) -> Self {
+        Self::read(command, Dialect::HOST)
+    }
+
+    fn read(command: &str, dialect: Dialect) -> Self {
         let chars: Vec<char> = command.chars().collect();
         let mut segments: Vec<Vec<String>> = Vec::new();
         let mut words: Vec<String> = Vec::new();
         let mut word = String::new();
         let mut in_word = false;
-        let mut beyond: Option<&'static str> = None;
+        let mut beyond: Option<&'static str> =
+            (dialect == Dialect::Cmd && expands_a_variable(&chars)).then_some(EXPANDS);
         let (mut single, mut double) = (false, false);
 
         fn end_word(words: &mut Vec<String>, word: &mut String, in_word: &mut bool) {
@@ -141,7 +178,15 @@ impl Programs {
             if double {
                 match c {
                     '"' => double = false,
-                    '\\' if matches!(next, Some('"' | '\\' | '$' | '`')) => {
+                    // `cmd.exe` has no escape inside quotes, and a line end
+                    // ends the quote.
+                    '\n' | '\r' if dialect == Dialect::Cmd => {
+                        double = false;
+                        end_segment(&mut segments, &mut words, &mut word, &mut in_word);
+                    }
+                    '\\' if dialect == Dialect::Posix
+                        && matches!(next, Some('"' | '\\' | '$' | '`')) =>
+                    {
                         word.push(next.unwrap_or_default());
                         i += 1;
                     }
@@ -161,7 +206,7 @@ impl Programs {
                 continue;
             }
             match c {
-                '\'' => {
+                '\'' if dialect == Dialect::Posix => {
                     single = true;
                     in_word = true;
                 }
@@ -169,7 +214,19 @@ impl Programs {
                     double = true;
                     in_word = true;
                 }
-                '\\' => {
+                // The same job as a POSIX backslash, and the same trick: `c^md`
+                // is `cmd`.
+                '^' if dialect == Dialect::Cmd => {
+                    match next {
+                        Some('\n') | None => {}
+                        Some(n) => {
+                            word.push(n);
+                            in_word = true;
+                        }
+                    }
+                    i += 1;
+                }
+                '\\' if dialect == Dialect::Posix => {
                     // A backslash-newline continues the line; anything else
                     // escaped is literal.
                     match next {
@@ -212,7 +269,7 @@ impl Programs {
                         i += 1;
                     }
                     end_word(&mut words, &mut word, &mut in_word);
-                    i = redirect_target(&chars, i, &mut beyond);
+                    i = redirect_target(&chars, i, dialect, &mut beyond);
                     continue;
                 }
                 '>' => {
@@ -240,7 +297,7 @@ impl Programs {
                         }
                         i += 1;
                     }
-                    i = redirect_target(&chars, i, &mut beyond);
+                    i = redirect_target(&chars, i, dialect, &mut beyond);
                     continue;
                 }
                 '|' => {
@@ -277,7 +334,7 @@ impl Programs {
 
         let mut names: Vec<String> = Vec::new();
         for segment in &segments {
-            match program_of(segment) {
+            match program_of(segment, dialect) {
                 Ok(Some(name)) => {
                     if !names.iter().any(|n| n == &name) {
                         names.push(name);
@@ -298,7 +355,12 @@ impl Programs {
 
 /// Steps over the word after a redirection. Writing into the bit bucket
 /// reaches nothing; writing anywhere else is a file write.
-fn redirect_target(chars: &[char], mut i: usize, beyond: &mut Option<&'static str>) -> usize {
+fn redirect_target(
+    chars: &[char],
+    mut i: usize,
+    dialect: Dialect,
+    beyond: &mut Option<&'static str>,
+) -> usize {
     while matches!(chars.get(i), Some(c) if *c == ' ' || *c == '\t') {
         i += 1;
     }
@@ -307,28 +369,98 @@ fn redirect_target(chars: &[char], mut i: usize, beyond: &mut Option<&'static st
         i += 1;
     }
     let target: String = chars[start..i].iter().collect();
-    if target != "/dev/null" {
+    // Each shell's bit bucket is an ordinary file name to the other.
+    let discards = match dialect {
+        Dialect::Posix => target == "/dev/null",
+        Dialect::Cmd => target.eq_ignore_ascii_case("nul"),
+    };
+    if !discards {
         beyond.get_or_insert(REDIRECTS);
     }
     i
 }
 
+/// Whether a line holds `%NAME%`. Conservative on purpose: `cmd.exe` expands it
+/// inside quotes too and its value can hold `&`, and `%H %s` in a `git log`
+/// format reads the same as a variable with a space in its name.
+fn expands_a_variable(chars: &[char]) -> bool {
+    chars.split(|c| matches!(c, '\n' | '\r')).any(|line| {
+        line.split(|c| *c == '%')
+            .skip(1)
+            .take(line.iter().filter(|c| **c == '%').count().saturating_sub(1))
+            .any(|between| !between.is_empty())
+    })
+}
+
+/// Whether PowerShell's arguments run one script file and nothing else.
+///
+/// Spelled out flag by flag, because everything else on this command line is
+/// a way to run code from the line: `-Command`, `-EncodedCommand`, and a bare
+/// argument, which `powershell` takes as a command and `pwsh` as a file.
+fn runs_one_file(arguments: &[String]) -> bool {
+    let mut arguments = arguments.iter();
+    while let Some(flag) = arguments.next() {
+        match flag.to_ascii_lowercase().as_str() {
+            "-noprofile" | "-nop" | "-nologo" | "-noninteractive" | "-noni" => {}
+            "-executionpolicy" | "-ep" | "-ex" => {
+                arguments.next();
+            }
+            // `-File -` reads the script from stdin.
+            "-file" | "-f" => return arguments.next().is_some_and(|f| !f.starts_with('-')),
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `program` only hands the rest of its line to another program.
+fn is_wrapper(program: &str, dialect: Dialect) -> bool {
+    let wrapper = |name: &str| {
+        WRAPPERS.contains(&name) || (dialect == Dialect::Cmd && CMD_WRAPPERS.contains(&name))
+    };
+    wrapper(&bare_name(program))
+        || (dialect == Dialect::Cmd && {
+            // `cmd/c del x` needs no space, and `cmd.` is still `cmd`.
+            let before_switch = program.split('/').next().unwrap_or(program);
+            wrapper(bare_name(before_switch).trim_end_matches('.'))
+        })
+}
+
 /// The program one segment runs, or `None` for a segment that only assigns.
-fn program_of(words: &[String]) -> Result<Option<String>, &'static str> {
+fn program_of(words: &[String], dialect: Dialect) -> Result<Option<String>, &'static str> {
     let mut at = 0;
     loop {
-        // `VAR=value` prefixes and `!` are not the program.
-        while matches!(words.get(at), Some(w) if w.contains('=') || w == "!") {
-            at += 1;
+        // `VAR=value` prefixes and `!` are not the program. `cmd.exe` has
+        // neither: `del=x git status` runs `del`, because `=` separates words
+        // there, as `,` and `;` do, and a leading `@` only silences the echo.
+        if dialect == Dialect::Posix {
+            while matches!(words.get(at), Some(w) if w.contains('=') || w == "!") {
+                at += 1;
+            }
         }
-        let Some(program) = words.get(at) else {
+        let Some(word) = words.get(at) else {
             return Ok(None);
         };
+        let program = match dialect {
+            Dialect::Posix => word.as_str(),
+            Dialect::Cmd => word
+                .trim_start_matches(['@', ',', ';', '='])
+                .split([',', ';', '='])
+                .next()
+                .unwrap_or_default(),
+        };
+        if program.is_empty() {
+            at += 1;
+            continue;
+        }
         if program.starts_with('$') {
             return Err(VARIABLE);
         }
         let name = bare_name(program);
-        if WRAPPERS.contains(&name.as_str()) {
+        if POWERSHELL.contains(&name.as_str()) && runs_one_file(&words[at + 1..]) {
+            return Ok(Some(program.to_owned()));
+        }
+        if is_wrapper(program, dialect) {
             return Err(HANDS_OVER);
         }
         if let Some((_, own)) = PASS_THROUGH.iter().find(|(p, _)| *p == name) {
@@ -338,7 +470,7 @@ fn program_of(words: &[String]) -> Result<Option<String>, &'static str> {
                 at += 1;
             }
             if words.get(at).is_none() {
-                return Ok(Some(program.clone()));
+                return Ok(Some(program.to_owned()));
             }
             continue;
         }
@@ -361,7 +493,7 @@ fn program_of(words: &[String]) -> Result<Option<String>, &'static str> {
         if name == "find" && rest.iter().any(|w| FIND_RUNS.contains(&w.as_str())) {
             return Err(HANDS_OVER);
         }
-        return Ok(Some(program.clone()));
+        return Ok(Some(program.to_owned()));
     }
 }
 
@@ -384,13 +516,13 @@ mod tests {
     use super::*;
 
     fn names(command: &str) -> Vec<String> {
-        let programs = Programs::of(command);
+        let programs = Programs::read(command, Dialect::Posix);
         assert_eq!(programs.beyond, None, "{command:?}: {:?}", programs.beyond);
         programs.names
     }
 
     fn beyond(command: &str) -> &'static str {
-        Programs::of(command)
+        Programs::read(command, Dialect::Posix)
             .beyond
             .unwrap_or_else(|| panic!("{command:?} passed as coverable"))
     }
@@ -476,14 +608,17 @@ mod tests {
     #[test]
     fn a_substituted_command_is_still_named_for_a_hook() {
         // A grant may not use these names, but a hook on `rm` should fire.
-        let programs = Programs::of("git log $(rm -rf ~)");
+        let programs = Programs::read("git log $(rm -rf ~)", Dialect::Posix);
         assert_eq!(programs.names, ["git", "rm"]);
         assert_eq!(programs.beyond, Some(SUBSTITUTES));
     }
 
     #[test]
     fn the_first_reason_is_the_one_reported() {
-        assert_eq!(Programs::of("git show > f | sh").beyond, Some(REDIRECTS));
+        assert_eq!(
+            Programs::read("git show > f | sh", Dialect::Posix).beyond,
+            Some(REDIRECTS)
+        );
     }
 
     #[test]
@@ -511,5 +646,154 @@ mod tests {
         assert_eq!(bare_name("/usr/bin/env"), "env");
         assert_eq!(bare_name("C:\\Windows\\System32\\cmd.EXE"), "cmd");
         assert_eq!(bare_name("git"), "git");
+    }
+
+    fn cmd(command: &str) -> Programs {
+        Programs::read(command, Dialect::Cmd)
+    }
+
+    #[test]
+    fn powershell_running_one_file_is_an_ordinary_program() {
+        for dialect in [Dialect::Posix, Dialect::Cmd] {
+            for (line, program) in [
+                ("pwsh -File build.ps1", "pwsh"),
+                ("pwsh -f build.ps1 -Command x", "pwsh"),
+                (
+                    "powershell.exe -NoProfile -File build.ps1",
+                    "powershell.exe",
+                ),
+                (
+                    "powershell -nop -ExecutionPolicy Bypass -File build.ps1",
+                    "powershell",
+                ),
+            ] {
+                let programs = Programs::read(line, dialect);
+                assert_eq!(programs.beyond, None, "{line}");
+                assert_eq!(programs.names, [program], "{line}");
+            }
+            for line in [
+                r#"powershell -Command "Get-ChildItem src""#,
+                "pwsh -c Remove-Item x",
+                "powershell -EncodedCommand ZABpAHIA",
+                "powershell Remove-Item",
+                "pwsh build.ps1",
+                "pwsh",
+                "pwsh -File",
+                "pwsh -File -",
+                "pwsh -NoProfile -Command x -File build.ps1",
+            ] {
+                assert_eq!(
+                    Programs::read(line, dialect).beyond,
+                    Some(HANDS_OVER),
+                    "{line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmd_throws_output_away_into_nul() {
+        for line in [
+            "cargo test 2>nul",
+            "cargo build >NUL 2>&1",
+            "cargo test > nul",
+        ] {
+            let programs = cmd(line);
+            assert_eq!(programs.beyond, None, "{line}");
+            assert_eq!(programs.names, ["cargo"], "{line}");
+        }
+        // Each bit bucket is a file to the other shell.
+        assert_eq!(cmd("cargo test 2>/dev/null").beyond, Some(REDIRECTS));
+        assert_eq!(cmd("cargo test >nul.txt").beyond, Some(REDIRECTS));
+        assert_eq!(
+            Programs::read("cargo test 2>nul", Dialect::Posix).beyond,
+            Some(REDIRECTS)
+        );
+    }
+
+    #[test]
+    fn cmd_does_not_quote_with_a_single_quote() {
+        let programs = cmd("git log 'x & del y'");
+        assert_eq!(programs.names, ["git", "del"]);
+        assert_eq!(programs.beyond, None);
+        // A double quote is still a quote, and a backslash does not end it
+        // early or keep it open.
+        assert_eq!(cmd(r#"git commit -m "a & b""#).names, ["git"]);
+        assert_eq!(cmd(r#"git log "x\" & del y"#).names, ["git", "del"]);
+    }
+
+    #[test]
+    fn cmd_keeps_a_backslash_in_a_path() {
+        for (line, program) in [
+            (
+                r".\venv\Scripts\python.exe script.py",
+                r".\venv\Scripts\python.exe",
+            ),
+            (r"C:\Tools\foo.exe --version", r"C:\Tools\foo.exe"),
+            (
+                r#""C:\Program Files\x\y.exe" a"#,
+                r"C:\Program Files\x\y.exe",
+            ),
+        ] {
+            assert_eq!(cmd(line).names, [program], "{line}");
+        }
+        assert_eq!(cmd(r"cd /d C:\repo && cargo test").names, ["cd", "cargo"]);
+    }
+
+    #[test]
+    fn cmd_caret_escapes_and_hides_nothing() {
+        assert_eq!(cmd("echo a^&del y").names, ["echo"]);
+        assert_eq!(cmd("g^it status").names, ["git"]);
+        assert_eq!(cmd("c^md /c del y").beyond, Some(HANDS_OVER));
+    }
+
+    #[test]
+    fn cmd_expands_a_variable_before_it_reads_the_line() {
+        for line in ["git log %X%", r#"git log "%X%""#, "%COMSPEC% /c del y"] {
+            assert_eq!(cmd(line).beyond, Some(EXPANDS), "{line}");
+        }
+        for line in ["git log --format=%H", "echo 100%", "echo %%"] {
+            assert_eq!(cmd(line).beyond, None, "{line}");
+        }
+        // Only `cmd.exe` does this.
+        assert_eq!(Programs::read("git log %X%", Dialect::Posix).beyond, None);
+    }
+
+    #[test]
+    fn cmd_separates_words_where_a_posix_shell_does_not() {
+        // Read as an assignment, this would be keyed by `git` and run `del`.
+        assert_eq!(cmd("del=x git status").names, ["del"]);
+        assert_eq!(cmd(",del x").names, ["del"]);
+        assert_eq!(cmd("@del x").names, ["del"]);
+        for line in [
+            "@cmd /c del y",
+            "cmd,/c del y",
+            "cmd/c del y",
+            "cmd. /c del y",
+        ] {
+            assert_eq!(cmd(line).beyond, Some(HANDS_OVER), "{line}");
+        }
+    }
+
+    #[test]
+    fn cmd_built_ins_that_run_a_command_are_wrappers() {
+        for line in [
+            "for %i in (a) do del x",
+            "if exist x del y",
+            "call x.bat",
+            "start del",
+        ] {
+            assert_eq!(cmd(line).beyond, Some(HANDS_OVER), "{line}");
+        }
+        // Only there: `start` is an ordinary name to a POSIX shell.
+        assert_eq!(names("start server"), ["start"]);
+    }
+
+    #[test]
+    fn a_folder_named_for_a_wrapper_is_not_one() {
+        assert_eq!(
+            cmd(r".\env\Scripts\python.exe x.py").names,
+            [r".\env\Scripts\python.exe"]
+        );
     }
 }

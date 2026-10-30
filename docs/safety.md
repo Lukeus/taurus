@@ -125,12 +125,24 @@ already saved. A command that:
 - writes its output into a file (`>`, `>>`, `&>`)
 - feeds a program a script written into the line (`<<EOF`, `<<<`)
 - starts with a word that only hands the rest of the line to another program:
-  `sh -c`, `env`, `xargs`, `sudo`, `nohup`, and the like
+  `sh -c`, `env`, `xargs`, `sudo`, `nohup`, `powershell -Command`, and the like
 - runs code written into the line: `python3 -c`, `node -e`, `find -exec`
 - names its program through a variable
 
 Two things don't count: merging one of the program's own streams into another
-(`2>&1`), and throwing output away (`2>/dev/null`).
+(`2>&1`), and throwing output away (`2>/dev/null`, or `2>nul` on Windows).
+
+PowerShell is a wrapper unless all it does is run one script file:
+`powershell -NoProfile -File build.ps1` can be granted, the way
+`python3 build.py` can. A grant for it covers any script, so it trusts the
+scripts in the workspace about as far as a grant for `python3` does.
+
+On Windows, lines are read by `cmd.exe`'s rules, because that's what runs them.
+A single quote quotes nothing, so `git log 'x & del y'` runs `git` and `del`,
+and both need a grant. Anything that looks like `%NAME%` is asked about every
+time, because `cmd.exe` pastes the value in before it reads the line. That
+catches `%H %s` in a `git log` format too. `for`, `if`, `call` and `start` hand
+over the rest of the line.
 
 The prompt for one of these says which reason applies, under the command line,
 so a prompt with only "Allow once" on it doesn't look like a bug. The model is
