@@ -204,7 +204,9 @@ function CatalogCard({
               </span>
             )}
             <div className="spacer" />
-            <button className="primary" onClick={onPick}>
+            {/* Not primary: every card has one, and a page of filled buttons
+                has nothing on it that reads as the one to press. */}
+            <button onClick={onPick}>
               {already ? "Add another" : "Add"}
             </button>
           </div>

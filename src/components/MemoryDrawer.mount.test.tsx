@@ -92,7 +92,7 @@ describe("the memory drawer", () => {
     invoke.mockResolvedValueOnce([
       { id: "y", at: Math.floor(Date.now() / 1000), session: "", text: "staging has the migration" },
     ]);
-    await click(buttonSaying(host, "Add note"));
+    await click(buttonSaying(host, "Add memory"));
 
     expect(invoke).toHaveBeenLastCalledWith("add_note", { text: "staging has the migration" });
     expect(host.textContent).toContain("by you");
@@ -105,15 +105,15 @@ describe("the memory drawer", () => {
     const { host, click } = await mount({ onClose: () => {}, onOpenSession: () => {} });
 
     await click(buttonSaying(host, "Edit"));
-    invoke.mockRejectedValueOnce("That note isn't there any more.");
+    invoke.mockRejectedValueOnce("That memory isn't there any more.");
     await click(buttonSaying(host, "Save"));
     expect(invoke).toHaveBeenLastCalledWith("edit_note", { id: "a", text: "first" });
     expect(host.textContent).toContain("isn't there any more");
-    expect(host.querySelector('textarea[aria-label="Note"]')).not.toBeNull();
+    expect(host.querySelector('textarea[aria-label="Memory"]')).not.toBeNull();
 
     invoke.mockResolvedValueOnce([note("a", "first, changed")]);
     await click(buttonSaying(host, "Save"));
-    expect(host.querySelector('textarea[aria-label="Note"]')).toBeNull();
+    expect(host.querySelector('textarea[aria-label="Memory"]')).toBeNull();
     expect(host.textContent).toContain("first, changed");
   });
 

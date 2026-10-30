@@ -1667,11 +1667,10 @@ body.resizing-y * {
 .agents-node[data-state="blocked"] .agents-state {
   color: var(--accent);
 }
+/* Wraps rather than clipping: every fact on this line is one somebody might
+   be looking for, and an ellipsis took exactly those. */
 .agents-detail {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 11.5px;
   color: var(--text-dim);
 }
@@ -3804,8 +3803,13 @@ body.resizing-y * {
   font-size: 15px;
   color: var(--text);
 }
-.usage-total-row .micro {
+/* A sentence, so it is set as one. In the uppercase mono of the label above
+   it, "the middle one, not the average" read as a second label. */
+.usage-total-note {
   margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-faint);
 }
 
 .usage-heading {
@@ -4761,29 +4765,55 @@ button.link:where(:not(.excalidraw *)):hover {
   border-top: 1px dashed var(--rule);
 }
 
+/* Code doesn't wrap. A wrapped line started again at column 0, so its
+   continuation lost the indent and read as a statement of its own. The body
+   scrolls sideways instead, and each hunk is as wide as its widest line so
+   every row's tint reaches the same edge. */
+.diff-hunk {
+  width: max-content;
+  min-width: 100%;
+}
+/* Lines run on past the edge: see `DiffView`. */
+.diff-body[data-more] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
 .diff-line {
   display: grid;
-  grid-template-columns: 3.2em 3.2em 1.2em 1fr;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  grid-template-columns: 3.2em 3.2em 1.2em auto;
+  white-space: pre;
+  background: var(--line-tint, transparent);
 }
 .diff-line.added {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  --line-tint: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 .diff-line.removed {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  --line-tint: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
+/* The numbers and the +/- stay put while the code scrolls under them. Opaque,
+   or the code would show through, with the row's tint laid over the surface. */
+.diff-num,
+.diff-gutter {
+  position: sticky;
+  z-index: 1;
+  background: linear-gradient(var(--line-tint, transparent), var(--line-tint, transparent)),
+    var(--bg-sunken);
+}
 .diff-num {
+  left: 0;
   text-align: right;
   padding-right: 8px;
   color: var(--text-faint);
   user-select: none;
 }
+.diff-num + .diff-num {
+  left: 3.2em;
+}
 /* The gutter carries the meaning on its own: colour is the fast read, and the
    one that fails in a screenshot, on a projector, and for a reader who cannot
    tell red from green. */
 .diff-gutter {
+  left: 6.4em;
   text-align: center;
   user-select: none;
   color: var(--text-dim);
@@ -6485,6 +6515,11 @@ button.link:where(:not(.excalidraw *)):hover {
   margin: 0;
   max-width: var(--measure);
 }
+/* What the recipe is for, in its author's words: prose, not a label. */
+.recipe-about {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
 .recipe-blank {
   padding: 20px 0;
   max-width: var(--measure);
@@ -7108,6 +7143,10 @@ button.link:where(:not(.excalidraw *)):hover {
   min-width: 0;
   position: relative;
 }
+/* Lines run on past the edge: see `DocumentEditor`. */
+.doc-scroll[data-more] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
 
 /* Every property here decides where a character lands. Declared once across
    both layers so they cannot drift: a hair of letter-spacing or a different
@@ -7368,19 +7407,6 @@ button.link:where(:not(.excalidraw *)):hover {
   color: var(--text-faint);
   white-space: nowrap;
 }
-.canvas-ask-go {
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--r-sm);
-  padding: 4px 10px;
-}
-.canvas-ask-go:hover {
-  background: var(--bg-hover);
-  border-color: var(--accent);
-}
-
 /* One word where the line count sits, so the header does not change width as
    a save comes and goes. */
 .canvas-state {

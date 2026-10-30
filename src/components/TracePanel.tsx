@@ -472,7 +472,7 @@ function Total({
     <div className="usage-total-row">
       <dt>{label}</dt>
       <dd>{value}</dd>
-      <p className="micro">{note}</p>
+      <p className="usage-total-note">{note}</p>
     </div>
   );
 }

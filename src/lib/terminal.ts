@@ -73,15 +73,15 @@ export function acknowledger(ack: (id: string, bytes: number) => void) {
   };
 }
 
-/** Lines of output "Ask Taurus" quotes. The end, because that's where a
+/** Lines of output "Ask about this" quotes. The end, because that's where a
  *  failure is; the model can read the rest with `read_terminal`. */
 export const ASK_LINES = 60;
 
-/** Characters of output "Ask Taurus" quotes, for output with very long lines. */
+/** Characters of output "Ask about this" quotes, for output with very long lines. */
 export const ASK_CHARS = 4_000;
 
 /**
- * What "Ask Taurus about this" puts in the composer.
+ * What "Ask about this" puts in the composer.
  *
  * The command and the end of its output, quoted, so the message is complete on
  * its own: readable in the transcript a week later, and answerable without a

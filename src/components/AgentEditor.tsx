@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import type { AgentProposal } from "../lib/api";
 import {
+  clampIterations,
   DEFAULT_AGENT_ITERATIONS,
   DESCRIPTION_LIMIT,
   MAX_ITERATIONS_LIMIT,
@@ -64,8 +65,11 @@ export function AgentEditor({
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [prompt, setPrompt] = useState(initial?.prompt ?? "");
+  // Kept as typed and clamped on blur, as the drawer's own field for the same
+  // number does. Read straight into a number, a cleared box was 0 and a save
+  // that the host refused.
   const [maxIterations, setMaxIterations] = useState(
-    initial?.max_iterations ?? DEFAULT_AGENT_ITERATIONS,
+    String(initial?.max_iterations ?? DEFAULT_AGENT_ITERATIONS),
   );
   /** `null` is inherit-the-caller's-tools, which is not the same as none. */
   const [tools, setTools] = useState<string[] | null>(initial?.tools ?? null);
@@ -84,7 +88,7 @@ export function AgentEditor({
     setName(draft.name);
     setDescription(draft.description);
     setPrompt(draft.prompt);
-    setMaxIterations(draft.max_iterations);
+    setMaxIterations(String(draft.max_iterations));
     setTools(draft.tools);
   };
 
@@ -126,7 +130,13 @@ export function AgentEditor({
   const save = async () => {
     setSaving(true);
     setError(null);
-    const draft = { name: name.trim(), description, prompt, tools, max_iterations: maxIterations };
+    const draft = {
+      name: name.trim(),
+      description,
+      prompt,
+      tools,
+      max_iterations: clampIterations(maxIterations, DEFAULT_AGENT_ITERATIONS),
+    };
     const { target, plugin } = split(to);
     try {
       await (onSubmit
@@ -204,14 +214,15 @@ export function AgentEditor({
               </span>
             </label>
             <label className="field narrow">
-              <span className="micro">Max iterations</span>
+              <span className="micro">Max round trips</span>
               <input
                 className="font-mono"
-                type="number"
-                min={1}
-                max={MAX_ITERATIONS_LIMIT}
+                inputMode="numeric"
                 value={maxIterations}
-                onChange={(e) => setMaxIterations(Number(e.target.value))}
+                onChange={(e) => setMaxIterations(e.target.value)}
+                onBlur={() =>
+                  setMaxIterations(String(clampIterations(maxIterations, DEFAULT_AGENT_ITERATIONS)))
+                }
               />
               <span className="hint font-mono">1–{MAX_ITERATIONS_LIMIT}</span>
             </label>

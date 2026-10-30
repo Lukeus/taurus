@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import type { DiffLine, FileDiff } from "../lib/api";
 import { grammarFor, mark, paint } from "../lib/ink";
@@ -28,6 +28,27 @@ import { pairs, refine } from "../lib/intraline";
  */
 export function DiffView({ diff }: { diff: FileDiff }) {
   const empty = diff.added === 0 && diff.removed === 0;
+  const body = useRef<HTMLDivElement>(null);
+
+  // Code scrolls sideways rather than wrapping, so the right edge fades while
+  // any line runs past it: with the scrollbar hidden until somebody scrolls, a
+  // line cut at the edge otherwise reads as the whole of it. An attribute
+  // rather than state, so scrolling repaints nothing. The same cue as the
+  // canvas's source view.
+  useEffect(() => {
+    const el = body.current;
+    if (!el) return;
+    const mark = () =>
+      el.toggleAttribute("data-more", el.scrollWidth - el.scrollLeft - el.clientWidth > 1);
+    mark();
+    el.addEventListener("scroll", mark, { passive: true });
+    const watch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(mark);
+    watch?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", mark);
+      watch?.disconnect();
+    };
+  }, [diff]);
 
   return (
     <div className="diff">
@@ -47,7 +68,7 @@ export function DiffView({ diff }: { diff: FileDiff }) {
       {empty ? (
         <p className="diff-note">This leaves the file exactly as it is.</p>
       ) : (
-        <div className="diff-body" role="table" aria-label={`Changes to ${diff.path}`}>
+        <div className="diff-body" ref={body} role="table" aria-label={`Changes to ${diff.path}`}>
           {diff.hunks.map((hunk, h) => (
             <Hunk key={h} lines={hunk.lines} grammar={grammarFor(diff.path)} />
           ))}

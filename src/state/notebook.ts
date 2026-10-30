@@ -688,9 +688,13 @@ export function useNotebook({
 
   const onScreen = useMemo(
     () =>
-      page && page.kind === "note"
-        ? { scope: page.scope, name: page.name, unsaved: typed !== page.text }
-        : null,
+      page === null
+        ? null
+        : page.kind === "note"
+          ? { scope: page.scope, name: page.name, unsaved: typed !== page.text }
+          : // Saved as it is drawn, so never unsaved in the sense that matters
+            // here: the words on it are what read_note gives back.
+            { scope: page.scope, name: page.name, unsaved: false, sketch: true },
     [page, typed],
   );
 

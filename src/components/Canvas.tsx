@@ -257,8 +257,10 @@ export function Canvas({
               ? `Line ${selection.from}`
               : `Lines ${selection.from}–${selection.to}`}
           </span>
+          {/* The same pill, label and draft-in-the-box as every other
+              pane's "Ask about this". */}
           <button
-            className="canvas-ask-go"
+            className="pill"
             onClick={() => onAsk(draftFor(name, selection))}
           >
             Ask about this

@@ -408,7 +408,7 @@ describe("the synthesis toggles", () => {
 
 /** The steps-per-message field, once the Behavior tab is open. */
 const steps = (host: HTMLElement): HTMLInputElement => {
-  const input = host.querySelector('input[aria-label="Steps per message"]');
+  const input = host.querySelector('input[aria-label="Round trips per message"]');
   if (!input) throw new Error(`no steps field in: ${host.innerHTML}`);
   return input as HTMLInputElement;
 };
@@ -517,7 +517,7 @@ describe("a write that does not take", () => {
     );
     const host = await mount();
     click(host, "Behavior");
-    const field = host.querySelector<HTMLInputElement>('[aria-label="Steps per message"]')!;
+    const field = host.querySelector<HTMLInputElement>('[aria-label="Round trips per message"]')!;
     const before = field.value;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
@@ -530,7 +530,7 @@ describe("a write that does not take", () => {
       field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
 
-    expect(host.textContent).toContain("Steps per message stayed at");
+    expect(host.textContent).toContain("Round trips per message stayed at");
     expect(host.textContent).toContain("settings.json is read-only");
     expect(field.value).toBe(before);
   });
@@ -608,7 +608,7 @@ describe("a write that does not take", () => {
     );
     expect(notes).toHaveLength(1);
     // Right after the field it's about.
-    expect(notes[0].previousElementSibling?.textContent).toContain("Steps per message");
+    expect(notes[0].previousElementSibling?.textContent).toContain("Round trips per message");
   });
 
   it("says the stored keys could not be read, rather than asking for a saved provider to be saved", async () => {
@@ -879,7 +879,7 @@ describe("closing with providers unsaved", () => {
 
     expect(onClose).not.toHaveBeenCalled();
     expect(host.textContent).toContain("Your provider changes aren't saved yet.");
-    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Models");
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toMatch(/^Models/);
   });
 
   it("stays open to keep editing, and closes on Discard", async () => {

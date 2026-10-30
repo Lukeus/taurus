@@ -641,10 +641,10 @@ describe("a sketch", () => {
       name: "Flow",
     });
     await vi.waitFor(() => expect(host.querySelector(".stub-sketch")).not.toBeNull());
-    // Nothing in a sketch is Markdown, and nothing in it is something the model
-    // could read — so neither control is offered. The line that embeds it is.
+    // Nothing in a sketch is Markdown, so there's no Write. The model reads the
+    // words on it, so it can be asked about like a note.
     expect(saying(host, "Write")).toBeUndefined();
-    expect(saying(host, "Ask about this")).toBeUndefined();
+    expect(saying(host, "Ask about this")).toBeDefined();
     expect(host.querySelector(".notes-head")?.textContent).toContain("Copy embed");
     expect(host.querySelector(".notes-where")?.textContent).toBe(".taurus/notes/Flow.excalidraw");
   });

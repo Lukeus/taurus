@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type { Note } from "../lib/api";
-import { plural, when } from "../lib/format";
+import { when } from "../lib/format";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
 
@@ -98,7 +98,7 @@ export function MemoryDrawer({
           <span className="hint">A sentence or two, up to 2 KB.</span>
           <div className="spacer" />
           <button disabled={saving || !draft.trim()} onClick={add}>
-            Add note
+            Add memory
           </button>
         </div>
       </section>
@@ -124,7 +124,7 @@ export function MemoryDrawer({
                   {changing ? (
                     <textarea
                       rows={3}
-                      aria-label="Note"
+                      aria-label="Memory"
                       value={changing.text}
                       autoFocus
                       onChange={(e) => setEditing({ id: note.id, text: e.target.value })}
@@ -184,7 +184,7 @@ export function MemoryDrawer({
       )}
 
       <p className="drawer-foot">
-        {plural(notes?.length ?? 0, "note")} · also `taurus notes list`
+        {notes?.length === 1 ? "1 memory" : `${notes?.length ?? 0} memories`} · also `taurus memory list`
       </p>
     </Drawer>
   );

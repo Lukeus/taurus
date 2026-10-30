@@ -105,6 +105,8 @@ export function DocumentEditor({
   const box = useRef<HTMLTextAreaElement>(null);
   const ghost = useRef<HTMLPreElement>(null);
   const rail = useRef<HTMLDivElement>(null);
+  /** The visible box, which fades its right edge while lines run past it. */
+  const port = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState(0);
   const [height, setHeight] = useState(0);
   const [line, setLine] = useState(0);
@@ -152,9 +154,26 @@ export function DocumentEditor({
       ghost.current.scrollLeft = area.scrollLeft;
     }
     if (rail.current) rail.current.scrollTop = area.scrollTop;
+    // A line that runs past the edge has more to it, and says so: the edge
+    // fades while there is anything further right. Without it a long line read
+    // as cut off, because the scrollbar that says otherwise is hidden until
+    // somebody scrolls. An attribute rather than state, so scrolling sideways
+    // repaints nothing.
+    const more = area.scrollWidth - area.scrollLeft - area.clientWidth > 1;
+    if (port.current) port.current.toggleAttribute("data-more", more);
   }, []);
 
   useLayoutEffect(view, [view, text]);
+
+  // And again when the panel changes size: dragging the split changes how
+  // many lines fit and whether any run past the edge, with no scroll to say so.
+  useEffect(() => {
+    const area = box.current;
+    if (!area || typeof ResizeObserver === "undefined") return;
+    const watch = new ResizeObserver(view);
+    watch.observe(area);
+    return () => watch.disconnect();
+  }, [view]);
 
   /*
    * The window of lines worth painting.
@@ -256,7 +275,7 @@ export function DocumentEditor({
         <div style={{ height: (Math.max(0, total - window_.to) + 1) * row }} />
       </div>
 
-      <div className="doc-scroll">
+      <div className="doc-scroll" ref={port}>
         {/*
           * What somebody else just changed, tinted for a moment.
           *

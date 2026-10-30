@@ -141,8 +141,8 @@ export function AgentsDrawer({
           ceiling and wonders why the turn that spawned it still stops. */}
       <p className="drawer-intro hint">
         Each agent's limit is its own. The conversation that delegates gets{" "}
-        {status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS} steps of
-        its own — Settings › Behavior.
+        {status?.settings.max_iterations ?? DEFAULT_MAX_ITERATIONS} round
+        trips of its own: Settings › Behavior › Round trips per message.
       </p>
 
       {roster.error && <Problem>{roster.error}</Problem>}
@@ -298,7 +298,7 @@ function AgentCard({
             and retuning it means writing a copy, which Edit already does. */}
         {agent.plugin && agent.managed ? (
           <span className="card-files">
-            up to {agent.max_iterations} rounds · from plugin {agent.plugin}
+            up to {agent.max_iterations} round trips · from plugin {agent.plugin}
           </span>
         ) : (
           <IterationField agent={agent} onChanged={onChanged} />
@@ -395,11 +395,11 @@ function IterationField({
   return (
     <div className="agent-iterations">
       <label>
-        <span className="micro">Max iterations</span>
+        <span className="micro">Max round trips</span>
         <input
           className="font-mono"
           inputMode="numeric"
-          aria-label={`Max iterations for ${agent.name}`}
+          aria-label={`Max round trips for ${agent.name}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}

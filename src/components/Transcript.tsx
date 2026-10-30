@@ -1208,7 +1208,7 @@ function DelegateLive({ id }: { id: string }) {
     state === "queued"
       ? "waiting for a free slot"
       : run.round > 0
-        ? `round ${run.round}${run.maxRounds ? ` of ${run.maxRounds}` : ""}`
+        ? `round trip ${run.round}${run.maxRounds ? ` of ${run.maxRounds}` : ""}`
         : "starting",
     run.startedAt ? duration(now - run.startedAt) : null,
     run.retrying ? "retrying" : null,

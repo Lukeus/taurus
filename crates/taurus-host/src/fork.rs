@@ -816,6 +816,24 @@ mod tests {
         }
     }
 
+    /// Two rows in the rail with one title said nothing about which was
+    /// which. A fork shares its parent's until it asks something of its own.
+    #[tokio::test]
+    async fn a_fork_is_titled_by_its_own_first_question() {
+        let world = World::new();
+        let talk = three_turns(&world).await;
+        let forked = fork(&world.store, &world.ws, &talk.session.id, 2, false).unwrap();
+        let id = forked.id.unwrap();
+        assert_eq!(sessions::meta(&id).unwrap().title, "make a");
+
+        let mut branch = Talk::resume(&id);
+        branch
+            .turn(&world, "f1", "try b instead", &[("b.txt", Some("b"))])
+            .await;
+        assert_eq!(sessions::meta(&id).unwrap().title, "try b instead");
+        assert_eq!(sessions::meta(&talk.session.id).unwrap().title, "make a");
+    }
+
     #[tokio::test]
     async fn a_fork_at_a_turn_that_changed_nothing_puts_back_the_files_from_after_it() {
         let world = World::new();

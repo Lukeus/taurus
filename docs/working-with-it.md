@@ -832,7 +832,7 @@ an explanation, not a conversation that just stops:
   It's a ceiling, not a budget shown to the model, because a limit the model
   can see is one it can argue with.
 
-  Set it in **Settings → Behavior**, or as `max_iterations` in
+  Set it in **Settings → Behavior → Round trips per message**, or as `max_iterations` in
   `settings.json`, between 1 and 200. Raise it for long refactors that need
   more rounds. Lower it to catch a model going in circles sooner. It's read
   every turn, so a change applies to the next message, not the next launch.
@@ -1857,8 +1857,8 @@ degrade.
 **Ask about this** puts a sentence naming the note in the composer without
 sending it, like every button in the app that offers a draft. While the pane
 is open, your message also carries which note is on screen, so "this" means
-that one. Sketches get no such button: there's nothing in one the model can
-read on its own.
+that one. A sketch has the same button. The model can't see the drawing, so
+`read_note` gives it the text written on it, and it's told that's all it has.
 
 The model reads a note with `read_note`, by notebook and name, not path.
 That isn't a convenience. A global note is outside the workspace, where
@@ -2250,7 +2250,7 @@ so the next message from here already carries it.
 **A query that fails offers itself to Taurus.** The engine's refusals are good
 and long (`No field named s.material. Did you mean 's."Material"'? Column
 names are case sensitive.`), and handing them over beats reading them. **Ask
-Taurus** fills the composer with the query and the message. It quotes the
+about this** fills the composer with the query and the message. It quotes the
 query that *failed*, not what's in the box now, because by the time anybody
 clicks it they've usually started editing.
 
@@ -2258,8 +2258,8 @@ clicks it they've usually started editing.
 the result, and only there. A step is a query someone decided to keep, and
 that decision happens when the right rows come back: not before, while the
 query doesn't run, and not from a transcript a week later. A failed recipe
-run gets **Fix this**, naming the recipe's path so the model can open the
-file it wrote.
+run gets **Ask about this** too, naming the recipe's path so the model can
+open the file it wrote.
 
 None of the three sends anything. Each fills the box and leaves the cursor at
 the end, because each is the first half of a question. *Why does this fail* is
