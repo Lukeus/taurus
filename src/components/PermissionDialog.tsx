@@ -102,15 +102,19 @@ export function PermissionDialog({
           </p>
         )}
 
-        <pre className="dialog-detail">
-          {request.effect === "execute" && <span className="prompt">❯ </span>}
-          {request.preview}
-        </pre>
-
         {/* Present only for the two tools that can work out a before and an
-            after. A command line and a URL have none, and the line above is
-            already the whole of what is being approved for those. */}
-        {request.diff && <DiffView diff={request.diff} />}
+            after. A command line and a URL have none, and the preview line is
+            the whole of what is being approved for those. With a diff, its
+            head already names the file and what happens to it, so the
+            preview would only say the path a second time. */}
+        {request.diff ? (
+          <DiffView diff={request.diff} />
+        ) : (
+          <pre className="dialog-detail">
+            {request.effect === "execute" && <span className="prompt">❯ </span>}
+            {request.preview}
+          </pre>
+        )}
 
         {/* The scope sentence describes the standing grant, so it goes away
             with it: in an untrusted workspace there is nowhere to keep one, and

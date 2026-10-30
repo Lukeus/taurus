@@ -195,9 +195,11 @@ export function SkillsDrawer({
               <span className="card-sub">{skill.when_to_use}</span>
               {/* The skill's own claim about what it needs to run. Taurus
                   cannot check it, and says so by placing it here rather than
-                  beside `degraded`, which is a fact Taurus established. */}
+                  beside `degraded`, which is a fact Taurus established.
+                  Labeled, not prefixed with a verb: it's free text, and most
+                  skills already start it with "Requires". */}
               {skill.compatibility && (
-                <span className="card-files">needs {skill.compatibility}</span>
+                <span className="card-files">Compatibility: {skill.compatibility}</span>
               )}
               {/* Wrong but survivable — a name in the wrong case, a colon
                   the YAML never quoted. The skill works, so it belongs on

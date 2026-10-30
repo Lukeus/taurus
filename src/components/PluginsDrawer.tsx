@@ -84,31 +84,11 @@ export function PluginsDrawer({
         written.
       </p>
 
-      <AddPlugin
-        disabled={!idle}
-        why={why}
-        adding={working === "add"}
-        onAdd={(from, project, gitRef) =>
-          change("add", () => api.addPlugin(from, project, gitRef))
-        }
-      />
-
-      <NewPlugin
-        disabled={!idle}
-        why={why}
-        making={working === "new"}
-        onMake={(name, description, project) =>
-          change("new", () => api.newPlugin(name, description, project))
-        }
-      />
-
-      {failed && <Problem>{failed}</Problem>}
-
       {plugins === null ? (
         !failed && <p className="drawer-loading">Reading…</p>
       ) : plugins.length === 0 ? (
         <p className="drawer-empty">
-          No plugins installed. Add one from a folder or a git URL above; it
+          No plugins installed. Add one from a folder or a git URL below; it
           goes in <code>~/.taurus/plugins/</code>, or this project's{" "}
           <code>.taurus/plugins/</code>.
         </p>
@@ -202,6 +182,29 @@ export function PluginsDrawer({
           })}
         </ul>
       )}
+
+      {/* Under the list, not above it: what's installed is what you open
+          this drawer to see, and two forms on top pushed it below the fold. */}
+      <AddPlugin
+        disabled={!idle}
+        why={why}
+        adding={working === "add"}
+        onAdd={(from, project, gitRef) =>
+          change("add", () => api.addPlugin(from, project, gitRef))
+        }
+      />
+
+      <NewPlugin
+        disabled={!idle}
+        why={why}
+        making={working === "new"}
+        onMake={(name, description, project) =>
+          change("new", () => api.newPlugin(name, description, project))
+        }
+      />
+
+      {/* Under the forms, beside the button whose change it reports. */}
+      {failed && <Problem>{failed}</Problem>}
     </Drawer>
   );
 }

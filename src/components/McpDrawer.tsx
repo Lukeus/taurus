@@ -373,6 +373,9 @@ function ServerCard({
             </span>
           )}
           {server.disabled && <span className="tag warn">off</span>}
+          {/* The other states have a line of their own below; without this,
+              green was the only thing saying a server is up. */}
+          {state.tone === "ok" && <span className="tag ok">connected</span>}
           {/* Only where a browser flow is possible at all. A stdio server takes
               its credentials from the environment — the MCP authorization
               specification says so explicitly — so a sign-in state there would
