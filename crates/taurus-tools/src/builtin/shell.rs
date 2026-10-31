@@ -24,6 +24,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use super::pty::{strip_ansi, EscapeCarry};
 use crate::budget::OutputBudget;
 use crate::capture::{Capture, Captured, Utf8Carry};
 use crate::overflow::{self, SpillTo};
@@ -646,6 +647,7 @@ where
             };
             let mut chunk = vec![0u8; READ_CHUNK];
             let mut carry = Utf8Carry::default();
+            let mut unfinished = EscapeCarry::default();
             loop {
                 let n = match pipe.read(&mut chunk).await {
                     Ok(0) | Err(_) => break,
@@ -660,7 +662,7 @@ where
                 }
                 // Never `send`, which would wait. A full channel means the UI
                 // is behind; the model's copy is already safe in the capture.
-                let _ = tx.try_send(carry.text(&chunk[..n]));
+                let _ = tx.try_send(unfinished.strip(&carry.text(&chunk[..n])));
             }
         }
     });
@@ -798,8 +800,12 @@ async fn shown(captured: Captured, stream: &'static str, ctx: &ToolContext) -> S
 
 /// What the model reads of a captured stream: [`fit`] for one held whole, and
 /// its two ends for one that was too long to be — see [`from_ends`].
+///
+/// Without its escape sequences, which being piped does not rule out: plenty of
+/// programs color regardless of what they are writing to. Pester and anything
+/// else under PowerShell does.
 fn for_the_model(captured: Captured, stream: &str, ctx: &ToolContext) -> String {
-    match captured {
+    match captured.map_text(strip_ansi) {
         Captured::Whole(bytes) => fit(&String::from_utf8_lossy(&bytes), stream, ctx),
         Captured::Ends {
             head,
@@ -1124,6 +1130,45 @@ mod tests {
                 .unwrap()
                 .push((std::time::Instant::now(), label));
         }
+    }
+
+    #[tokio::test]
+    async fn a_piped_command_that_colors_anyway_arrives_without_the_escapes() {
+        if cfg!(windows) {
+            return;
+        }
+        let (ctx, _dir) = test_ctx();
+        let seen = Arc::new(Recorder::default());
+        let ctx = ctx.with_progress(seen.clone());
+        let out = RunCommand
+            .execute(
+                serde_json::json!({
+                    "command": r"printf '\033[32m[+]\033[0m passed\n'; printf '\033[91mno\033[0m\n' >&2"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let out = out.to_text();
+        assert!(out.contains("[+] passed") && out.contains("no"), "{out:?}");
+        assert!(!out.contains('\u{1b}'), "the model's copy: {out:?}");
+        // The view is fed from its own task, which can outlast the command.
+        let shown = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let shown: String = {
+                    let lines = seen.lines.lock().unwrap();
+                    lines.iter().map(|(_, text)| text.as_str()).collect()
+                };
+                if shown.contains("passed") && shown.contains("no") {
+                    return shown;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the view gets both streams");
+        assert!(shown.contains("[+] passed"), "{shown:?}");
+        assert!(!shown.contains('\u{1b}'), "the view: {shown:?}");
     }
 
     /// Prints, waits, then prints again — so "did the first line arrive before
