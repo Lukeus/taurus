@@ -94,8 +94,9 @@ impl FileDiff {
 /// Diffs a proposed replacement against what is on disk.
 ///
 /// Returns `None` when no useful diff exists: the file is there but is not
-/// UTF-8 text, so rendering it would be noise rather than evidence. A file that
-/// is simply absent is not a failure — it is a creation, and says so.
+/// UTF-8 text, or could not be read, so rendering it would be noise rather than
+/// evidence. A file that is simply absent is not a failure — it is a creation,
+/// and says so.
 pub fn against_disk(workspace: &Path, path: &Path, updated: &str) -> Option<FileDiff> {
     against_read(workspace, path, std::fs::read(path), updated)
 }
@@ -122,7 +123,10 @@ pub fn against_read(
             // non-answer the byte count already gave.
             Err(_) => return None,
         },
-        Err(_) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // There, and unreadable. Calling that a creation would tell whoever is
+        // approving this that nothing gets replaced.
+        Err(_) => return None,
     };
 
     let created = original.is_none();
@@ -346,5 +350,15 @@ mod tests {
         assert_eq!(diff.hunks.len(), 2);
         let shown: usize = diff.hunks.iter().map(|h| h.lines.len()).sum();
         assert!(shown < 30, "{shown} lines for two one-line edits");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_called_a_creation() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let root = Path::new("/tmp");
+        assert!(against_read(root, &root.join("x"), Err(denied), "new").is_none());
+        let absent = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let diff = against_read(root, &root.join("x"), Err(absent), "new").unwrap();
+        assert!(diff.created);
     }
 }

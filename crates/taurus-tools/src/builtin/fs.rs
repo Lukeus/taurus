@@ -346,7 +346,32 @@ fn uses_crlf(path: &Path) -> bool {
     if file.take(CRLF_SNIFF_BYTES).read_to_end(&mut head).is_err() {
         return false;
     }
+    crlf_in(&head)
+}
+
+/// Whether `head`, the first bytes of a file, holds a CRLF.
+fn crlf_in(head: &[u8]) -> bool {
     head.windows(2).any(|pair| pair == b"\r\n")
+}
+
+/// A temporary file beside the one it will replace.
+///
+/// Asked for at the mode a plain create would use, which the umask then cuts
+/// down. `NamedTempFile` otherwise makes it 0600, and the rename keeps that, so
+/// every new file a tool wrote was unreadable to anyone else: a web server, a
+/// container, a colleague on a shared checkout.
+fn temp_beside(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o666))
+            .tempfile_in(parent)
+    }
+    #[cfg(not(unix))]
+    {
+        tempfile::NamedTempFile::new_in(parent)
+    }
 }
 
 /// Replaces a file's contents without ever leaving it empty or half written.
@@ -379,7 +404,7 @@ fn replace_contents(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         Err(_) => None,
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let Ok(mut temp) = tempfile::NamedTempFile::new_in(parent) else {
+    let Ok(mut temp) = temp_beside(parent) else {
         return std::fs::write(path, bytes);
     };
     temp.write_all(bytes)?;
@@ -443,7 +468,17 @@ impl Tool for WriteFile {
         let resolved = crate::path_guard::resolve(workspace, path).ok()?;
         // Read without holding the runtime, for the reason `edit_file`'s is.
         let on_disk = tokio::fs::read(&resolved).await;
-        crate::diff::against_read(workspace, &resolved, on_disk, content)
+        // What `execute` will write, not what the call said. Against the raw
+        // text, a one-line change to a CRLF file is every line of it replaced.
+        let head = on_disk
+            .as_deref()
+            .map_or(&[][..], |b| &b[..b.len().min(CRLF_SNIFF_BYTES as usize)]);
+        let content: Cow<str> = if crlf_in(head) {
+            Cow::Owned(to_crlf(content))
+        } else {
+            Cow::Borrowed(content)
+        };
+        crate::diff::against_read(workspace, &resolved, on_disk, &content)
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
@@ -570,6 +605,8 @@ impl Tool for EditFile {
 enum EditProblem {
     NotFound(Miss),
     Ambiguous(usize),
+    /// An empty `old_string` matches between every character.
+    NothingToFind,
 }
 
 /// What the file can say about why the text was not there.
@@ -627,6 +664,10 @@ impl EditProblem {
             Self::Ambiguous(n) => format!(
                 "old_string appears {n} times in {display}. Include surrounding context to make \
                  it unique, or set replace_all."
+            ),
+            Self::NothingToFind => format!(
+                "old_string is empty, which matches everywhere in {display}. Say what to replace, \
+                 or use write_file to give a file its whole contents."
             ),
         })
     }
@@ -734,6 +775,9 @@ fn near_miss(original: &str, old: &str) -> Option<NearMiss> {
 /// The one place the replacement is worked out, so the diff the user approves
 /// and the bytes that get written cannot disagree.
 fn apply_edit(original: &str, input: &EditFileInput) -> Result<(String, usize), EditProblem> {
+    if input.old_string.is_empty() {
+        return Err(EditProblem::NothingToFind);
+    }
     // The model reasons in LF because that is how read_file presented the
     // file; translate its strings into the file's own convention.
     // Borrowed for an LF file, which is nearly every file: translating cost a
@@ -1725,5 +1769,124 @@ mod tests {
             }
             eprintln!("{label}  best of 5 {best:>10.1?}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_empty_old_string_changes_nothing() {
+        let (dir, ctx) = regression_context();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "abc").unwrap();
+        for replace_all in [true, false] {
+            let refused = EditFile
+                .execute(
+                    serde_json::json!({
+                        "path": "a.txt",
+                        "old_string": "",
+                        "new_string": "X",
+                        "replace_all": replace_all,
+                    }),
+                    &ctx,
+                )
+                .await
+                .unwrap_err();
+            assert!(refused.to_string().contains("empty"), "{refused}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_file_gets_an_ordinary_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, ctx) = regression_context();
+        WriteFile
+            .execute(serde_json::json!({"path": "new.txt", "content": "x"}), &ctx)
+            .await
+            .unwrap();
+        // A plain create beside it is what the umask makes of the same request.
+        let plain = dir.path().join("plain.txt");
+        std::fs::write(&plain, "x").unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.path().join("new.txt")), mode(&plain));
+    }
+
+    #[tokio::test]
+    async fn the_diff_of_a_write_to_a_crlf_file_is_the_change_it_makes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        let diff = WriteFile
+            .diff(
+                &serde_json::json!({"path": "a.txt", "content": "one\nTWO\nthree\n"}),
+                dir.path(),
+            )
+            .await
+            .unwrap();
+        assert_eq!((diff.added, diff.removed), (1, 1));
+    }
+
+    /// A workspace and a context nobody needs to answer for.
+    fn regression_context() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = crate::permission::PermissionEngine::new(
+            dir.path(),
+            dir.path(),
+            Box::new(crate::permission::AllowAll),
+        );
+        let ctx = ToolContext::new(
+            dir.path(),
+            std::sync::Arc::new(engine),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        (dir, ctx)
+    }
+
+    /// The whole way through dispatch, with the two real tools.
+    #[tokio::test]
+    async fn a_standing_grant_does_not_reach_what_decides_what_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".taurus")).unwrap();
+        std::fs::write(
+            dir.path().join(".taurus/permissions.json"),
+            r#"{"allowed": ["write_file", "edit_file"]}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".taurus/hooks.json"), "{}").unwrap();
+        let engine = crate::permission::PermissionEngine::new(
+            dir.path(),
+            dir.path().join("home"),
+            Box::new(crate::permission::DenyAll),
+        );
+        let ctx = ToolContext::new(
+            dir.path(),
+            std::sync::Arc::new(engine),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let registry = crate::registry::ToolRegistry::with_builtins();
+
+        let write = |path: &str| serde_json::json!({"path": path, "content": "x"});
+        for path in [".git/hooks/pre-commit", ".GIT/HOOKS/post-merge"] {
+            let refused = registry.execute("write_file", write(path), &ctx).await;
+            assert!(matches!(refused, Err(ToolError::Denied)), "{path}");
+        }
+        assert!(!dir.path().join(".git").exists());
+        let refused = registry
+            .execute(
+                "edit_file",
+                serde_json::json!({
+                    "path": ".taurus/hooks.json", "old_string": "{}", "new_string": "[]"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(matches!(refused, Err(ToolError::Denied)));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".taurus/hooks.json")).unwrap(),
+            "{}"
+        );
+
+        registry
+            .execute("write_file", write("src/main.rs"), &ctx)
+            .await
+            .expect("the grant still covers the project's own files");
     }
 }

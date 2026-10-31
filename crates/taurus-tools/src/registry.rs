@@ -160,6 +160,17 @@ impl ToolRegistry {
         // ones registered by skills and MCP servers.
         let input = crate::coerce::coerce(input, &schema);
 
+        // What the call touches is asked once and resolved once, for the
+        // permission check, both hook payloads and the checkpoint below. A path
+        // that will not resolve is left out of all of them: the tool is about to
+        // reject it with a better message, and there is nothing to snapshot
+        // either way.
+        let touched: Vec<std::path::PathBuf> = tool
+            .touches(&input)
+            .iter()
+            .filter_map(|candidate| ctx.resolve(candidate).ok())
+            .collect();
+
         // Read before the race below rather than inside it, where it would be a
         // temporary. Which conversation is asking, and whether anybody is there
         // to answer — see `Asking`.
@@ -172,7 +183,7 @@ impl ToolRegistry {
         tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
-            checked = ctx.permissions.check(tool.as_ref(), &input, &asking) => checked?,
+            checked = ctx.permissions.check_touching(tool.as_ref(), &input, &touched, &asking) => checked?,
         }
 
         // After the permission engine, never before it. A hook here can refuse
@@ -181,15 +192,6 @@ impl ToolRegistry {
         // ordering is the whole security argument for honoring a hook file at
         // all — see `taurus_hooks`.
         //
-        // What the call touches is asked once and resolved once, for both hook
-        // payloads and the checkpoint below. A path that will not resolve is
-        // left out of all three: the tool is about to reject it with a better
-        // message, and there is nothing to snapshot either way.
-        let touched: Vec<std::path::PathBuf> = tool
-            .touches(&input)
-            .iter()
-            .filter_map(|candidate| ctx.resolve(candidate).ok())
-            .collect();
         let pre = hook_payload(
             &tool,
             &input,

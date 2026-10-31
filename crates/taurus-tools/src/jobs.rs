@@ -59,11 +59,12 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use taurus_process::Tree;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
+use crate::capture::Utf8Carry;
 use crate::checkpoint::TurnRecorder;
 use crate::sweep::{Diffed, Sweep};
 
@@ -700,27 +701,33 @@ fn say(outcome: &Option<Outcome>, started: Instant) -> String {
     }
 }
 
+/// How much of a pipe is read at a time.
+const DRAIN_CHUNK: usize = 8 * 1024;
+
 /// Reads one of a child's pipes to end, into the job's buffer.
 ///
-/// Bytes rather than lines of text, for the reason [`crate::builtin::shell`]
-/// gives: a build log should not end at the first byte that is not UTF-8.
+/// In pieces rather than a line at a time, for the reason
+/// [`crate::builtin::shell`] gives: a line has no length a command must respect.
+/// Read to the next newline, `yes | tr -d '\n'` held all of it in memory where
+/// [`MAX_PENDING_BYTES`] couldn't reach, and a progress bar redrawing with `\r`
+/// showed nothing until it finished. Bytes, because a build log should not end
+/// at the first byte that is not UTF-8.
 fn drain<R>(pipe: Option<R>, job: Arc<Job>) -> tokio::task::JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let Some(pipe) = pipe else {
+        let Some(mut pipe) = pipe else {
             return;
         };
-        let mut reader = BufReader::new(pipe);
-        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; DRAIN_CHUNK];
+        let mut carry = Utf8Carry::default();
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
+            let n = match pipe.read(&mut chunk).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let text = String::from_utf8_lossy(&buf).into_owned();
+                Ok(n) => n,
+            };
+            let text = carry.text(&chunk[..n]);
             job.output.lock().unwrap().tail.push(&text);
         }
     })
@@ -1205,5 +1212,64 @@ mod tests {
         // A number that was never handed out is not called forgotten.
         let made_up = jobs.check(Some(9_999), Duration::ZERO).await.unwrap_err();
         assert!(!made_up.contains("forgotten"), "{made_up}");
+    }
+
+    fn bare_job() -> Arc<Job> {
+        Arc::new(Job {
+            id: 1,
+            command: "x".into(),
+            started: Instant::now(),
+            output: Mutex::new(Output::default()),
+            outcome: Mutex::new(None),
+            finished: Notify::new(),
+            stop: CancellationToken::new(),
+            sweep: Mutex::new(None),
+            diffed: Mutex::new(None),
+            claimed: Mutex::new(HashSet::new()),
+        })
+    }
+
+    /// A stream with no newlines still arrives, and stays inside the bound.
+    #[tokio::test]
+    async fn output_with_no_newline_is_read_as_it_arrives() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let job = bare_job();
+        let draining = drain(Some(reader), job.clone());
+
+        writer.write_all(b"50%\r").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !job.output.lock().unwrap().tail.text.contains("50%") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a progress line with no newline never reached the buffer");
+
+        let megabyte = vec![b'x'; 1024 * 1024];
+        for _ in 0..4 {
+            writer.write_all(&megabyte).await.unwrap();
+        }
+        drop(writer);
+        draining.await.unwrap();
+        let output = job.output.lock().unwrap();
+        assert!(output.tail.text.len() <= TRIM_AT);
+        assert_eq!(output.tail.written, 4 + 4 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn a_character_split_across_two_reads_stays_whole() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(16);
+        let job = bare_job();
+        let draining = drain(Some(reader), job.clone());
+        let bytes = "é".as_bytes();
+        writer.write_all(&bytes[..1]).await.unwrap();
+        writer.flush().await.unwrap();
+        tokio::task::yield_now().await;
+        writer.write_all(&bytes[1..]).await.unwrap();
+        drop(writer);
+        draining.await.unwrap();
+        assert_eq!(job.output.lock().unwrap().tail.text, "é");
     }
 }
