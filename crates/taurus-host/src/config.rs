@@ -1041,8 +1041,12 @@ fn default_providers() -> Vec<ProviderConfig> {
 
 /// Reads one layer's `providers.json`, distinguishing absent from unreadable.
 fn read_provider_layer(path: &Path) -> Result<Option<Vec<ProviderEntry>>, String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Ok(None);
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // Not absent. Read as absent, the global layer would be written over
+        // with the defaults.
+        Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
     };
     serde_json::from_str::<Vec<ProviderEntry>>(&text)
         .map(Some)
@@ -2159,9 +2163,14 @@ fn write_config(path: &Path, json: &str) {
 /// read-only while its files are writable is a strange enough arrangement to be
 /// worth losing, given what it buys.
 pub(crate) fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    replace_bytes(path, contents.as_bytes())
+}
+
+/// [`replace_file`], for contents that may not be text.
+pub(crate) fn replace_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(contents.as_bytes())?;
+    temp.write_all(contents)?;
     // Flushed before the rename: otherwise a crash just after it could leave
     // the real name pointing at content that never reached the disk.
     temp.as_file().sync_all()?;
@@ -3451,5 +3460,21 @@ mod tests {
             );
         }
         assert!(save_mcp_server(Scope::Global, None, "my-server_2", &server).is_ok());
+    }
+
+    #[test]
+    fn a_providers_file_that_cant_be_read_is_not_replaced_with_the_defaults() {
+        let _home = isolated_home();
+        let path = providers_file(Scope::Global, None).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [b'[', 0xFF, b']']).unwrap();
+
+        let (providers, problems) = load_providers(None);
+        assert_eq!(providers, default_providers());
+        assert!(
+            problems.iter().any(|p| p.contains("couldn't read")),
+            "{problems:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), [b'[', 0xFF, b']']);
     }
 }

@@ -50,3 +50,20 @@ export function isChord(e: KeyboardEvent, key: string): boolean {
   if (e.altKey) return false;
   return APPLE ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
+
+/**
+ * Whether this key belongs to an input method rather than to the app.
+ *
+ * Enter is how a Japanese or Chinese writer accepts a candidate, so a box that
+ * sends on Enter has to let that one through. Both checks are needed: WebKit,
+ * the macOS webview, can end the composition before the keydown that ended it,
+ * so `isComposing` is already false there and only `keyCode` 229 still says so.
+ */
+export function isComposing(
+  e:
+    | { isComposing: boolean; keyCode: number }
+    | { nativeEvent: { isComposing: boolean; keyCode: number } },
+): boolean {
+  const key = "nativeEvent" in e ? e.nativeEvent : e;
+  return key.isComposing || key.keyCode === 229;
+}

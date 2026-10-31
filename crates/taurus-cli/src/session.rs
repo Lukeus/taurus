@@ -198,6 +198,33 @@ pub async fn repl(
 
     let (mut session, mut log) = open_session(runtime, resume, &model).await?;
 
+    let ended = converse(
+        runtime,
+        &provider_id,
+        provider,
+        &model,
+        &mut session,
+        &mut log,
+    )
+    .await;
+
+    // A command started with `background: true` is a child of this process and
+    // nothing else. Leaving the shell would otherwise leave a dev server
+    // running with no way left to reach it, however the shell came to be left.
+    runtime.host.stop_background();
+
+    ended
+}
+
+/// The prompt, until somebody leaves.
+async fn converse(
+    runtime: &Runtime,
+    provider_id: &str,
+    provider: Arc<dyn taurus_provider::Provider>,
+    model: &str,
+    session: &mut Session,
+    log: &mut SessionLog,
+) -> Result<ExitCode, String> {
     loop {
         eprint!("› ");
         let _ = std::io::stderr().flush();
@@ -230,11 +257,11 @@ pub async fn repl(
 
         turn(
             runtime,
-            &provider_id,
+            provider_id,
             provider.clone(),
-            &model,
-            &mut session,
-            &mut log,
+            model,
+            session,
+            log,
             task,
             Format::Human,
             false,
@@ -246,11 +273,6 @@ pub async fn repl(
         handle_proposals(runtime).await;
         eprintln!();
     }
-
-    // A command started with `background: true` is a child of this process and
-    // nothing else. Leaving the shell would otherwise leave a dev server
-    // running with no way left to reach it.
-    runtime.host.stop_background();
 
     Ok(ExitCode::SUCCESS)
 }
@@ -285,7 +307,12 @@ async fn turn(
     } else {
         match runtime.host.expand_command(task).await {
             Some(Ok(invocation)) => invocation.prompt,
-            Some(Err(e)) => return Err(e.to_string()),
+            // A failed turn rather than an error, which would end a REPL over
+            // a typo. `run` still exits non-zero.
+            Some(Err(e)) => {
+                eprintln!("taurus: {e}");
+                return Ok(false);
+            }
             None => task.to_string(),
         }
     };
@@ -351,6 +378,11 @@ async fn turn(
 /// With a terminal, asks. Without one, reports and discards — writing a skill
 /// nobody reviewed would defeat the approval gate the whole design rests on.
 async fn handle_proposals(runtime: &Runtime) {
+    handle_skill_proposals(runtime).await;
+    handle_agent_proposals(runtime).await;
+}
+
+async fn handle_skill_proposals(runtime: &Runtime) {
     let proposals: Vec<SkillProposal> = {
         let mut queued = runtime.proposals.proposals.lock().await;
         std::mem::take(&mut *queued)
@@ -388,8 +420,6 @@ async fn handle_proposals(runtime: &Runtime) {
             Err(e) => eprintln!("  could not save skill: {e}"),
         }
     }
-
-    handle_agent_proposals(runtime).await;
 }
 
 /// The same review, for sub-agents the turn proposed.
@@ -548,4 +578,87 @@ fn install_interrupt_handler(cancel: CancellationToken) {
             cancel.cancel();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use taurus_core::testing::FakeProvider;
+
+    /// `TAURUS_HOME` is one setting for the whole test process, so one folder
+    /// for all of them, and nothing here reads or writes the real one.
+    fn home() {
+        static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let dir = HOME.get_or_init(|| tempfile::TempDir::new().unwrap());
+        std::env::set_var(taurus_host::config::HOME_ENV, dir.path());
+    }
+
+    fn runtime(workspace: &std::path::Path) -> Runtime {
+        home();
+        let policy = Policy::default();
+        let proposals = Arc::new(taurus_skills::proposal::CollectingSink::default());
+        let agent_proposals = Arc::new(taurus_agents::proposal::CollectingSink::default());
+        let host = Arc::new(taurus_host::Host::new(
+            workspace.to_path_buf(),
+            Arc::new(TerminalPrompts::new(policy)),
+            Arc::new(crate::ask::TerminalAsker::new()),
+            proposals.clone(),
+            agent_proposals.clone(),
+        ));
+        Runtime {
+            host,
+            proposals,
+            agent_proposals,
+            interactive: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proposed_agent_is_dealt_with_when_no_skill_was_proposed() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let runtime = runtime(workspace.path());
+        runtime
+            .agent_proposals
+            .proposals
+            .lock()
+            .await
+            .push(AgentProposal::new(
+                "code-reviewer",
+                "Reads a diff and reports what is wrong with it",
+                "Read the diff you are given and report what is wrong with it, most severe first.",
+            ));
+
+        handle_proposals(&runtime).await;
+
+        assert!(runtime.agent_proposals.proposals.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mistyped_command_fails_the_turn_and_not_the_session() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let runtime = runtime(workspace.path());
+        let mut session = Session::new("scripted");
+        let mut log = SessionLog::disabled();
+
+        let outcome = turn(
+            &runtime,
+            "fake",
+            FakeProvider::new(vec![]),
+            "scripted",
+            &mut session,
+            &mut log,
+            "/no-such-command do something",
+            Format::Human,
+            true,
+            false,
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(false));
+        assert!(
+            session.messages.is_empty(),
+            "nothing was asked of the model"
+        );
+    }
 }

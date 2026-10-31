@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use taurus_provider::{relocated_note, ChatRequest, ContentBlock, ToolDef};
+use taurus_provider::{relocated_note, replay_input, ChatRequest, ContentBlock, ToolDef};
 
 use crate::wire::{WireFunction, WireMessage, WireTool, WireToolCall, WireToolCallFunction};
 
@@ -46,6 +46,9 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
         let mut images = Vec::new();
         let mut tool_calls = Vec::new();
         let mut results = Vec::new();
+        // After every result rather than beside its own, so one call's picture
+        // never splits a round's answers.
+        let mut relocated_images = Vec::new();
 
         for block in &message.content {
             match block {
@@ -62,7 +65,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                         id: Some(id.clone()),
                         function: WireToolCallFunction {
                             name: name.clone(),
-                            arguments: input.clone(),
+                            arguments: replay_input(input).into_owned(),
                         },
                     });
                 }
@@ -73,8 +76,8 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                 } => {
                     let name = names_by_id.get(tool_use_id.as_str()).copied();
                     // A tool message here is text and an `images` array it does
-                    // not read, so a picture a tool handed back travels as the
-                    // user message straight after it.
+                    // not read, so a picture a tool handed back travels as a
+                    // user message after the round's results.
                     let (body, relocated) = content.split_relocating_images();
                     // No error flag on this message shape, so the marker has
                     // to be in the text.
@@ -91,7 +94,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                         tool_name: name.map(str::to_string),
                     });
                     if !relocated.is_empty() {
-                        results.push(WireMessage {
+                        relocated_images.push(WireMessage {
                             role: "user",
                             content: relocated_note(name, relocated.len()),
                             images: relocated
@@ -105,6 +108,8 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
                 }
             }
         }
+
+        results.append(&mut relocated_images);
 
         if !text.is_empty() || !images.is_empty() || !tool_calls.is_empty() {
             let msg = WireMessage {
@@ -129,6 +134,37 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<WireMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_never_lands_between_two_results() {
+        let output = taurus_provider::ToolOutput::image("image/png", "aGk=");
+        let request = ChatRequest::new(
+            "m",
+            vec![
+                taurus_provider::Message::new(
+                    taurus_provider::Role::Assistant,
+                    vec![
+                        ContentBlock::tool_use("a", "shot", serde_json::Value::Null),
+                        ContentBlock::tool_use("b", "read", serde_json::json!({})),
+                    ],
+                ),
+                taurus_provider::Message::new(
+                    taurus_provider::Role::User,
+                    vec![
+                        ContentBlock::tool_result("a", output),
+                        ContentBlock::tool_result("b", "text"),
+                    ],
+                ),
+            ],
+        );
+        let wire = messages_to_wire(&request);
+        let roles: Vec<&str> = wire.iter().map(|m| m.role).collect();
+        assert_eq!(roles, vec!["assistant", "tool", "tool", "user"]);
+        assert_eq!(
+            wire[0].tool_calls[0].function.arguments,
+            serde_json::json!({})
+        );
+    }
     use taurus_provider::{Message, Role};
 
     #[test]

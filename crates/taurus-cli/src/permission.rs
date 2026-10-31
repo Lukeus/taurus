@@ -31,6 +31,12 @@ impl Policy {
         if self.allow_all {
             return true;
         }
+        // The engine says no standing grant can cover this call, and a flag is
+        // a standing grant: `--allow write_file` doesn't reach `.git/hooks`,
+        // and `--allow-command python3` doesn't reach a script fed on stdin.
+        if request.beyond_grant.is_some() {
+            return false;
+        }
         if self.allow_tools.contains(&request.tool) {
             return true;
         }
@@ -52,6 +58,12 @@ impl Policy {
 
     /// The flags that would have allowed this call, for the refusal message.
     fn hint(&self, request: &PermissionRequest) -> String {
+        if let Some(reason) = &request.beyond_grant {
+            return format!(
+                "--dangerously-allow-all (--allow and --allow-command don't cover this, because \
+                 this one {reason})"
+            );
+        }
         if request.effect == Effect::Execute {
             if let Some(programs) = programs(request) {
                 if let Some(reason) = programs.beyond {
@@ -407,6 +419,75 @@ mod tests {
                 json!({"command": "anything"}),
             ))
             .await;
+        assert_eq!(decision, PermissionDecision::AllowOnce);
+    }
+
+    fn beyond(mut request: PermissionRequest, reason: &str) -> PermissionRequest {
+        request.beyond_grant = Some(reason.to_string());
+        request
+    }
+
+    #[tokio::test]
+    async fn allowing_a_tool_does_not_reach_a_file_that_decides_what_runs() {
+        let policy = Policy {
+            allow_tools: ["write_file".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let hooks = beyond(
+            request(
+                "write_file",
+                Effect::Write,
+                json!({"path": ".git/hooks/pre-commit"}),
+            ),
+            "writes a file that decides what runs on this machine without asking",
+        );
+
+        let hint = policy.hint(&hooks);
+        let decision = TerminalPrompt::non_interactive(policy).request(hooks).await;
+
+        assert_eq!(decision, PermissionDecision::Deny);
+        assert!(hint.starts_with("--dangerously-allow-all"), "{hint}");
+        assert!(hint.contains("decides what runs"), "{hint}");
+    }
+
+    #[tokio::test]
+    async fn allowing_a_command_does_not_reach_what_it_is_fed() {
+        let policy = Policy {
+            allow_commands: ["python3".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let fed = beyond(
+            request(
+                "run_command",
+                Effect::Execute,
+                json!({"command": "python3", "stdin": "print(1)"}),
+            ),
+            "feeds a program text from the call, which no program name stands for",
+        );
+
+        let hint = policy.hint(&fed);
+        let decision = TerminalPrompt::non_interactive(policy).request(fed).await;
+
+        assert_eq!(decision, PermissionDecision::Deny);
+        assert!(hint.contains("feeds a program text"), "{hint}");
+        assert!(!hint.contains("--allow-command python3"), "{hint}");
+    }
+
+    #[tokio::test]
+    async fn allow_all_still_permits_what_no_narrower_flag_can() {
+        let policy = Policy {
+            allow_all: true,
+            ..Default::default()
+        };
+        let hooks = beyond(
+            request(
+                "write_file",
+                Effect::Write,
+                json!({"path": ".git/hooks/pre-commit"}),
+            ),
+            "writes a file that decides what runs on this machine without asking",
+        );
+        let decision = TerminalPrompt::non_interactive(policy).request(hooks).await;
         assert_eq!(decision, PermissionDecision::AllowOnce);
     }
 

@@ -7,6 +7,7 @@
  * arrives, so the UI never has to correlate anything itself.
  */
 import { create } from "zustand";
+import { clip } from "../lib/format";
 
 import * as api from "../lib/api";
 import { reportFromText, takeBackgroundReports } from "../lib/delegate";
@@ -382,6 +383,12 @@ interface Store {
   /** Reopens a saved conversation and redraws it. */
   resume: (sessionId: string) => Promise<void>;
   /**
+   * `resume` for a click, which has nothing to catch with: a failure goes to the
+   * banner and the conversation on screen stays. `resume` itself still rejects,
+   * because opening a workspace falls through to a fresh conversation on it.
+   */
+  openConversation: (sessionId: string) => Promise<void>;
+  /**
    * Picks up the turn running in the conversation on screen, if one is.
    *
    * Called after every open, unconditionally: whether a turn is running is the
@@ -622,6 +629,15 @@ async function release(session: CreatedSession | null, replacement?: string) {
  * listeners, so every permission prompt would arrive duplicated.
  */
 let initialized = false;
+
+/**
+ * Which request to change conversation is the latest. Two clicks are two round
+ * trips, and the one that answers last isn't always the one asked last: a long
+ * transcript clicked first would land over the short one clicked after it.
+ */
+let openTicket = 0;
+/** What the latest of those asked for. */
+let wantedConversation: string | null = null;
 
 /**
  * The view currently drawing a conversation's turn.
@@ -915,6 +931,10 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   startSession: async (providerId, model) => {
+    // Asked for after whatever is still being opened, so that one is dropped.
+    openTicket += 1;
+    wantedConversation = null;
+    if (get().resuming) set({ resuming: false });
     const previous = get().session;
     const session = await api.createSession(providerId, model);
     speech.leave();
@@ -964,9 +984,18 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
+  openConversation: async (sessionId) => {
+    try {
+      await get().resume(sessionId);
+    } catch (e) {
+      set({ error: `Couldn't open that conversation: ${e}` });
+    }
+  },
+
   resume: async (sessionId) => {
-    const previous = get().session;
-    if (previous?.id !== sessionId) speech.leave();
+    const ticket = ++openTicket;
+    wantedConversation = sessionId;
+    if (get().session?.id !== sessionId) speech.leave();
     // Raised around the whole thing rather than only the round trip: the
     // transcript on screen is still the previous conversation's until the
     // `set` below replaces it, and that is the whole of what this marks.
@@ -983,9 +1012,21 @@ export const useStore = create<Store>((set, get) => ({
         forked_from: _forkedFrom,
         ...session
       } = await api.resumeSession(sessionId);
+      // A later click has overtaken this one. What it opened is closed unless
+      // that click wanted the same conversation, or it is already on screen.
+      const overtaken = async () => {
+        if (ticket === openTicket) return false;
+        if (wantedConversation !== session.id && get().session?.id !== session.id) {
+          await release(session);
+        }
+        return true;
+      };
+      if (await overtaken()) return;
       // As in `startSession`: a resume that fails must leave the conversation
-      // on screen exactly as it was.
-      await release(previous, session.id);
+      // on screen exactly as it was. Read now rather than when this was asked:
+      // whatever the window moved to meanwhile is what is being replaced.
+      await release(get().session, session.id);
+      if (await overtaken()) return;
       set({
         session,
         away: away ?? null,
@@ -1015,8 +1056,11 @@ export const useStore = create<Store>((set, get) => ({
       // is already on screen, and what this adds is the part still being
       // written.
       void get().attach(session.id);
+    } catch (e) {
+      // Nobody is waiting on an answer that was overtaken.
+      if (ticket === openTicket) throw e;
     } finally {
-      set({ resuming: false });
+      if (ticket === openTicket) set({ resuming: false });
     }
   },
 
@@ -2511,7 +2555,7 @@ function preview(input: unknown): string {
     return "";
   }
   return text.length > PREVIEW_MAX_CHARS
-    ? `${text.slice(0, PREVIEW_MAX_CHARS - 1)}…`
+    ? `${clip(text, PREVIEW_MAX_CHARS - 1)}…`
     : text;
 }
 

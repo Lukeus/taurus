@@ -108,7 +108,7 @@ impl GeminiProvider {
             id: id.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
-            client: http::Client::new(),
+            client: new_client(),
             capabilities: GeminiCapabilities::default(),
             models: Vec::new(),
             probed: Arc::new(RwLock::new(HashMap::new())),
@@ -352,7 +352,11 @@ impl Provider for GeminiProvider {
         let body = GenerateBody::from_request(&request);
         // The model is in the path, and the method is a suffix on it rather
         // than a separate route.
-        let url = self.url(&format!("/models/{}:streamGenerateContent", request.model));
+        let bare = request
+            .model
+            .strip_prefix("models/")
+            .unwrap_or(&request.model);
+        let url = self.url(&format!("/models/{bare}:streamGenerateContent"));
 
         let response = tokio::select! {
             biased;
@@ -400,6 +404,21 @@ impl Provider for GeminiProvider {
                     body: format!("{}: {}", error.status, error.message),
                     retry_after: None,
                 });
+            }
+
+            // A 200 with no answer in it and no finish reason. Read as a stream
+            // that closed early it would be retried, and refused the same way.
+            if chunk.candidates.is_empty() {
+                if let Some(reason) = chunk.prompt_feedback.and_then(|f| {
+                    f.block_reason_message
+                        .filter(|m| !m.is_empty())
+                        .or(f.block_reason)
+                }) {
+                    return Err(ProviderError::Protocol(format!(
+                        "{} blocked the prompt and did not answer it: {reason}",
+                        self.id
+                    )));
+                }
             }
 
             if let Some(u) = chunk.usage_metadata {
@@ -467,6 +486,10 @@ impl Provider for GeminiProvider {
                 if part.thought.unwrap_or(false) {
                     send(&tx, StreamEvent::ThinkingDelta { text }).await?;
                     if let Some(signature) = part.thought_signature {
+                        // Behind a prefix, because the block outlives a change
+                        // of provider and no other API can verify this.
+                        let signature =
+                            format!("{}{signature}", taurus_provider::GEMINI_THOUGHT_PREFIX);
                         send(&tx, StreamEvent::ThinkingSignature { signature }).await?;
                     }
                 } else if !text.is_empty() {
@@ -493,6 +516,21 @@ impl Provider for GeminiProvider {
             }
         })
     }
+}
+
+/// The process's shared client, in the app, which has one runtime.
+#[cfg(not(test))]
+fn new_client() -> http::Client {
+    http::Client::new()
+}
+
+/// A client of its own, in a test. Each `#[tokio::test]` is its own runtime and
+/// a pooled connection dies with the runtime that opened it, so a shared pool
+/// fails a later test whose mock server lands on the same port ("runtime dropped
+/// the dispatch task").
+#[cfg(test)]
+fn new_client() -> http::Client {
+    http::Client::stalling_after(http::STALL_TIMEOUT)
 }
 
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
@@ -555,6 +593,54 @@ mod tests {
         turn.await.expect("the turn task").expect("the turn");
         let (message, usage, _) = acc.finish();
         (message, usage)
+    }
+
+    /// What the adapter makes of a body, with `model` as the config names it.
+    /// Mounted on the bare route, so a request anywhere else is a 404.
+    async fn streamed(model: &str, body: &str) -> Result<StopReason> {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(
+                "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body.to_string()),
+            )
+            .mount(&server)
+            .await;
+        let provider = GeminiProvider::new("gemini", server.uri(), None);
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        provider
+            .stream(
+                ChatRequest::new(model, vec![Message::user("go")]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_blocked_prompt_says_so_and_is_not_retried() {
+        let error = streamed(
+            "gemini-2.5-pro",
+            "data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n",
+        )
+        .await
+        .unwrap_err();
+        assert!(!error.is_transient(), "{error:?}");
+        assert!(error.to_string().contains("SAFETY"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_model_named_with_its_prefix_reaches_the_same_route() {
+        let body = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
+        assert_eq!(
+            streamed("models/gemini-2.5-pro", body).await.unwrap(),
+            StopReason::EndTurn
+        );
     }
 
     #[tokio::test]
@@ -680,7 +766,7 @@ mod tests {
             message.content[0],
             ContentBlock::Thinking {
                 text: "weighing it".into(),
-                signature: Some("sig-1".into()),
+                signature: Some(format!("{}sig-1", taurus_provider::GEMINI_THOUGHT_PREFIX)),
             }
         );
         // The reasoning must not leak into what the user reads.

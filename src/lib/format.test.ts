@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { csvOf, duration, plural, when } from "./format";
+import { clip, csvOf, duration, plural, when } from "./format";
 
 describe("rows as csv", () => {
   it("quotes only the cells that need it, and doubles the quotes inside", () => {
@@ -53,5 +53,14 @@ describe("an older date", () => {
       expect(said).not.toContain(String(now.getFullYear()));
     }
     expect(when(older.getTime() / 1000)).toContain(String(now.getFullYear() - 1));
+  });
+});
+
+describe("clip", () => {
+  it("doesn't end halfway through a character", () => {
+    expect(clip("ab😀cd", 3)).toBe("ab");
+    expect(clip("ab😀cd", 4)).toBe("ab😀");
+    expect(clip("abcd", 2)).toBe("ab");
+    expect(clip("", 2)).toBe("");
   });
 });

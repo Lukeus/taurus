@@ -26,11 +26,11 @@ jobs:
     outputs:
       release_id: ${{ steps.draft.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # No pnpm install: the script imports nothing outside node's standard
       # library, precisely so this job stays a few seconds long.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -133,7 +133,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # libasound2-dev is the ALSA headers cpal builds against, for the
       # microphone in taurus-voice, and libclang-dev is what bindgen reads
@@ -148,15 +148,19 @@ jobs:
             libappindicator3-dev librsvg2-dev patchelf \
             libasound2-dev libclang-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      # This action has no version tags, only a branch per toolchain, so the
+      # comment names the branch this commit was the tip of on 2026-10-16. The
+      # toolchain is said out loud because the ref no longer says it.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.rust_targets }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -214,8 +218,14 @@ jobs:
       # here and merged with `--config`, not in `tauri.conf.json`, because a
       # `signCommand` there runs on every local Windows build too, and fails on
       # every machine that isn't this runner.
-      - name: Set up Windows signing
-        id: winsign
+      #
+      # Three steps, so the signing tool's own build never sees a secret. `cargo
+      # install` runs the build scripts of everything it compiles, and an env
+      # holding AZURE_CLIENT_SECRET would hand it to each of them. The version is
+      # pinned for the same reason: what compiles next to the signing job is
+      # whatever was reviewed, not whatever was newest that day.
+      - name: Check the Windows signing secrets
+        id: winsecrets
         if: runner.os == 'Windows'
         shell: bash
         env:
@@ -236,7 +246,25 @@ jobs:
               exit 1
             fi
           done
-          cargo install trusted-signing-cli --locked
+          echo "signing=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install the signing tool
+        if: steps.winsecrets.outputs.signing == 'true'
+        shell: bash
+        run: cargo install trusted-signing-cli --locked --version 0.11.0
+
+      - name: Set up Windows signing
+        id: winsign
+        if: steps.winsecrets.outputs.signing == 'true'
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
           for name in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID; do
             echo "$name=${!name}" >> "$GITHUB_ENV"
           done
@@ -259,14 +287,16 @@ jobs:
       # `releaseId` and `tagName` are both empty, which is how this action is
       # told to build and upload nothing; the two steps below keep the bundles.
       #
-      # Pinned at `@v0`, and worth knowing which docs describe it: the README
+      # Pinned to the commit of v0.6.2, because this step holds the updater's
+      # private key: a tag can be moved, and a commit can't. It's still a v0
+      # release, and worth knowing which docs describe it: the README
       # on this action's default branch is v1's, and v1 renamed or added
       # several inputs. An input v0 does not know is not an error — it is a
       # warning in the log and an input nothing reads. Check a name against
       # `action.yml` on the `action-v0.x` tag rather than against the README.
       - name: Build and upload to the draft release
         id: build
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
@@ -320,7 +350,7 @@ jobs:
 
       - name: Keep the bundles from the dry run
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # Per-OS, so the three legs cannot collide on a name.
           name: bundles-${{ matrix.os }}
@@ -375,8 +405,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          TAG: ${{ github.ref_name }}
         run: |
+          # The tag is restated because an edit to the draft that left it out
+          # clears it, and publishing then mints `untagged-<hash>` at main's tip
+          # instead of the commit the bundles were built from.
           url=$(gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" \
-            -F draft=false --jq .html_url)
+            -f tag_name="$TAG" -F draft=false --jq .html_url)
           echo "Published: $url"
           echo "Published: $url" >> "$GITHUB_STEP_SUMMARY"

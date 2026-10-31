@@ -54,7 +54,7 @@ pub fn is_private(ip: IpAddr) -> bool {
 }
 
 fn is_private_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
+    let [a, b, c, _] = ip.octets();
     ip.is_loopback()
         || ip.is_private()
         // 169.254.0.0/16. Cloud metadata lives here; of everything on this
@@ -68,6 +68,10 @@ fn is_private_v4(ip: Ipv4Addr) -> bool {
         || (a == 100 && (64..128).contains(&b))
         // 240.0.0.0/4, reserved.
         || a >= 240
+        // 0.0.0.0/8, "this network". Some systems route all of it to this machine.
+        || a == 0
+        // 192.0.0.0/24, reserved for protocols such as DS-Lite and DNS64.
+        || (a == 192 && b == 0 && c == 0)
 }
 
 fn is_private_v6(ip: Ipv6Addr) -> bool {
@@ -79,6 +83,36 @@ fn is_private_v6(ip: Ipv6Addr) -> bool {
         || (first & 0xfe00) == 0xfc00
         // fe80::/10, link-local unicast.
         || (first & 0xffc0) == 0xfe80
+        // fec0::/10, site-local. Deprecated, and still private where it's used.
+        || (first & 0xffc0) == 0xfec0
+        // 64:ff9b:1::/48, NAT64 for one network's own use, so whatever it
+        // translates to is on that network.
+        || (first == 0x0064 && ip.segments()[1] == 0xff9b && ip.segments()[2] == 0x0001)
+        || embedded_v4(ip).is_some_and(is_private_v4)
+}
+
+/// The IPv4 address an IPv6 address carries and a gateway would deliver to.
+///
+/// The same overlap `::ffff:` is, in the other three spellings: a network with
+/// a NAT64 gateway takes `64:ff9b::7f00:1` to `127.0.0.1` on the far side, and
+/// `64:ff9b::a00:1` to `10.0.0.1`.
+fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let s = ip.segments();
+    let v4 = |high: u16, low: u16| {
+        let [a, b] = high.to_be_bytes();
+        let [c, d] = low.to_be_bytes();
+        Ipv4Addr::new(a, b, c, d)
+    };
+    match s {
+        // 64:ff9b::/96, well-known NAT64.
+        [0x0064, 0xff9b, 0, 0, 0, 0, high, low] => Some(v4(high, low)),
+        // 2002::/16, 6to4.
+        [0x2002, high, low, ..] => Some(v4(high, low)),
+        // ::/96, the deprecated IPv4-compatible form. `::` and `::1` sit in
+        // this range too and are caught by name before this runs.
+        [0, 0, 0, 0, 0, 0, high, low] => Some(v4(high, low)),
+        _ => None,
+    }
 }
 
 /// Refuses a URL whose host is, or resolves to, a private address.
@@ -240,6 +274,35 @@ mod tests {
     #[test]
     fn public_ipv6_is_allowed() {
         assert!(!is_private(ip("2606:4700:4700::1111")));
+    }
+
+    #[test]
+    fn an_ipv4_address_inside_a_translation_prefix_is_still_that_address() {
+        for address in [
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::1",
+            "2002:7f00:1::",
+            "2002:a9fe:a9fe::1",
+            "::127.0.0.1",
+            "::169.254.169.254",
+            "fec0::1",
+        ] {
+            assert!(is_private(ip(address)), "{address} should be refused");
+        }
+        // The prefix isn't the problem: what it delivers to is.
+        for address in ["64:ff9b::808:808", "2002:808:808::1", "::8.8.8.8"] {
+            assert!(!is_private(ip(address)), "{address} should be allowed");
+        }
+    }
+
+    #[test]
+    fn the_rest_of_this_network_and_the_protocol_block_are_private() {
+        for address in ["0.1.2.3", "192.0.0.170"] {
+            assert!(is_private(ip(address)), "{address} should be refused");
+        }
+        assert!(!is_private(ip("192.1.0.1")));
     }
 
     #[tokio::test]

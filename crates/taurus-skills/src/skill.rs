@@ -716,7 +716,7 @@ pub fn validate(frontmatter: &SkillFrontmatter, path: &str) -> Result<Vec<String
                 script.path
             )));
         }
-        if script.path.contains("..") || Path::new(&script.path).is_absolute() {
+        if !stays_inside(&script.path) {
             return Err(invalid(format!(
                 "script path '{}' must stay inside the skill directory",
                 script.path
@@ -724,6 +724,20 @@ pub fn validate(frontmatter: &SkillFrontmatter, path: &str) -> Result<Vec<String
         }
     }
     Ok(warnings)
+}
+
+/// Whether a relative path can't climb out of the folder it's joined to.
+///
+/// By component rather than by looking for `..` in the text, which a file named
+/// `v1..2.md` has in it and is no escape at all. `Normal` and `.` only, which
+/// also turns away an absolute path and a Windows drive prefix.
+pub(crate) fn stays_inside(path: &str) -> bool {
+    use std::path::Component;
+    let path = Path::new(path);
+    path.components().next().is_some()
+        && path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
 }
 
 pub(crate) fn is_kebab_case(s: &str) -> bool {
@@ -737,6 +751,21 @@ pub(crate) fn is_kebab_case(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_is_judged_by_its_parts_and_not_its_spelling() {
+        for fine in [
+            "scripts/a..b.py",
+            "references/v1..2.md",
+            "./scripts/run.sh",
+            "a",
+        ] {
+            assert!(stays_inside(fine), "{fine}");
+        }
+        for out in ["../x", "scripts/../../x", "/etc/passwd", ""] {
+            assert!(!stays_inside(out), "{out}");
+        }
+    }
 
     const GOOD: &str = r#"---
 name: pdf-extract

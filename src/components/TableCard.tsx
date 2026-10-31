@@ -140,7 +140,7 @@ function direction(cell: string): "up" | "down" | "flat" {
  * knows what the units are and the frontend does not. So the number is pulled
  * back out for sorting rather than being asked for twice.
  */
-function compareNumbers(a: string, b: string): number {
+export function compareNumbers(a: string, b: string): number {
   const left = parseNumber(a);
   const right = parseNumber(b);
   if (left === null && right === null) return 0;
@@ -150,7 +150,13 @@ function compareNumbers(a: string, b: string): number {
 }
 
 function parseNumber(cell: string): number | null {
-  const match = cell?.replace(/−/g, "-").match(/-?\d+(\.\d+)?/);
+  // Thousands separators out first: the match stops at the first character that
+  // isn't part of a number, so `1,500` would otherwise sort as 1. Only a comma
+  // with exactly three digits after it, because `1,5` is not fifteen.
+  const match = cell
+    ?.replace(/−/g, "-")
+    .replace(/(\d),(?=\d{3}(?!\d))/g, "$1")
+    .match(/-?\d+(\.\d+)?/);
   return match ? Number(match[0]) : null;
 }
 

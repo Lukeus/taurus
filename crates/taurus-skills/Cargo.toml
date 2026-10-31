@@ -7,6 +7,7 @@ license.workspace = true
 description = "Skill discovery, execution, and auto-generation for the Taurus agent harness"
 
 [dependencies]
+taurus-process.workspace = true
 taurus-tools.workspace = true
 async-trait.workspace = true
 schemars.workspace = true

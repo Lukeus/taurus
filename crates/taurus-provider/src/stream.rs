@@ -197,9 +197,11 @@ pub enum StreamEvent {
 #[derive(Debug, Default)]
 pub struct StreamAccumulator {
     blocks: Vec<ContentBlock>,
-    /// Index into `blocks` of the block currently being appended to, plus the
-    /// raw JSON buffer when that block is a tool use.
+    /// Index into `blocks` of the block deltas and signatures currently land on.
     open: Option<Open>,
+    /// Tool calls still taking input, each with its raw JSON so far. Several at
+    /// once, because a fragment names its call and a server may interleave them.
+    calls: Vec<OpenCall>,
     usage: TokenUsage,
     malformed_tool_input: Vec<String>,
 }
@@ -208,7 +210,14 @@ pub struct StreamAccumulator {
 enum Open {
     Text(usize),
     Thinking(usize),
-    ToolUse { index: usize, json: String },
+    ToolUse(usize),
+}
+
+#[derive(Debug)]
+struct OpenCall {
+    id: String,
+    index: usize,
+    json: String,
 }
 
 impl StreamAccumulator {
@@ -221,26 +230,39 @@ impl StreamAccumulator {
             StreamEvent::TextDelta { text } => self.append_text(text, false),
             StreamEvent::ThinkingDelta { text } => self.append_text(text, true),
             StreamEvent::ToolUseStart { id, name } => {
-                self.close_open();
-                self.blocks
-                    .push(ContentBlock::tool_use(id, name, serde_json::Value::Null));
-                self.open = Some(Open::ToolUse {
-                    index: self.blocks.len() - 1,
+                self.blocks.push(ContentBlock::tool_use(
+                    id.clone(),
+                    name,
+                    serde_json::Value::Null,
+                ));
+                let index = self.blocks.len() - 1;
+                self.open = Some(Open::ToolUse(index));
+                self.calls.push(OpenCall {
+                    id,
+                    index,
                     json: String::new(),
                 });
             }
-            StreamEvent::ToolUseInputDelta { json, .. } => {
-                if let Some(Open::ToolUse { json: buf, .. }) = self.open.as_mut() {
-                    buf.push_str(&json);
+            StreamEvent::ToolUseInputDelta { id, json } => {
+                if let Some(call) = self.calls.iter_mut().rev().find(|c| c.id == id) {
+                    call.json.push_str(&json);
                 }
             }
-            StreamEvent::ToolUseEnd { .. } => self.close_open(),
+            StreamEvent::ToolUseEnd { id } => {
+                if let Some(at) = self.calls.iter().rposition(|c| c.id == id) {
+                    let call = self.calls.remove(at);
+                    if matches!(self.open, Some(Open::ToolUse(i)) if i == call.index) {
+                        self.open = None;
+                    }
+                    self.parse_call(call);
+                }
+            }
             // Attached to the open block rather than closing it: the provider
             // sends this before the block ends, and a signature with nothing
             // open to sign is nothing to keep.
             StreamEvent::ThinkingSignature { signature } => {
                 let open = match self.open {
-                    Some(Open::Thinking(i)) | Some(Open::ToolUse { index: i, .. }) => Some(i),
+                    Some(Open::Thinking(i)) | Some(Open::ToolUse(i)) => Some(i),
                     _ => None,
                 };
                 if let Some(
@@ -274,7 +296,6 @@ impl StreamAccumulator {
                 }
             }
             None => {
-                self.close_open();
                 self.blocks.push(if thinking {
                     ContentBlock::Thinking {
                         text,
@@ -293,20 +314,16 @@ impl StreamAccumulator {
         }
     }
 
-    fn close_open(&mut self) {
-        if let Some(Open::ToolUse { index, json }) = self.open.take() {
-            let parsed = if json.trim().is_empty() {
-                Some(serde_json::json!({}))
-            } else {
-                serde_json::from_str(&json).ok()
-            };
-            match (parsed, self.blocks.get_mut(index)) {
-                (Some(value), Some(ContentBlock::ToolUse { input, .. })) => *input = value,
-                (None, Some(ContentBlock::ToolUse { id, .. })) => {
-                    self.malformed_tool_input.push(id.clone());
-                }
-                _ => {}
-            }
+    fn parse_call(&mut self, call: OpenCall) {
+        let parsed = if call.json.trim().is_empty() {
+            Some(serde_json::json!({}))
+        } else {
+            serde_json::from_str(&call.json).ok()
+        };
+        match (parsed, self.blocks.get_mut(call.index)) {
+            (Some(value), Some(ContentBlock::ToolUse { input, .. })) => *input = value,
+            (None, Some(ContentBlock::ToolUse { .. })) => self.malformed_tool_input.push(call.id),
+            _ => {}
         }
     }
 
@@ -315,7 +332,9 @@ impl StreamAccumulator {
     }
 
     pub fn finish(mut self) -> (Message, TokenUsage, Vec<String>) {
-        self.close_open();
+        for call in std::mem::take(&mut self.calls) {
+            self.parse_call(call);
+        }
         let message = Message::new(Role::Assistant, self.blocks);
         (message, self.usage, self.malformed_tool_input)
     }
@@ -443,6 +462,33 @@ mod tests {
         assert!(bad.is_empty());
         let (_, _, input) = msg.tool_uses().next().unwrap();
         assert_eq!(input, &serde_json::json!({}));
+    }
+
+    #[test]
+    fn interleaved_fragments_land_on_the_call_they_name() {
+        let mut acc = StreamAccumulator::new();
+        for (id, name) in [("a", "first"), ("b", "second")] {
+            acc.push(StreamEvent::ToolUseStart {
+                id: id.into(),
+                name: name.into(),
+            });
+        }
+        for (id, json) in [("a", "{\"p\":"), ("b", "{\"q\":"), ("a", "1}"), ("b", "2}")] {
+            acc.push(StreamEvent::ToolUseInputDelta {
+                id: id.into(),
+                json: json.into(),
+            });
+        }
+        // Closed in an order of their own: the OpenAI adapter drains a map.
+        acc.push(StreamEvent::ToolUseEnd { id: "b".into() });
+        acc.push(StreamEvent::ToolUseEnd { id: "a".into() });
+        let (msg, _, bad) = acc.finish();
+        assert!(bad.is_empty(), "{bad:?}");
+        let inputs: Vec<_> = msg.tool_uses().map(|(_, _, input)| input.clone()).collect();
+        assert_eq!(
+            inputs,
+            vec![serde_json::json!({"p": 1}), serde_json::json!({"q": 2})]
+        );
     }
 
     #[test]

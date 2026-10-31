@@ -1469,3 +1469,35 @@ describe("a version kept for a note that was left", () => {
     expect(host.querySelector("textarea")?.value).toBe("mine\n");
   });
 });
+
+describe("an input method", () => {
+  const candidate = (field: Element | null) =>
+    act(async () => {
+      field!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }),
+      );
+    });
+
+  it("keeps Enter in the rename box when it is accepting a candidate", async () => {
+    twoNotes({ rename_page: () => [page("名前", "# One\n"), [ref("名前"), ref("Two")]] });
+    const { host, click, type } = await mount();
+    await click(rows(host)[0]);
+    await click(saying(host, "Rename"));
+    const field = host.querySelector(".notes-rename");
+    await type(field, "名前");
+    await candidate(field);
+    expect(invoke).not.toHaveBeenCalledWith("rename_page", expect.anything());
+  });
+
+  it("keeps Enter in the new note's name when it is accepting a candidate", async () => {
+    twoNotes();
+    const { host, click, type } = await mount();
+    await click(host.querySelector(".notes-new"));
+    const field = host.querySelector(".notes-make-name");
+    await type(field, "名前");
+    await candidate(field);
+    expect(host.querySelector(".notes-make-name")).not.toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("save_page", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("create_page", expect.anything());
+  });
+});

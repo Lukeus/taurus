@@ -378,25 +378,15 @@ impl AppState {
             .ok_or_else(|| format!("no session '{id}'"))
     }
 
-    /// Stops every turn in flight and withdraws every question they were
-    /// waiting on.
-    ///
-    /// For a page that has been replaced: a reload, a dev server restarting.
-    /// The frontend that started those turns is gone, and so is every dialog it
-    /// was showing. A turn parked on one would wait forever holding its
-    /// session's lock, and delete, rewind, and commit would refuse that
-    /// conversation until the app restarted. Clearing the maps drops each
-    /// parked sender, so a prompt the cancel has not reached yet is answered
-    /// with a denial rather than left.
-    pub async fn abandon_turns(&self) {
-        // Collected first, so no map guard is held across an await.
-        let entries: Vec<Arc<SessionEntry>> =
-            self.sessions.iter().map(|e| e.value().clone()).collect();
-        for entry in entries {
-            entry.cancel.lock().await.cancel();
-        }
-        self.pending_permissions.clear();
-        self.pending_questions.clear();
+    /// Tidies up after a page that has been replaced: a reload, a dev server
+    /// restarting. See [`let_go_of_page`].
+    pub async fn page_replaced(&self) {
+        let_go_of_page(
+            &self.sessions,
+            &self.pending_permissions,
+            &self.pending_questions,
+        )
+        .await;
     }
 
     /// Marks the first reload done, releasing anything waiting on it.
@@ -413,6 +403,32 @@ impl AppState {
     pub async fn loaded(&self) {
         wait_for_load(&self.loaded, FIRST_LOAD_WAIT).await;
     }
+}
+
+/// Withdraws what only the old page could answer, and leaves the work running.
+///
+/// A turn belongs to its conversation rather than to a page, so a reload doesn't
+/// stop it: the new page finds it in `running_sessions` and picks it up through
+/// `attach_session`. What can't carry over is a dialog the old page was showing.
+/// Nothing is left to answer it, and a turn parked on one would hold its
+/// conversation. Clearing the maps drops each parked sender, which answers a
+/// permission prompt with a denial and a question with nothing, and the turn
+/// goes on from there.
+async fn let_go_of_page(
+    sessions: &DashMap<String, Arc<SessionEntry>>,
+    permissions: &DashMap<String, oneshot::Sender<PermissionDecision>>,
+    questions: &DashMap<String, oneshot::Sender<Vec<Answer>>>,
+) {
+    // Collected first, so no map guard is held across an await.
+    let entries: Vec<Arc<SessionEntry>> = sessions.iter().map(|e| e.value().clone()).collect();
+    for entry in entries {
+        let live = entry.live.lock().await.clone();
+        if let Some(live) = live {
+            live.forget_views().await;
+        }
+    }
+    permissions.clear();
+    questions.clear();
 }
 
 /// Records that the first load is done, whether or not anyone is waiting yet.
@@ -448,6 +464,57 @@ async fn wait_for_load(loaded: &watch::Sender<bool>, limit: std::time::Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_reload_leaves_the_turn_running_and_releases_what_it_was_parked_on() {
+        let token = CancellationToken::new();
+        let live = Arc::new(Live::new());
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = sent.clone();
+        live.attach(tauri::ipc::Channel::new(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }))
+        .await;
+        let entry = SessionEntry {
+            session: Arc::new(Mutex::new(Session::new("m"))),
+            provider_id: Mutex::new("local".into()),
+            model: Mutex::new("m".into()),
+            workspace: PathBuf::from("/src/a"),
+            cancel: Arc::new(Mutex::new(token.clone())),
+            log: Arc::new(Mutex::new(SessionLog::disabled())),
+            live: Mutex::new(Some(live.clone())),
+            unattended: Arc::new(AtomicBool::new(false)),
+            released: AtomicBool::new(false),
+            switches: Mutex::new(Vec::new()),
+            plan_edits: Mutex::new(Vec::new()),
+        };
+        let sessions = DashMap::new();
+        sessions.insert("s1".to_string(), Arc::new(entry));
+        let permissions = DashMap::new();
+        let (allow, prompt) = oneshot::channel::<PermissionDecision>();
+        permissions.insert("p1".to_string(), allow);
+        let questions = DashMap::new();
+        let (answer, card) = oneshot::channel::<Vec<Answer>>();
+        questions.insert("q1".to_string(), answer);
+
+        let_go_of_page(&sessions, &permissions, &questions).await;
+
+        assert!(!token.is_cancelled(), "a reload stopped a running turn");
+        // A dropped sender is what `UiPermissionPrompt` reads as a denial, and
+        // `UiAsker` as no answer.
+        assert!(prompt.await.is_err(), "a prompt is still parked");
+        assert!(card.await.is_err(), "a question is still parked");
+        live.publish(taurus_core::UiEvent::TextDelta {
+            text: "still going".into(),
+        })
+        .await;
+        assert_eq!(
+            sent.load(Ordering::SeqCst),
+            0,
+            "the old page was still sent to"
+        );
+    }
 
     #[tokio::test]
     async fn a_load_that_finished_before_anyone_asked_is_not_forgotten() {

@@ -165,6 +165,15 @@ impl Live {
         fan.views.push(view);
         dropped
     }
+
+    /// Lets go of every view, for a page that has been replaced.
+    ///
+    /// A channel into a page that has gone doesn't always refuse a send, so
+    /// `publish` can't be relied on to notice. The replay is kept: it's what the
+    /// new page catches up from when it attaches.
+    pub async fn forget_views(&self) {
+        self.fan.lock().await.views.clear();
+    }
 }
 
 /// The round in progress, for a view that has not arrived yet.
@@ -437,6 +446,28 @@ mod tests {
             said.find("the parent goes on") < said.find("tool_detached"),
             "{said}"
         );
+    }
+
+    /// A reload replaces every view. The old page hears nothing more, and the
+    /// new one picks the round up from the replay.
+    #[tokio::test]
+    async fn a_page_that_was_replaced_is_let_go_and_the_next_one_catches_up() {
+        let live = Live::new();
+        let old = View::default();
+        live.attach(old.open()).await;
+        live.publish(text("before the reload")).await;
+
+        live.forget_views().await;
+        live.publish(text(" and after")).await;
+        assert_eq!(
+            old.seen(),
+            1,
+            "a page that has gone was still being sent to"
+        );
+
+        let new = View::default();
+        assert_eq!(live.attach(new.open()).await, 0);
+        assert!(new.said().contains("before the reload and after"));
     }
 
     /// A conversation nobody has opened yet still runs, and the replay is what

@@ -172,6 +172,95 @@ fn canonical_root(root: &Path) -> Result<PathBuf, ToolError> {
     })
 }
 
+/// Whether writing to `path` changes what runs on this machine without anyone
+/// being asked.
+///
+/// Most of what a standing grant for `write_file` covers is the project's own
+/// work. These files aren't: `.taurus/permissions.json` is a list of grants,
+/// `.taurus/hooks.json`, `.taurus/mcp.json` and anything under `.taurus/plugins`
+/// start programs, `providers.json` and `search.json` decide where data goes,
+/// and git runs `.git/hooks/*` and whatever `.git/config` names. A grant to edit
+/// source must not be a way to give itself every other grant.
+///
+/// `path` has to be what [`resolve`] returned, so a symlink has already become
+/// the file it leads to. Compared with each name folded, because the file
+/// systems this runs on will open `.GIT/Hooks` for `.git/hooks`, and Windows
+/// will open `.git.`, `.git::$INDEX_ALLOCATION` and `git~1` too.
+///
+/// `.git` counts at any depth, and with the path above the workspace included,
+/// because a submodule keeps its hooks in `.git/modules/x/hooks` and a workspace
+/// can be opened inside a repository's own directory. `.taurus` counts relative
+/// to the folder holding the workspace: a workspace that is `~/.taurus` still
+/// holds these files, and one kept under `~/.taurus/plugins` is somebody writing
+/// a plugin, not a plugin being installed behind their back.
+pub fn decides_what_runs(root: &Path, path: &Path) -> bool {
+    let folded = |path: &Path| -> Vec<String> {
+        path.components()
+            .filter_map(|c| match c {
+                Component::Normal(name) => Some(fold_name(&name.to_string_lossy())),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let whole = folded(path);
+    let git = whole
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_str() == ".git")
+        .any(|(at, _)| {
+            let rest = &whole[at + 1..];
+            // The `.git` itself: in a submodule it's a file saying where the
+            // real one is, and pointing that elsewhere is the same act.
+            rest.is_empty()
+                || rest.last().is_some_and(|name| name == "config")
+                || rest.iter().any(|name| name == "hooks")
+        });
+    if git {
+        return true;
+    }
+
+    let near = folded(
+        path.strip_prefix(root.parent().unwrap_or(root))
+            .unwrap_or(path),
+    );
+    near.iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_str() == ".taurus")
+        .any(|(at, _)| match &near[at + 1..] {
+            [] => false,
+            [first, ..] if first == "plugins" => true,
+            [file] => [
+                "permissions.json",
+                "hooks.json",
+                "mcp.json",
+                "providers.json",
+                "search.json",
+            ]
+            .contains(&file.as_str()),
+            _ => false,
+        })
+}
+
+/// One path name as a case-insensitive file system would match it.
+fn fold_name(name: &str) -> String {
+    // An NTFS stream (`file::$DATA`) is the file.
+    let name = name.split(':').next().unwrap_or(name);
+    // Windows drops these from the end of a name.
+    let name = name.trim_end_matches(['.', ' ']);
+    // HFS+ ignores these inside a name, which is why git refuses them as well.
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !matches!(*c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}'))
+        .collect::<String>()
+        .to_lowercase();
+    // The short name Windows gives `.git`.
+    if cleaned == "git~1" {
+        return ".git".to_string();
+    }
+    cleaned
+}
+
 /// Whether `path` is itself a symbolic link, without following it.
 fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
@@ -568,5 +657,84 @@ mod tests {
             resolve(ws.path(), "  ").unwrap_err(),
             ToolError::InvalidInput(_)
         ));
+    }
+
+    #[test]
+    fn the_files_that_decide_what_runs_are_recognized() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        for candidate in [
+            ".taurus/permissions.json",
+            ".taurus/hooks.json",
+            ".taurus/mcp.json",
+            ".taurus/providers.json",
+            ".taurus/search.json",
+            ".taurus/plugins/x/plugin.json",
+            ".git/hooks/pre-commit",
+            ".git/hooks",
+            ".git/config",
+            ".git/modules/sub/hooks/post-merge",
+            ".git/modules/sub/config",
+            "sub/.git",
+            "sub/.git/hooks/pre-push",
+            // However the file system would have it spelled.
+            ".TAURUS/Permissions.JSON",
+            ".GIT/HOOKS/pre-commit",
+            ".git./hooks/pre-commit",
+            ".git::$INDEX_ALLOCATION/hooks/x",
+            "git~1/hooks/x",
+            ".g\u{200c}it/hooks/x",
+            "sub/../.git/hooks/x",
+            "./.taurus/hooks.json",
+        ] {
+            let path = resolve(&root, candidate).unwrap();
+            assert!(decides_what_runs(&root, &path), "{candidate}");
+        }
+        for candidate in [
+            "src/main.rs",
+            ".gitignore",
+            ".github/workflows/ci.yml",
+            "hooks/pre-commit",
+            "config",
+            "git/hooks/x",
+            ".taurus/notes/a.md",
+            ".taurus/skills/x/SKILL.md",
+            "permissions.json",
+            "sub/hooks.json",
+        ] {
+            let path = resolve(&root, candidate).unwrap();
+            assert!(!decides_what_runs(&root, &path), "{candidate}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_judged_by_where_it_leads() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join(".taurus")).unwrap();
+        std::fs::write(root.join(".taurus/permissions.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(root.join(".git/hooks"), root.join("innocent")).unwrap();
+        std::os::unix::fs::symlink(root.join(".taurus/permissions.json"), root.join("list"))
+            .unwrap();
+        for candidate in ["innocent/pre-commit", "list"] {
+            let path = resolve(&root, candidate).unwrap();
+            assert!(decides_what_runs(&root, &path), "{candidate}");
+        }
+    }
+
+    #[test]
+    fn a_workspace_that_is_the_config_home_still_holds_its_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".taurus");
+        std::fs::create_dir_all(root.join("plugins/mine")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = resolve(&root, "permissions.json").unwrap();
+        assert!(decides_what_runs(&root, &path));
+        // Writing a plugin from inside its own folder is ordinary work.
+        let plugin = root.join("plugins/mine");
+        let path = resolve(&plugin, "plugin.json").unwrap();
+        assert!(!decides_what_runs(&plugin, &path));
     }
 }

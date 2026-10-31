@@ -151,7 +151,7 @@ impl OpenAiProvider {
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             api_key_header: None,
-            client: http::Client::new(),
+            client: new_client(),
             capabilities,
             models: Vec::new(),
             api: OpenAiApi::default(),
@@ -647,8 +647,12 @@ impl OpenAiProvider {
 
             for call in delta.tool_calls {
                 let index = call.index.unwrap_or(0);
-                if let Some(id) = call.id.filter(|id| !id.is_empty()) {
-                    // First fragment: open the call.
+                // A new id at this index opens a call. The same id again doesn't:
+                // some servers repeat it on every fragment.
+                if let Some(id) = call
+                    .id
+                    .filter(|id| !id.is_empty() && open_calls.get(&index) != Some(id))
+                {
                     let name = call
                         .function
                         .as_ref()
@@ -864,11 +868,20 @@ impl OpenAiProvider {
 /// Whether a refusal is about the reasoning parameters.
 ///
 /// The message is all there is to go on: it names the parameter (`Unsupported
-/// parameter: 'reasoning.summary' is not supported with this model`), and a
-/// 400 that mentions reasoning on a request whose only reasoning content is
-/// those parameters is about them.
+/// parameter: 'reasoning.summary' is not supported with this model`). The bare
+/// word isn't enough, because the history carries reasoning items too, and a
+/// refusal of one of those (`Item 'rs_1' of type 'reasoning' was provided
+/// without its required following item`) says nothing about the model. Taking
+/// the parameters back wouldn't help it either.
 fn refuses_reasoning(error: &ProviderError) -> bool {
-    matches!(error, ProviderError::Api { status: 400, body, .. } if body.contains("reasoning"))
+    let ProviderError::Api {
+        status: 400, body, ..
+    } = error
+    else {
+        return false;
+    };
+    !body.contains("type 'reasoning'")
+        && (body.contains("reasoning.") || body.contains("'reasoning'"))
 }
 
 /// Answer text, through the prompted-tool scanner when there is one.
@@ -917,6 +930,21 @@ pub fn is_openai_itself(base_url: &str) -> bool {
     host.eq_ignore_ascii_case("api.openai.com")
 }
 
+/// The process's shared client, in the app, which has one runtime.
+#[cfg(not(test))]
+fn new_client() -> http::Client {
+    http::Client::new()
+}
+
+/// A client of its own, in a test. Each `#[tokio::test]` is its own runtime and
+/// a pooled connection dies with the runtime that opened it, so a shared pool
+/// fails a later test whose mock server lands on the same port ("runtime dropped
+/// the dispatch task").
+#[cfg(test)]
+fn new_client() -> http::Client {
+    http::Client::stalling_after(http::STALL_TIMEOUT)
+}
+
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
     tx.send(event).await.map_err(|_| ProviderError::Canceled)
 }
@@ -924,6 +952,7 @@ async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taurus_provider::{Message, StreamAccumulator};
 
     /// What the adapter makes of this stream body.
     async fn streamed(body: &str) -> Result<StopReason> {
@@ -944,6 +973,114 @@ mod tests {
         provider
             .stream(request, tx, tokio_util::sync::CancellationToken::new())
             .await
+    }
+
+    /// The `Message` a chat stream folds into, with whatever came up malformed.
+    async fn folded(body: &str) -> (Message, Vec<String>) {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body.to_string()),
+            )
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiProvider::new("openai", server.uri(), None, OpenAiCapabilities::default());
+        let (tx, mut rx) = mpsc::channel(64);
+        let turn = tokio::spawn(async move {
+            provider
+                .stream(
+                    ChatRequest::new("m", vec![Message::user("go")]),
+                    tx,
+                    CancellationToken::new(),
+                )
+                .await
+        });
+        let mut acc = StreamAccumulator::new();
+        while let Some(event) = rx.recv().await {
+            acc.push(event);
+        }
+        turn.await.expect("the task").expect("the turn");
+        let (message, _, bad) = acc.finish();
+        (message, bad)
+    }
+
+    #[tokio::test]
+    async fn an_id_repeated_on_every_fragment_is_still_one_call() {
+        let (message, bad) = folded(concat!(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{\"p\":"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}"#,
+            "\n\ndata: [DONE]\n\n",
+        ))
+        .await;
+        assert!(bad.is_empty(), "{bad:?}");
+        let calls: Vec<_> = message.tool_uses().collect();
+        assert_eq!(calls.len(), 1, "{message:?}");
+        assert_eq!(calls[0].2, &serde_json::json!({"p": 1}));
+    }
+
+    #[tokio::test]
+    async fn interleaved_parallel_calls_keep_their_own_arguments() {
+        let frame = |index: u32, id: Option<&str>, args: &str| {
+            let mut call = serde_json::json!({"index": index, "function": {"arguments": args}});
+            if let Some(id) = id {
+                call["id"] = id.into();
+                call["function"]["name"] = format!("t{index}").into();
+            }
+            let chunk = serde_json::json!({"choices": [{"delta": {"tool_calls": [call]}}]});
+            format!("data: {chunk}\n\n")
+        };
+        let body = [
+            frame(0, Some("a"), ""),
+            frame(1, Some("b"), ""),
+            frame(0, None, r#"{"p":"#),
+            frame(1, None, r#"{"q":"#),
+            frame(0, None, "1}"),
+            frame(1, None, "2}"),
+            "data: [DONE]\n\n".to_string(),
+        ]
+        .concat();
+        let (message, bad) = folded(&body).await;
+        assert!(bad.is_empty(), "{bad:?}");
+        let inputs: Vec<_> = message
+            .tool_uses()
+            .map(|(_, _, input)| input.clone())
+            .collect();
+        assert_eq!(
+            inputs,
+            vec![serde_json::json!({"p": 1}), serde_json::json!({"q": 2})]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunk_with_null_tool_calls_keeps_its_text() {
+        let (message, _) = folded(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\",\"tool_calls\":null}}]}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        assert_eq!(message.text(), "hi");
+    }
+
+    #[test]
+    fn a_refused_reasoning_item_is_not_a_refused_parameter() {
+        let refused = |body: &str| {
+            refuses_reasoning(&ProviderError::Api {
+                provider: "openai".into(),
+                status: 400,
+                body: body.into(),
+                retry_after: None,
+            })
+        };
+        assert!(refused(
+            "Unsupported parameter: 'reasoning.summary' is not supported"
+        ));
+        assert!(refused("Unsupported parameter: 'reasoning'"));
+        assert!(!refused(
+            "Item 'rs_1' of type 'reasoning' was provided without its required following item."
+        ));
     }
 
     #[tokio::test]

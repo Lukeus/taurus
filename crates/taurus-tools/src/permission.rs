@@ -323,11 +323,34 @@ impl PermissionEngine {
         input: &serde_json::Value,
         asking: &Asking,
     ) -> Result<(), ToolError> {
+        let touched: Vec<PathBuf> = if tool.effect() == Effect::Write {
+            tool.touches(input)
+                .iter()
+                .filter_map(|candidate| crate::path_guard::resolve(&self.workspace, candidate).ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.check_touching(tool, input, &touched, asking).await
+    }
+
+    /// [`Self::check`] for a caller that has already resolved what the call
+    /// touches, so a tool is asked once however many things want the answer.
+    /// `touched` has to be the paths [`crate::path_guard`] resolved. One that
+    /// won't resolve is refused by the tool in a moment, and has nothing to say
+    /// here.
+    pub async fn check_touching(
+        &self,
+        tool: &dyn Tool,
+        input: &serde_json::Value,
+        touched: &[PathBuf],
+        asking: &Asking,
+    ) -> Result<(), ToolError> {
         if tool.effect() == Effect::Read {
             return Ok(());
         }
 
-        let keys = keys_for(tool, input);
+        let keys = keys_for(tool, input, touched, &self.workspace);
         // A chained command is covered when every program it runs is, and the
         // prompt offers only the ones that are not. A command that does
         // something no program name can stand for — substitutes a command
@@ -379,10 +402,14 @@ impl PermissionEngine {
         // file write that `write_file` would have been allowed to make.
         if asking.unattended {
             let never = match &request.beyond_grant {
-                Some(reason) => format!(
+                Some(reason) if tool.effect() == Effect::Execute => format!(
                     " A line like this can never be allowed ahead of time, because it {reason}: \
                      write files with write_file or edit_file, and put a script in a file \
                      instead of the command line."
+                ),
+                Some(reason) => format!(
+                    " A call like this can never be allowed ahead of time, because it {reason}: \
+                     somebody has to be there to read it."
                 ),
                 None => String::new(),
             };
@@ -510,6 +537,13 @@ impl PermissionEngine {
     }
 }
 
+/// Finishes "this one …" for a command given text on its input.
+const FED_STDIN: &str = "feeds a program text from the call, which no program name stands for";
+
+/// Finishes "this one …" for a write to a file like `.git/hooks/pre-commit`.
+const DECIDES_WHAT_RUNS: &str =
+    "writes a file that decides what runs on this machine without asking";
+
 /// The units an "always" decision grants, for one call.
 struct Keys {
     /// Every rule the call needs. All of them have to be permitted.
@@ -529,18 +563,36 @@ struct Keys {
 /// anywhere on the internet.
 ///
 /// Everything else is keyed by name: the user is saying "this tool may write in
-/// this workspace", which is the granularity they actually reason about.
-fn keys_for(tool: &dyn Tool, input: &serde_json::Value) -> Keys {
+/// this workspace", which is the granularity they actually reason about. The
+/// exception is a file that decides what runs, which no such grant covers. See
+/// [`crate::path_guard::decides_what_runs`]. It's asked of [`Tool::touches`], so
+/// every tool that names what it writes is held to it, not only the two file
+/// tools.
+fn keys_for(
+    tool: &dyn Tool,
+    input: &serde_json::Value,
+    touched: &[PathBuf],
+    workspace: &Path,
+) -> Keys {
     if tool.effect() == Effect::Execute {
         if let Some(command) = input.get("command").and_then(|c| c.as_str()) {
             let programs = Programs::of(command);
+            // A program given its input from the call is running what the
+            // call says, the way `python3 <<EOF` is, and a grant for its name
+            // says nothing about that. Not only interpreters: `psql`, `lua`,
+            // `ed` and `gdb` all read a script this way, and nobody can list
+            // them all.
+            let fed = input
+                .get("stdin")
+                .and_then(|s| s.as_str())
+                .is_some_and(|s| !s.is_empty());
             return Keys {
                 rules: programs
                     .names
                     .iter()
                     .map(|program| format!("{}:{program}", tool.name()))
                     .collect(),
-                beyond: programs.beyond,
+                beyond: programs.beyond.or(fed.then_some(FED_STDIN)),
             };
         }
     }
@@ -552,9 +604,16 @@ fn keys_for(tool: &dyn Tool, input: &serde_json::Value) -> Keys {
             };
         }
     }
+    let beyond = (tool.effect() == Effect::Write
+        && workspace.canonicalize().is_ok_and(|root| {
+            touched
+                .iter()
+                .any(|path| crate::path_guard::decides_what_runs(&root, path))
+        }))
+    .then_some(DECIDES_WHAT_RUNS);
     Keys {
         rules: vec![tool.name().to_string()],
-        beyond: None,
+        beyond,
     }
 }
 
@@ -1774,5 +1833,153 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2, "rm must prompt separately");
+    }
+
+    /// A write tool that names what it writes.
+    struct Writes;
+
+    #[async_trait]
+    impl Tool for Writes {
+        fn name(&self) -> &str {
+            "write_file"
+        }
+        fn description(&self) -> &str {
+            "fake"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn effect(&self) -> Effect {
+            Effect::Write
+        }
+        fn touches(&self, input: &serde_json::Value) -> Vec<String> {
+            vec![input["path"].as_str().unwrap().to_string()]
+        }
+        async fn execute(&self, _: serde_json::Value, _: &ToolContext) -> ToolResult {
+            Ok(String::new().into())
+        }
+    }
+
+    #[tokio::test]
+    async fn no_standing_grant_covers_a_file_that_decides_what_runs() {
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"allowed": ["write_file"]}"#).unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Asked { seen: seen.clone() }));
+
+        for path in [
+            ".taurus/permissions.json",
+            ".taurus/hooks.json",
+            ".git/hooks/pre-commit",
+            ".GIT/Hooks/pre-commit",
+            "src/../.git/hooks/x",
+        ] {
+            engine
+                .check(
+                    &Writes,
+                    &serde_json::json!({ "path": path }),
+                    &Asking::default(),
+                )
+                .await
+                .unwrap();
+            let request = seen
+                .lock()
+                .await
+                .take()
+                .unwrap_or_else(|| panic!("{path} was let through on the grant"));
+            assert_eq!(request.beyond_grant.as_deref(), Some(DECIDES_WHAT_RUNS));
+            assert!(!request.offer_always, "{path}");
+            assert_eq!(request.always_global_scope, None, "{path}");
+        }
+
+        // The grant still does its job everywhere else.
+        engine
+            .check(
+                &Writes,
+                &serde_json::json!({"path": "src/main.rs"}),
+                &Asking::default(),
+            )
+            .await
+            .unwrap();
+        assert!(seen.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn always_on_such_a_file_is_narrowed_to_the_one_call() {
+        let (engine, calls, homes) = engine(PermissionDecision::AllowAlways);
+        let input = serde_json::json!({"path": ".git/hooks/pre-commit"});
+        for _ in 0..2 {
+            engine
+                .check(&Writes, &input, &Asking::default())
+                .await
+                .unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(!homes.wrote_workspace());
+    }
+
+    #[tokio::test]
+    async fn unattended_refuses_such_a_file_without_advice_about_command_lines() {
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"allowed": ["write_file"]}"#).unwrap();
+        let engine = homes.engine(Box::new(DenyAll));
+        let refused = engine
+            .check(
+                &Writes,
+                &serde_json::json!({"path": ".taurus/hooks.json"}),
+                &Asking {
+                    session: None,
+                    unattended: true,
+                },
+            )
+            .await
+            .unwrap_err();
+        let ToolError::Rejected(why) = refused else {
+            panic!("expected a refusal on the merits, got {refused:?}");
+        };
+        assert!(why.contains(DECIDES_WHAT_RUNS), "{why}");
+        assert!(!why.contains("command line"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_grant_for_a_program_does_not_cover_what_the_call_feeds_it() {
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"allowed": ["run_command:python3"]}"#).unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Asked { seen: seen.clone() }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+
+        engine
+            .check(
+                &run,
+                &serde_json::json!({"command": "python3", "stdin": "import os"}),
+                &Asking::default(),
+            )
+            .await
+            .unwrap();
+        let request = seen.lock().await.take().expect("asked");
+        assert_eq!(request.beyond_grant.as_deref(), Some(FED_STDIN));
+        assert!(!request.offer_always);
+
+        // Nothing fed, nothing to read.
+        for input in [
+            serde_json::json!({"command": "python3 x.py"}),
+            serde_json::json!({"command": "python3 x.py", "stdin": ""}),
+        ] {
+            engine
+                .check(&run, &input, &Asking::default())
+                .await
+                .unwrap();
+            assert!(seen.lock().await.is_none(), "{input}");
+        }
     }
 }

@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::catalog::{SkillCatalog, SKILL_FILE};
 use crate::interpreter;
-use crate::skill::{validate, SkillFrontmatter, SkillScript};
+use crate::skill::{stays_inside, validate, SkillFrontmatter, SkillScript};
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -121,28 +121,75 @@ pub enum SaveTarget {
     User,
 }
 
-/// Command lines that are never appropriate in a generated skill.
+/// What a line of a generated script may not do, and why.
 ///
 /// This is a floor, not a sandbox: the user still reviews the script, and
 /// `run_skill_script` still goes through the permission gate. It exists so an
 /// obviously destructive proposal never reaches a review card, where a tired
 /// user might wave it through.
-const DENIED_PATTERNS: &[(&str, &str)] = &[
-    ("rm -rf /", "recursive delete from the filesystem root"),
-    ("rm -fr /", "recursive delete from the filesystem root"),
-    ("mkfs", "filesystem creation"),
-    ("dd if=", "raw device write"),
-    (":(){", "fork bomb"),
-    ("shutdown", "shutting the machine down"),
-    ("reboot", "rebooting the machine"),
-    ("format c:", "formatting a drive"),
-    (
-        "remove-item -recurse -force c:\\",
-        "recursive delete of the system drive",
-    ),
-    ("history -c", "clearing shell history"),
-    ("chmod -r 777 /", "making the filesystem world-writable"),
-];
+///
+/// Read as commands rather than as text. Looking for `shutdown` anywhere refused
+/// `executor.shutdown()`, looking for `rm -rf /` refused `rm -rf /tmp/build`, and
+/// `dd if=` turned up inside `add if=`. A word only counts where a command starts:
+/// at the start of a line, after a separator, or at the start of a quoted string,
+/// so `os.system("reboot")` is still caught. A script that builds its command any
+/// other way gets past this, and that's what the review is for.
+fn denied_in(script: &str) -> Option<&'static str> {
+    let script = script.to_lowercase();
+    // Not commands to split up: one is punctuation, one has a path with a colon.
+    if script.contains(":(){") {
+        return Some("fork bomb");
+    }
+    if script.contains("remove-item -recurse -force c:\\") {
+        return Some("recursive delete of the system drive");
+    }
+    script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .flat_map(|line| line.split([';', '|', '&', '"', '\'', '`', '(', ')', '$', '[', ']']))
+        .find_map(denied_command)
+}
+
+/// Why one command, split into words, is refused.
+fn denied_command(command: &str) -> Option<&'static str> {
+    const PREFIXES: &[&str] = &[
+        "sudo", "exec", "env", "nohup", "time", "xargs", "then", "do", "else", "if",
+    ];
+    let mut words = command
+        .split_whitespace()
+        .skip_while(|word| PREFIXES.contains(word));
+    // `/sbin/shutdown` is `shutdown`.
+    let program = words.next()?.rsplit('/').next()?;
+    let args: Vec<&str> = words.collect();
+    let has = |wanted: &str| args.contains(&wanted);
+    let at_root = has("/") || has("/*");
+    match program {
+        "shutdown" => Some("shutting the machine down"),
+        "reboot" => Some("rebooting the machine"),
+        "mkfs" => Some("filesystem creation"),
+        name if name.starts_with("mkfs.") => Some("filesystem creation"),
+        "dd" if args.iter().any(|arg| arg.starts_with("if=")) => Some("raw device write"),
+        "format" if has("c:") => Some("formatting a drive"),
+        "history" if has("-c") => Some("clearing shell history"),
+        "chmod" if at_root && has("777") && has_flag(&args, 'r', "--recursive") => {
+            Some("making the filesystem world-writable")
+        }
+        "rm" if at_root
+            && has_flag(&args, 'r', "--recursive")
+            && has_flag(&args, 'f', "--force") =>
+        {
+            Some("recursive delete from the filesystem root")
+        }
+        _ => None,
+    }
+}
+
+/// Whether a short flag is set, alone or in a cluster like `-rf`, or its long form.
+fn has_flag(args: &[&str], short: char, long: &str) -> bool {
+    args.iter().any(|arg| {
+        *arg == long || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains(short))
+    })
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -272,14 +319,11 @@ pub fn validate_proposal(
                 return Err(ProposalRejected(reason));
             }
         }
-        let lowered = script.content.to_lowercase();
-        for (pattern, why) in DENIED_PATTERNS {
-            if lowered.contains(pattern) {
-                return Err(ProposalRejected(format!(
-                    "script '{}' contains {why}; refusing to propose it",
-                    script.path
-                )));
-            }
+        if let Some(why) = denied_in(&script.content) {
+            return Err(ProposalRejected(format!(
+                "script '{}' contains {why}; refusing to propose it",
+                script.path
+            )));
         }
     }
 
@@ -461,18 +505,44 @@ fn token_set(text: &str) -> std::collections::BTreeSet<String> {
 /// Writes an approved proposal into a skill directory.
 ///
 /// Called only after the user accepts. Returns the directory created.
+///
+/// Validation already rejected a path that climbs out, but this is the last
+/// place it can go wrong, so it's checked again, and before anything is written.
+/// A refusal rather than a skip: a skill saved without a file its procedure
+/// names would be reported as saved and fail later.
+///
+/// Replacing a skill takes away the scripts the new version doesn't have. Every
+/// file in `scripts/` is runnable through `run_skill_script` whether it's declared
+/// or not, so one left behind is a program the card that was approved never
+/// showed. Other bundled files stay: they're only read, and only if asked for.
 pub fn save(proposal: &SkillProposal, skills_root: &Path) -> std::io::Result<PathBuf> {
+    let refuse = |what: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, what);
+    if !is_folder_name(&proposal.name) {
+        return Err(refuse(format!(
+            "'{}' can't name a skill's folder",
+            proposal.name
+        )));
+    }
+    let paths = proposal
+        .files
+        .iter()
+        .map(|file| &file.path)
+        .chain(proposal.scripts.iter().map(|script| &script.path));
+    for path in paths {
+        if !stays_inside(path) {
+            return Err(refuse(format!(
+                "'{path}' would land outside the skill's folder"
+            )));
+        }
+    }
+
     let dir = skills_root.join(&proposal.name);
     std::fs::create_dir_all(&dir)?;
 
     std::fs::write(dir.join(SKILL_FILE), skill_md(proposal))?;
 
     for file in &proposal.files {
-        let rel = Path::new(&file.path);
-        if rel.is_absolute() || file.path.contains("..") {
-            continue;
-        }
-        let path = dir.join(rel);
+        let path = dir.join(&file.path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -480,13 +550,7 @@ pub fn save(proposal: &SkillProposal, skills_root: &Path) -> std::io::Result<Pat
     }
 
     for script in &proposal.scripts {
-        // Validation already rejected traversal, but the write is the last
-        // place this can go wrong, so re-check rather than trust.
-        let rel = Path::new(&script.path);
-        if rel.is_absolute() || script.path.contains("..") {
-            continue;
-        }
-        let path = dir.join(rel);
+        let path = dir.join(&script.path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -494,7 +558,36 @@ pub fn save(proposal: &SkillProposal, skills_root: &Path) -> std::io::Result<Pat
         make_executable(&path);
     }
 
+    remove_replaced_scripts(&dir, proposal)?;
+
     Ok(dir)
+}
+
+/// One path component, so joining it to the skills folder lands directly inside.
+fn is_folder_name(name: &str) -> bool {
+    !name.contains(['/', '\\'])
+        && matches!(
+            Path::new(name).components().collect::<Vec<_>>().as_slice(),
+            [std::path::Component::Normal(_)]
+        )
+}
+
+/// Takes out what's in `scripts/` that this proposal doesn't bring. See [`save`].
+fn remove_replaced_scripts(dir: &Path, proposal: &SkillProposal) -> std::io::Result<()> {
+    let scripts = dir.join(SCRIPTS_DIR.trim_end_matches('/'));
+    let entries = match std::fs::read_dir(&scripts) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let kept = proposal.scripts.iter().any(|s| dir.join(&s.path) == path);
+        if !kept && path.is_file() {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 /// The SKILL.md an approved proposal becomes.
@@ -605,6 +698,114 @@ mod tests {
             plugin: None,
         }]);
         (catalog, dir)
+    }
+
+    #[test]
+    fn a_script_is_refused_for_what_it_runs_and_not_for_what_it_mentions() {
+        for script in [
+            "#!/bin/bash\nrm -rf /\n",
+            "rm -fr /*\n",
+            "sudo rm -r -f / --no-preserve-root\n",
+            "cd x && rm -rf /\n",
+            "/sbin/shutdown -h now\n",
+            "os.system(\"reboot\")\n",
+            "subprocess.run([\"shutdown\", \"-h\"])\n",
+            "mkfs.ext4 /dev/sda1\n",
+            "dd if=/dev/zero of=/dev/sda\n",
+            "chmod -R 777 /\n",
+            "history -c\n",
+            ":(){ :|:& };:\n",
+            "Remove-Item -Recurse -Force C:\\\n",
+        ] {
+            assert!(denied_in(script).is_some(), "should refuse: {script}");
+        }
+        for script in [
+            "executor.shutdown()\n",
+            "server.shutdown(wait=True)\n",
+            "rm -rf /tmp/build\n",
+            "rm -rf ./out\n",
+            "rm -f /\n",
+            "chmod 777 /tmp/x\n",
+            "add if=x\n",
+            "cat mkfs_notes.txt\n",
+            "# reboot once this has finished\n",
+            "git log --format c:\n",
+        ] {
+            assert_eq!(denied_in(script), None, "should allow: {script}");
+        }
+    }
+
+    #[test]
+    fn a_harmless_script_that_says_shutdown_reaches_the_review() {
+        let (catalog, _d) = catalog_with(&[]);
+        let mut p = proposal();
+        p.scripts.push(ProposedScript {
+            path: "scripts/pool.py".into(),
+            interpreter: "python3".into(),
+            description: String::new(),
+            content: "pool.shutdown(wait=True)\n".into(),
+        });
+        assert!(validate_proposal(&p, &catalog).is_ok());
+    }
+
+    #[test]
+    fn a_file_with_two_dots_in_its_name_is_saved() {
+        // It passes validation, so it must not then go quietly missing.
+        let root = TempDir::new().unwrap();
+        let mut p = proposal();
+        p.files.push(ProposedFile {
+            path: "references/v1..2.md".into(),
+            content: "changes\n".into(),
+        });
+        let (catalog, _d) = catalog_with(&[]);
+        assert!(validate_proposal(&p, &catalog).is_ok());
+
+        let dir = save(&p, root.path()).unwrap();
+
+        assert!(dir.join("references/v1..2.md").is_file());
+    }
+
+    #[test]
+    fn a_path_or_name_that_climbs_out_is_refused_with_nothing_written() {
+        let root = TempDir::new().unwrap();
+        let mut p = proposal();
+        p.files.push(ProposedFile {
+            path: "references/../../../escaped.md".into(),
+            content: "x\n".into(),
+        });
+        assert!(save(&p, root.path()).is_err());
+        assert!(!root.path().join("release-notes").exists());
+
+        let mut p = proposal();
+        p.name = "../outside".into();
+        assert!(save(&p, root.path()).is_err());
+        assert!(!root.path().parent().unwrap().join("outside").exists());
+    }
+
+    #[test]
+    fn replacing_a_skill_takes_away_the_scripts_it_no_longer_has() {
+        let root = TempDir::new().unwrap();
+        let script = |path: &str| ProposedScript {
+            path: path.into(),
+            interpreter: "bash".into(),
+            description: String::new(),
+            content: "echo hi\n".into(),
+        };
+        let mut first = proposal();
+        first.scripts = vec![script("scripts/old.sh"), script("scripts/kept.sh")];
+        first.files.push(ProposedFile {
+            path: "references/notes.md".into(),
+            content: "notes\n".into(),
+        });
+        let dir = save(&first, root.path()).unwrap();
+
+        let mut second = proposal();
+        second.scripts = vec![script("scripts/kept.sh")];
+        save(&second, root.path()).unwrap();
+
+        assert!(!dir.join("scripts/old.sh").exists());
+        assert!(dir.join("scripts/kept.sh").exists());
+        assert!(dir.join("references/notes.md").exists(), "only scripts go");
     }
 
     #[test]

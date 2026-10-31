@@ -147,3 +147,34 @@ fn a_skill_draft_in_a_fence_is_still_read() {
     let drafted: library::DraftedSkill = serde_json::from_str(json).expect("a skill");
     let _ = drafted;
 }
+
+#[test]
+fn links_can_open_in_the_browser() {
+    // `allow-open-url` grants the command and no address, and the plugin
+    // refuses whatever isn't in a scope. On its own it makes every link in a
+    // reply a click that does nothing, and the error goes nowhere anyone sees.
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../../capabilities/default.json")).unwrap();
+    let granted = capability["permissions"].as_array().unwrap();
+    assert!(granted.iter().any(|p| p == "opener:allow-default-urls"));
+}
+
+#[tokio::test]
+async fn a_proposal_that_fails_to_save_can_be_pressed_again() {
+    let pending = dashmap::DashMap::new();
+    pending.insert("p1".to_string(), "draft".to_string());
+
+    let failed: CmdResult<()> = settling(&pending, "p1", "proposal", |_| async {
+        Err("this can't be saved as written".to_string())
+    })
+    .await;
+    assert!(failed.is_err());
+
+    // The second press finds what the first one had.
+    let saved = settling(&pending, "p1", "proposal", |draft| async move { Ok(draft) }).await;
+    assert_eq!(saved.as_deref(), Ok("draft"));
+    assert!(pending.is_empty(), "a settled proposal is still parked");
+
+    let gone: CmdResult<()> = settling(&pending, "p1", "proposal", |_| async { Ok(()) }).await;
+    assert_eq!(gone, Err("no pending proposal 'p1'".to_string()));
+}

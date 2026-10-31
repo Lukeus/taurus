@@ -83,7 +83,7 @@ impl OllamaProvider {
         Self {
             id: PROVIDER_ID.to_string(),
             base_url,
-            client: http::Client::new(),
+            client: new_client(),
             context_limit: DEFAULT_CONTEXT_LIMIT,
             caps: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -456,6 +456,21 @@ impl Provider for OllamaProvider {
             }
         })
     }
+}
+
+/// The process's shared client, in the app, which has one runtime.
+#[cfg(not(test))]
+fn new_client() -> http::Client {
+    http::Client::new()
+}
+
+/// A client of its own, in a test. Each `#[tokio::test]` is its own runtime and
+/// a pooled connection dies with the runtime that opened it, so a shared pool
+/// fails a later test whose mock server lands on the same port ("runtime dropped
+/// the dispatch task").
+#[cfg(test)]
+fn new_client() -> http::Client {
+    http::Client::stalling_after(http::STALL_TIMEOUT)
 }
 
 /// A dropped receiver means the session went away; treat it as cancellation

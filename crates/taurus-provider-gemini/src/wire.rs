@@ -55,7 +55,7 @@ impl GenerateBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ModelsResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub models: Vec<ModelEntry>,
 }
 
@@ -73,7 +73,7 @@ pub struct ModelEntry {
     /// Which methods the model serves. A model that cannot stream content is
     /// not one this harness can drive, so it is filtered out rather than
     /// offered and discovered at the first turn.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub supported_generation_methods: Vec<String>,
 }
 
@@ -98,13 +98,26 @@ impl ModelEntry {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamChunk {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub candidates: Vec<Candidate>,
     #[serde(default)]
     pub usage_metadata: Option<UsageMetadata>,
     /// Present instead of `candidates` when the request itself was rejected.
     #[serde(default)]
     pub error: Option<ApiError>,
+    /// Present instead of `candidates` when the prompt was blocked, which is a
+    /// 200 with no finish reason and no error.
+    #[serde(default)]
+    pub prompt_feedback: Option<PromptFeedback>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFeedback {
+    #[serde(default)]
+    pub block_reason: Option<String>,
+    #[serde(default)]
+    pub block_reason_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +131,7 @@ pub struct Candidate {
 
 #[derive(Debug, Deserialize)]
 pub struct Content {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub parts: Vec<Part>,
 }
 
@@ -176,10 +189,32 @@ impl UsageMetadata {
 pub struct ApiError {
     #[serde(default)]
     pub code: Option<u16>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub message: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub status: String,
+}
+
+#[cfg(test)]
+mod null_tests {
+    use super::*;
+
+    #[test]
+    fn a_field_written_as_null_does_not_lose_the_chunk() {
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"candidates":null,"usageMetadata":{"promptTokenCount":3}}"#)
+                .unwrap();
+        assert!(chunk.candidates.is_empty());
+        assert!(chunk.usage_metadata.is_some());
+        let parts: StreamChunk =
+            serde_json::from_str(r#"{"candidates":[{"content":{"parts":null}}]}"#).unwrap();
+        assert!(parts.candidates[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .parts
+            .is_empty());
+    }
 }
 
 #[cfg(test)]

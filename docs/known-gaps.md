@@ -419,6 +419,15 @@ the backlog, and they're the minority.
   readers keep byte cursors into a shared buffer, and shortening the text
   those cursors count would move the model's place and the window's apart.
   See [Output too big to hand over](safety.md#output-too-big-to-hand-over).
+- **A record written straight onto a torn line stays lost.** Taurus now starts
+  a new line after a tear, so this can't happen again. But a transcript an older
+  build appended to may already hold a torn fragment and a whole record on one
+  line, and that line is dropped on load like any other it can't parse. Getting
+  the record back would mean guessing where the fragment stops, and nothing does.
+- **The CLI and the app can still overwrite each other's memory notes.** Writes
+  are serialized inside one process, and each is an atomic replace, so the file
+  never tears. But a `taurus run` beside the window can read the notes, then
+  replace a note the window added in between. Covering it takes a lock file.
 - **A cut command's output can be swept away while the transcript still points
   at it.** When a stream outruns what the model's window has room for, the
   whole of it is written to `~/.taurus/output/<workspace-key>/`, and the gap
@@ -749,9 +758,9 @@ the backlog, and they're the minority.
   tool may return.
 - **Only Anthropic carries a tool's image inside the result.** OpenAI's
   `role: "tool"`, Gemini's `functionResponse`, and Ollama's tool message are
-  text. On those three, the picture moves to just after the result, with a
-  marker line where it was and a note naming the call. It arrives in order
-  and attributed, but as a separate part of the conversation, not part of the
+  text. On those three, the picture moves to just after the round's results,
+  with a marker line where it was and a note naming the call. It arrives in
+  order and attributed, but as a separate part of the conversation, not part of the
   answer. A model that weighs a tool result differently from a user message
   will weigh it differently. That's what the wire formats allow. Closing it
   needs those APIs to change, not this one.
@@ -1050,6 +1059,10 @@ the backlog, and they're the minority.
   Your own typing is neither, so git is the undo that covers it. The cost is
   real: rewinding a turn restores the files that turn wrote. If you were also
   typing in one of them, your typing gets restored over. Nothing warns you.
+- **Typing the canvas couldn't save lasts only as long as the window.** Closing
+  a file during a conflict or after a failed save keeps your text and brings it
+  back when you reopen the file, but it's held in memory. Closing the window
+  loses it.
 - **A file changing outside a turn goes unnoticed.** The canvas reloads when
   the running turn writes the file (`files_changed` says so on the turn's own
   event stream) and when the document is opened again. A `git checkout` in
@@ -1134,6 +1147,11 @@ the backlog, and they're the minority.
   the harness classifying tools by something other than effect. Effect is
   what the categories exist to capture, and it's what the run header counts.
   The shape is a useful hint about the kind of work, not a readout.
+- **A permission prompt raised during a reload can be lost.** A turn keeps
+  running through a reload, and a prompt it raises before the new page is
+  listening never reaches the screen. The turn waits on it, still marked as
+  running, until you press Stop. Closing this means re-offering outstanding
+  prompts when a page starts.
 - **A turn dies with the process.** It survives everything inside the window —
   a reload, a switch to another conversation, the conversation being closed —
   because the turn belongs to the conversation rather than to the call that
@@ -1184,7 +1202,9 @@ the backlog, and they're the minority.
   and nothing about
   the rest. `make`, `npm run`, `cargo run` and a `git` alias all run what the
   project says, and a grant for one of them is a grant for that. A heredoc is
-  never covered either, because the body of `python3 <<EOF` is a script. The
+  never covered either, because the body of `python3 <<EOF` is a script, and
+  neither is a line it can't fully read. An argument can still run something
+  (`awk`'s `system()`, `sed`'s `e`, `git -c alias.x='!…'`). The
   alternative is a shell parser, and a parser that is wrong lets something
   through, where a tokenizer that gives up asks. See
   [Permissions](safety.md#permissions).

@@ -6,6 +6,9 @@
 //! direction cannot represent interleaved text, thinking, and multiple tool
 //! calls inside a single assistant turn.
 
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet, VecDeque};
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -23,6 +26,92 @@ pub const OPENAI_REASONING_PREFIX: &str = "openai-reasoning:";
 /// Responses route can replay.
 pub fn is_openai_reasoning(signature: &str) -> bool {
     signature.starts_with(OPENAI_REASONING_PREFIX)
+}
+
+/// Marks a [`ContentBlock::Thinking`] signature as one Gemini issued.
+///
+/// The same slot and the same reason as [`OPENAI_REASONING_PREFIX`]. An
+/// unprefixed signature is Anthropic's: that's what every transcript already on
+/// disk holds, so it's the form that stays bare. Only the signature on a
+/// thinking block carries this; the one on a [`ContentBlock::ToolUse`] is only
+/// ever issued and read by Gemini.
+pub const GEMINI_THOUGHT_PREFIX: &str = "gemini-thought:";
+
+/// A thinking block's signature as Anthropic should see it: the value itself,
+/// or `None` when another provider issued it and this API can't verify it.
+pub fn anthropic_signature(signature: &str) -> Option<&str> {
+    let foreign = is_openai_reasoning(signature) || signature.starts_with(GEMINI_THOUGHT_PREFIX);
+    (!foreign).then_some(signature)
+}
+
+/// A thinking block's signature as Gemini should see it: past the prefix, or
+/// `None` when Gemini didn't issue it.
+pub fn gemini_signature(signature: &str) -> Option<&str> {
+    signature.strip_prefix(GEMINI_THOUGHT_PREFIX)
+}
+
+/// A tool call's input as a request may carry it, which is always an object.
+///
+/// The accumulator leaves a call's input `null` when its JSON never parsed, and
+/// the prompted fallback leaves a string, so the tool can refuse it and the model
+/// can try again. That has to stay in the history as it arrived, but it can't go
+/// back out: the APIs take a call's input as an object and refuse the whole
+/// request otherwise, on every turn from then on. The tool already said what
+/// was wrong, in the result that follows, so an empty object loses nothing.
+///
+/// At replay rather than when the call is recorded, so a transcript written
+/// before this existed works again as well.
+pub fn replay_input(input: &serde_json::Value) -> Cow<'_, serde_json::Value> {
+    if input.is_object() {
+        Cow::Borrowed(input)
+    } else {
+        Cow::Owned(serde_json::json!({}))
+    }
+}
+
+/// `messages` with every tool call under an id of its own.
+///
+/// The ids decide pairing across a whole history, and a transcript can hold the
+/// same one twice: the prompted fallback used to count from `ptc_1` on every
+/// request, and a server that repeated an id on each fragment split one call
+/// into several. A later call under a used id gets `{id}_{n}`, and so does the
+/// result that answers it, matched in order. The rename is stable, so a
+/// backend's cached prefix survives it.
+pub fn with_unique_tool_ids(mut messages: Vec<Message>) -> Vec<Message> {
+    let mut used: HashSet<String> = HashSet::new();
+    let mut waiting: HashMap<String, VecDeque<String>> = HashMap::new();
+    // The common case by far: nothing repeats, and nothing is rewritten.
+    if messages
+        .iter()
+        .flat_map(Message::tool_uses)
+        .all(|(id, _, _)| used.insert(id.to_string()))
+    {
+        return messages;
+    }
+    used.clear();
+    for block in messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
+        match block {
+            ContentBlock::ToolUse { id, .. } => {
+                let mut unique = id.clone();
+                let mut n = 1;
+                while !used.insert(unique.clone()) {
+                    n += 1;
+                    unique = format!("{id}_{n}");
+                }
+                waiting
+                    .entry(std::mem::replace(id, unique.clone()))
+                    .or_default()
+                    .push_back(unique);
+            }
+            ContentBlock::ToolResult { tool_use_id, .. } => {
+                if let Some(unique) = waiting.get_mut(tool_use_id).and_then(VecDeque::pop_front) {
+                    *tool_use_id = unique;
+                }
+            }
+            _ => {}
+        }
+    }
+    messages
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -67,7 +156,8 @@ pub enum ContentBlock {
         ///
         /// OpenAI's Responses route is the other: its reasoning comes back
         /// encrypted, and is carried here behind [`OPENAI_REASONING_PREFIX`]
-        /// so no other adapter mistakes it for a signature of its own.
+        /// so no other adapter mistakes it for a signature of its own. Gemini's
+        /// goes behind [`GEMINI_THOUGHT_PREFIX`] for the same reason.
         ///
         /// `None` on every other backend, and on transcripts written before
         /// this field existed, which is why it defaults rather than being
@@ -369,16 +459,18 @@ impl ToolOutput {
     /// Only Anthropic takes a picture inside a `tool_result`. OpenAI's
     /// `role: "tool"`, Gemini's `functionResponse` and Ollama's tool message
     /// are all text, so an image handed back by a tool has to travel as a
-    /// separate user message placed immediately after — near enough that the
-    /// model reads the two as one answer.
+    /// separate user message placed after the round's results — near enough
+    /// that the model reads the two as one answer, and never between two
+    /// results, because a call's answer has to follow it with nothing between.
     ///
     /// The text keeps a line where each image was, rather than the images being
     /// quietly moved. A tool that returns "here is the chart" and a chart would
     /// otherwise appear to have returned only the sentence, and the picture
     /// arriving afterwards would read as something the user sent.
     ///
-    /// Adapters must place the returned images directly after the tool message,
-    /// or the association is lost.
+    /// Adapters must place the returned images after the last tool message of
+    /// the round. The note from [`relocated_note`] names the call, which is what
+    /// keeps the association.
     ///
     /// Says nothing about failure. Whether an error is marked by a flag, a key,
     /// or a prefix on the text is the wire format's business and differs on
@@ -523,6 +615,104 @@ pub fn relocated_note(tool: Option<&str>, count: usize) -> String {
     match tool {
         Some(name) => format!("The {what} returned by the `{name}` call above."),
         None => format!("The {what} returned by the tool call above."),
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_an_object_goes_back_out_as_a_calls_input() {
+        assert_eq!(*replay_input(&json!({"a": 1})), json!({"a": 1}));
+        assert_eq!(*replay_input(&serde_json::Value::Null), json!({}));
+        assert_eq!(*replay_input(&json!("{not json")), json!({}));
+    }
+
+    #[test]
+    fn a_repeated_tool_id_gets_its_own_and_its_result_follows() {
+        // What a transcript from the old prompted path holds.
+        let round = |input: &str| {
+            [
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use("ptc_1", "read", json!({"p": input}))],
+                ),
+                Message::new(Role::User, vec![ContentBlock::tool_result("ptc_1", input)]),
+            ]
+        };
+        let messages: Vec<Message> = [round("a"), round("b")].concat();
+        let unique = with_unique_tool_ids(messages);
+
+        let (id, _, input) = unique[2].tool_uses().next().unwrap();
+        assert_ne!(id, "ptc_1");
+        assert_eq!(input, &json!({"p": "b"}));
+        let ContentBlock::ToolResult { tool_use_id, .. } = &unique[3].content[0] else {
+            panic!("a result");
+        };
+        assert_eq!(tool_use_id, id);
+        let ContentBlock::ToolResult { tool_use_id, .. } = &unique[1].content[0] else {
+            panic!("a result");
+        };
+        assert_eq!(tool_use_id, "ptc_1");
+    }
+
+    #[test]
+    fn repeats_inside_one_message_pair_with_their_results_in_order() {
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::tool_use("x", "a", json!({})),
+                    ContentBlock::tool_use("x", "b", json!({})),
+                ],
+            ),
+            Message::new(
+                Role::User,
+                vec![
+                    ContentBlock::tool_result("x", "first"),
+                    ContentBlock::tool_result("x", "second"),
+                ],
+            ),
+        ];
+        let unique = with_unique_tool_ids(messages);
+        let ids: Vec<&str> = unique[0].tool_uses().map(|(id, _, _)| id).collect();
+        assert_ne!(ids[0], ids[1]);
+        let answered: Vec<&str> = unique[1]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, answered);
+    }
+
+    #[test]
+    fn a_history_with_no_repeats_is_left_as_it_was() {
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use("x", "a", json!({}))],
+            ),
+            Message::new(Role::User, vec![ContentBlock::tool_result("x", "r")]),
+        ];
+        assert_eq!(with_unique_tool_ids(messages.clone()), messages);
+    }
+
+    #[test]
+    fn each_adapter_is_handed_only_the_signatures_it_issued() {
+        // Bare is Anthropic's, which is what transcripts on disk hold.
+        assert_eq!(anthropic_signature("sig"), Some("sig"));
+        assert_eq!(gemini_signature("sig"), None);
+        let gemini = format!("{GEMINI_THOUGHT_PREFIX}g");
+        assert_eq!(anthropic_signature(&gemini), None);
+        assert_eq!(gemini_signature(&gemini), Some("g"));
+        let openai = format!("{OPENAI_REASONING_PREFIX}o");
+        assert_eq!(anthropic_signature(&openai), None);
+        assert_eq!(gemini_signature(&openai), None);
     }
 }
 

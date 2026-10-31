@@ -429,6 +429,10 @@ pub struct SessionLog {
     /// up as turns start so a conversation that's already open can say so
     /// without reading its transcript again.
     marks: Vec<TurnMark>,
+    /// The file may end partway through a line, so look before the next write.
+    /// True until the first write has looked, and again after a write fails,
+    /// since a failed `write_all` can leave part of its line behind.
+    tail_unchecked: bool,
 }
 
 impl SessionLog {
@@ -458,6 +462,7 @@ impl SessionLog {
             warned: false,
             held_turn: None,
             marks: Vec::new(),
+            tail_unchecked: true,
         }
     }
 
@@ -484,6 +489,7 @@ impl SessionLog {
             warned: false,
             held_turn: None,
             marks: loaded.turns.clone(),
+            tail_unchecked: true,
         }
     }
 
@@ -522,6 +528,7 @@ impl SessionLog {
             warned: false,
             held_turn: None,
             marks: Vec::new(),
+            tail_unchecked: true,
         }
     }
 
@@ -535,6 +542,7 @@ impl SessionLog {
             warned: false,
             held_turn: None,
             marks: Vec::new(),
+            tail_unchecked: true,
         }
     }
 
@@ -785,8 +793,12 @@ impl SessionLog {
     /// one write, so a record never lands without the end that makes the next
     /// one a line of its own. Returns whether it landed.
     fn append(&mut self, file: &mut std::fs::File, record: &Record) -> bool {
-        let written = serde_json::to_vec(record)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let written = self
+            .end_torn_line(file)
+            .and_then(|()| {
+                serde_json::to_vec(record)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })
             .and_then(|mut line| {
                 line.push(b'\n');
                 file.write_all(&line)
@@ -794,10 +806,24 @@ impl SessionLog {
         match written {
             Ok(()) => true,
             Err(e) => {
+                self.tail_unchecked = true;
                 self.warn(&e);
                 false
             }
         }
+    }
+
+    /// Ends a line a killed process or a full disk left unfinished, so the next
+    /// record gets a line of its own. Glued onto the fragment, that record would
+    /// be unreadable too. The fragment stays what it was, a line `load` drops.
+    fn end_torn_line(&mut self, file: &mut std::fs::File) -> std::io::Result<()> {
+        if self.tail_unchecked {
+            if ends_mid_line(&self.path) {
+                file.write_all(b"\n")?;
+            }
+            self.tail_unchecked = false;
+        }
+        Ok(())
     }
 
     fn warn(&mut self, error: &std::io::Error) {
@@ -847,6 +873,40 @@ fn header_for(session: &Session, workspace: &Path, branch: Option<String>) -> He
     }
 }
 
+/// A JSONL file's lines, whatever bytes they hold.
+///
+/// [`BufRead::lines`] answers `Err` for a line that isn't UTF-8, and stopping at
+/// that error would hide every line after it. A tear can land inside a
+/// multi-byte character, so one line is decoded lossily here, fails to parse in
+/// the caller, and costs only itself.
+pub(crate) fn lines_of(mut reader: impl BufRead) -> impl Iterator<Item = String> {
+    std::iter::from_fn(move || {
+        let mut raw = Vec::new();
+        match reader.read_until(b'\n', &mut raw) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                if raw.last() == Some(&b'\n') {
+                    raw.pop();
+                    if raw.last() == Some(&b'\r') {
+                        raw.pop();
+                    }
+                }
+                Some(String::from_utf8_lossy(&raw).into_owned())
+            }
+        }
+    })
+}
+
+/// Whether a file has something in it and doesn't end with a newline.
+pub(crate) fn ends_mid_line(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut last = [0u8];
+    file.seek(SeekFrom::End(-1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] != b'\n'
+}
+
 /// Whether a transcript already carries a header record.
 ///
 /// Scans for the record rather than reading the first line, so that this agrees
@@ -856,9 +916,7 @@ fn has_header(path: &Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
+    lines_of(BufReader::new(file))
         .any(|line| matches!(serde_json::from_str::<Record>(&line), Ok(Record::Header(_))))
 }
 
@@ -923,9 +981,10 @@ pub struct Loaded {
 
 /// Rebuilds a session from its transcript.
 ///
-/// A trailing line that will not parse is dropped rather than failing the load:
-/// it is the turn that was in flight when the process died, and refusing to
-/// open the file would lose the rest of the conversation over it.
+/// A line that will not parse is dropped rather than failing the load: it is
+/// the turn that was in flight when the process died, and refusing to open the
+/// file would lose the rest of the conversation over it. That holds wherever
+/// the line sits, since an earlier build could go on appending after one.
 pub fn load(id: &str) -> Result<Loaded, String> {
     read_transcript(find(id).ok_or_else(|| format!("no saved session '{id}'"))?)
 }
@@ -957,7 +1016,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut open_turn: Option<String> = None;
     let mut out_of_rounds = false;
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in lines_of(BufReader::new(file)) {
         if line.trim().is_empty() {
             continue;
         }
@@ -1086,7 +1145,7 @@ pub fn turn_messages(session_id: &str, turn_id: &str) -> Option<Vec<Message>> {
     let mut messages = Vec::new();
     let mut inside = false;
     let mut found = false;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in lines_of(BufReader::new(file)) {
         match serde_json::from_str::<Record>(&line) {
             Ok(Record::Turn { id, .. }) => {
                 if inside {
@@ -1118,8 +1177,9 @@ pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String
     }
     let source =
         find(&from.session).ok_or_else(|| format!("no saved session '{}'", from.session))?;
-    let contents =
-        std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    // Lossy, like every other reader: a torn line is no reason to refuse.
+    let contents = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let contents = String::from_utf8_lossy(&contents);
     let lines: Vec<&str> = contents.lines().collect();
 
     let (header, turns) = turn_records(&lines);
@@ -1174,9 +1234,10 @@ pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String
             if !meta.call.as_ref().is_some_and(|call| calls.contains(call)) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = std::fs::read(&path) else {
                 continue;
             };
+            let text = String::from_utf8_lossy(&text);
             let rewritten: String = text
                 .split_inclusive('\n')
                 .map(
@@ -1210,8 +1271,9 @@ pub fn fork_transcript(new_id: &str, from: &ForkedFrom) -> Result<String, String
 /// checkpoint log against before anything is written.
 pub fn fork_point(session_id: &str, turn: &str) -> Result<ForkPoint, String> {
     let source = find(session_id).ok_or_else(|| format!("no saved session '{session_id}'"))?;
-    let contents =
-        std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    // Lossy, like every other reader: a torn line is no reason to refuse.
+    let contents = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let contents = String::from_utf8_lossy(&contents);
     let lines: Vec<&str> = contents.lines().collect();
     let (_, turns) = turn_records(&lines);
     let at = cut_at(&turns, session_id, turn)?;
@@ -1298,7 +1360,7 @@ pub fn outline(session_id: &str) -> Result<Outline, String> {
     let path = find(session_id).ok_or_else(|| format!("no saved session '{session_id}'"))?;
     let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut outline = Outline::default();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in lines_of(BufReader::new(file)) {
         match serde_json::from_str::<Record>(&line) {
             Ok(Record::Usage(usage)) => outline.usage = usage,
             Ok(Record::Turn { id, continues, .. }) => outline.turns.push(OutlineTurn {
@@ -1489,11 +1551,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
     // One pass for both, stopping as soon as nothing worth finding is left. A
     // transcript normally opens with its header and reaches the first question
     // a line or two later, so this reads the top of the file and returns.
-    for (index, line) in BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .enumerate()
-    {
+    for (index, line) in lines_of(BufReader::new(file)).enumerate() {
         // What a fork copied, the lines after its header. Read for the
         // inherited title and then passed over unparsed.
         let copied = header.as_ref().and_then(|found| found.copied).unwrap_or(0);
@@ -1604,21 +1662,23 @@ fn first_text(message: &Message) -> Option<String> {
 /// all. A record this version does not recognize survives being renamed by it,
 /// and a torn final line — the turn that was in flight when the process died —
 /// stays exactly as torn as it was, so [`load`] goes on dropping it rather than
-/// finding it repaired into something it will now accept.
+/// finding it repaired into something it will now accept. Bytes rather than
+/// text, because a tear can land inside a multi-byte character. The next record
+/// appended gets a newline in front of it, which ends the torn line and changes
+/// nothing in it.
 pub fn rename(id: &str, title: Option<&str>) -> Result<SessionMeta, String> {
     let path = find(id).ok_or_else(|| format!("no saved session '{id}'"))?;
     let title = title.and_then(normalize_title);
 
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let contents = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
 
     // `split_inclusive` keeps each line's terminator attached, so what is
     // written back differs from what was read only where it has to.
-    let mut out = String::with_capacity(contents.len() + 128);
+    let mut out: Vec<u8> = Vec::with_capacity(contents.len() + 128);
     let mut renamed = false;
-    for line in contents.split_inclusive('\n') {
-        let text = line.strip_suffix('\n').unwrap_or(line);
-        match serde_json::from_str::<Record>(text) {
+    for line in contents.split_inclusive(|byte| *byte == b'\n') {
+        let text = line.strip_suffix(b"\n").unwrap_or(line);
+        match serde_json::from_slice::<Record>(text) {
             // The first header only. A transcript has one; a file that somehow
             // has two would otherwise get a title on each and disagree with
             // itself depending on which a reader stopped at.
@@ -1626,11 +1686,11 @@ pub fn rename(id: &str, title: Option<&str>) -> Result<SessionMeta, String> {
                 header.title = title.clone();
                 let encoded = serde_json::to_string(&Record::Header(header))
                     .map_err(|e| format!("could not write the title: {e}"))?;
-                out.push_str(&encoded);
-                out.push_str(line.strip_prefix(text).unwrap_or("\n"));
+                out.extend_from_slice(encoded.as_bytes());
+                out.extend_from_slice(&line[text.len()..]);
                 renamed = true;
             }
-            _ => out.push_str(line),
+            _ => out.extend_from_slice(line),
         }
     }
 
@@ -1646,7 +1706,7 @@ pub fn rename(id: &str, title: Option<&str>) -> Result<SessionMeta, String> {
     // temporary's name starts with a dot and does not end in `.jsonl`, so
     // `list`, which scans for `.jsonl`, never mistakes a stray one for a
     // conversation.
-    crate::config::replace_file(&path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::config::replace_bytes(&path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
 
     read_meta(&path).ok_or_else(|| format!("{} could not be read back", path.display()))
 }
@@ -2952,5 +3012,97 @@ mod tests {
             "a session `load` can open must be listable"
         );
         assert_eq!(listed[0].title, "the question");
+    }
+
+    /// Cuts the transcript off partway through a record, as a killed process
+    /// does.
+    fn tear(path: &Path, fragment: &[u8]) {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(fragment).unwrap();
+    }
+
+    #[test]
+    fn a_turn_after_a_torn_line_is_still_there_on_the_next_load() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let session = session_with("torn2", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+        tear(log.path(), br#"{"type":"message","role":"user","cont"#);
+
+        let loaded = load("torn2").unwrap();
+        let mut session = loaded.session.clone();
+        let mut log = SessionLog::resume(&loaded);
+        session.push(Message::user("second"));
+        log.record(&session);
+
+        let again = load("torn2").unwrap().session;
+        assert_eq!(again.messages.len(), 3, "the new message must survive");
+        assert_eq!(again.messages[2].text(), "second");
+    }
+
+    #[test]
+    fn a_tear_inside_a_character_hides_nothing_written_after_it() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let session = session_with("torn3", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+        // The first byte of a two-byte character, and no more of it.
+        tear(log.path(), b"{\"type\":\"message\",\"text\":\"caf\xC3");
+
+        let loaded = load("torn3").unwrap();
+        let mut session = loaded.session.clone();
+        let mut log = SessionLog::resume(&loaded);
+        session.push(Message::user("second"));
+        log.record(&session);
+
+        let again = load("torn3").unwrap().session;
+        assert_eq!(again.messages.last().unwrap().text(), "second");
+        assert_eq!(meta("torn3").unwrap().title, "first");
+    }
+
+    #[test]
+    fn a_bad_line_already_in_the_middle_of_a_transcript_costs_only_itself() {
+        // What an older build left: a torn line with more written after it.
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let session = session_with("torn4", &["first", "second"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+        let path = log.path().to_path_buf();
+
+        let raw = std::fs::read(&path).unwrap();
+        let cut = raw.iter().position(|b| *b == b'\n').unwrap() + 1;
+        let mut with_bad_line = raw[..cut].to_vec();
+        with_bad_line.extend_from_slice(b"{\"torn\":\"\xC3\n");
+        with_bad_line.extend_from_slice(&raw[cut..]);
+        std::fs::write(&path, &with_bad_line).unwrap();
+
+        assert_eq!(load("torn4").unwrap().session.messages.len(), 4);
+        assert_eq!(outline("torn4").unwrap().usage, session.usage);
+
+        // Renaming keeps every byte but the header, including that line's.
+        rename("torn4", Some("named")).unwrap();
+        let after = std::fs::read(&path).unwrap();
+        let first = after.iter().position(|b| *b == b'\n').unwrap() + 1;
+        assert_eq!(&after[first..], &with_bad_line[cut..]);
+        assert_eq!(meta("torn4").unwrap().title, "named");
+    }
+
+    #[test]
+    fn a_transcript_with_a_bad_line_can_still_be_forked() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let session = session_with("torn5", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.start_turn("t1", false);
+        log.record(&session);
+        log.end_turn("t1", "finished");
+        log.start_turn("t2", false);
+        tear(log.path(), b"{\"torn\":\"\xC3\n");
+
+        let point = fork_point("torn5", "t2").unwrap();
+        assert_eq!(point.before, ["t1"]);
     }
 }

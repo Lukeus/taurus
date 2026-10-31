@@ -1349,8 +1349,14 @@ fn kind_of(data_type: &DataType) -> ColumnKind {
         | Struct(_)
         | Map(_, _)
         | Union(_, _)
-        | Dictionary(_, _)
+        // Single values, stored run-length. It's here because the aggregates
+        // the profile runs aren't something this can promise over one, and
+        // one failed aggregate would cost the whole table its profile.
         | RunEndEncoded(_, _) => ColumnKind::Nested,
+        // A categorical column: one value per cell, stored as an index into a
+        // table of them. It reads as what the table holds, and a column of a
+        // few repeated values is what a top five is for.
+        Dictionary(_, values) => kind_of(values),
         // Binary and null. Neither orders usefully and neither is nested; text
         // is the honest bucket, and `type_name` carries what it actually is.
         _ => ColumnKind::Text,
@@ -1385,6 +1391,48 @@ id,event,price,active
             .iter()
             .find(|c| c.head.name == name)
             .unwrap_or_else(|| panic!("no column {name} in {:?}", profile.columns))
+    }
+
+    #[test]
+    fn a_dictionary_column_reads_as_what_it_holds() {
+        let dictionary = |values| DataType::Dictionary(Box::new(DataType::Int32), Box::new(values));
+        assert_eq!(kind_of(&dictionary(DataType::Utf8)), ColumnKind::Text);
+        assert_eq!(kind_of(&dictionary(DataType::Int64)), ColumnKind::Number);
+    }
+
+    #[tokio::test]
+    async fn a_categorical_parquet_column_gets_a_full_profile() {
+        use datafusion::arrow::array::{ArrayRef, DictionaryArray};
+        use datafusion::arrow::datatypes::{Field, Int32Type, Schema as ArrowSchema};
+        use datafusion::parquet::arrow::ArrowWriter;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("categories.parquet");
+        let values: DictionaryArray<Int32Type> =
+            vec!["red", "blue", "red", "red"].into_iter().collect();
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "colour",
+            values.data_type().clone(),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(values) as ArrayRef]).unwrap();
+        let mut writer =
+            ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let profile = InlineEngine
+            .profile(&Source::at(&path).unwrap())
+            .await
+            .unwrap();
+        let colour = column(&profile, "colour");
+
+        assert_eq!(colour.head.kind, ColumnKind::Text);
+        assert_eq!(colour.distinct, Distinct::Exact { count: 2 });
+        assert_eq!(colour.min.as_deref(), Some("blue"));
+        assert_eq!(colour.common[0].value.as_deref(), Some("red"));
+        assert_eq!(colour.common[0].count, 3);
     }
 
     #[tokio::test]

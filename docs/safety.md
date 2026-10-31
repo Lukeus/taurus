@@ -126,11 +126,40 @@ already saved. A command that:
 - feeds a program a script written into the line (`<<EOF`, `<<<`)
 - starts with a word that only hands the rest of the line to another program:
   `sh -c`, `env`, `xargs`, `sudo`, `nohup`, `powershell -Command`, and the like
-- runs code written into the line: `python3 -c`, `node -e`, `find -exec`
-- names its program through a variable
+- runs code written into the line: `python3 -c`, `node --eval=…`, `find -exec`
+- names its program through a variable, a wildcard or brace expansion
+- uses the shell's own control flow: `for`, `while`, `if`. A grant for `do`
+  would cover every loop's body.
+- sets a variable that can change what runs: `PATH=./bin git status`,
+  `GIT_PAGER=x git log`, `export PATH=…`
+- has a comment in it, an open quote, `$'…'`, or `${…}` holding anything but a
+  name. The check doesn't read those, and a quote in a comment (`# it's`) would
+  otherwise hide the next line from it.
+- is passed text on its input with `stdin`, which is `python3 <<EOF` by another
+  route
 
-Two things don't count: merging one of the program's own streams into another
-(`2>&1`), and throwing output away (`2>/dev/null`, or `2>nul` on Windows).
+Three things don't count: merging one of the program's own streams into another
+(`2>&1`), throwing output away (`2>/dev/null`, or `2>nul` on Windows), and a
+setting that can't carry a command. That's a switch on any ordinary name
+(`VAR=1 cargo test`), or a plain value on a name known to be harmless
+(`RUST_LOG=debug cargo test`). `FOO=bar cargo test` is asked about, because
+nobody can list every variable some program runs something from. The list is in
+[`command_line.rs`](../crates/taurus-process/src/command_line.rs).
+
+**A file that decides what runs is asked about every time too.** A grant for
+`write_file` or `edit_file` is about the project's work, so it doesn't cover:
+
+- `.taurus/permissions.json`, `hooks.json`, `mcp.json`, `providers.json`,
+  `search.json`, and anything under `.taurus/plugins`
+- `.git/hooks/*` and `.git/config`, in the repository or in a submodule's
+  `.git/modules`
+
+Otherwise a grant to edit source could give itself every other grant. Any tool
+that names the file it writes is held to this, `run_recipe`'s output included.
+The path is checked after it's resolved and without regard to case, so a symlink
+to `.git/hooks` and `.GIT/Hooks` both count. It covers those tools only:
+`cp x .git/hooks/y` is whatever a grant for `cp` is, and `core.hooksPath` can
+point git at a tracked folder.
 
 PowerShell is a wrapper unless all it does is run one script file:
 `powershell -NoProfile -File build.ps1` can be granted, the way
@@ -150,7 +179,8 @@ told the same thing up front: `run_command`'s description steers it to
 `write_file` for files and to a script file over `python3 -c`, and a refusal in
 an unattended run names the reason and the way around it.
 
-The check knows quoting and the operators above, and nothing else. It doesn't
+The check knows quoting and the operators above, and anything else it meets in
+the shell's syntax gets asked about. It doesn't
 know which programs run other programs: `make`, `npm run`, `cargo run` and a
 `git` alias all run what the project tells them to, and a grant for one of
 them is a grant for that. Once you've asked an agent to work in a repository,
@@ -179,8 +209,9 @@ $ taurus run --allow write_file "summarize the readme into SUMMARY.md"
 `--allow-command git` grants a shell program by name. That's the same unit the
 interactive "allow always" uses, with the same rules: a chained command needs
 a flag for each program it runs, and a command that does something no program
-name stands for isn't covered. The refusal names the flags that would have
-been enough, or says why none would.
+name stands for isn't covered, and neither is one fed text on stdin. `--allow`
+doesn't reach a write to a file that decides what runs, like `.git/hooks/*`.
+The refusal names the flags that would have been enough, or says why none would.
 `--dangerously-allow-all` exists for throwaway or already-sandboxed
 environments.
 
@@ -243,6 +274,11 @@ so:
 carve-out, just one rule in one direction. Your own `~/.taurus` applies in
 full, so Taurus works normally in a folder you haven't vouched for. It just
 won't take instructions from it.
+
+Trusting a workspace doesn't let it read the rest of your machine, either. A
+`@path` import in a project's `AGENTS.md` has to stay inside the workspace after
+symlinks resolve. `@../../.ssh/config` is reported and not read, so it can't
+land in the prompt that goes to your provider.
 
 Because the rule is that blunt, it's easy to check. Every project-tier read in
 the harness resolves the workspace through a single function. A read that

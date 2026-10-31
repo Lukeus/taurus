@@ -136,6 +136,15 @@ pub struct Commit {
     pub skipped: Vec<Skipped>,
 }
 
+/// What [`Repo::dirty`] found.
+#[derive(Default)]
+struct Dirty {
+    /// Every asked-about path git sees as changed or untracked.
+    changed: BTreeSet<String>,
+    /// Those `git add` can take: all but a deletion that's already staged.
+    to_add: BTreeSet<String>,
+}
+
 /// A git repository containing the workspace.
 ///
 /// Holds the workspace directory rather than the repository root: every command
@@ -267,7 +276,10 @@ impl Repo {
             return Err("That turn changed no files, so there is nothing to commit.".into());
         }
 
-        let dirty = self.dirty(paths).await?;
+        let Dirty {
+            changed: dirty,
+            to_add,
+        } = self.dirty(paths).await?;
         // One question for every path that is not dirty, rather than a process
         // each. See `ignored`.
         let quiet: Vec<&str> = paths
@@ -320,10 +332,20 @@ impl Repo {
         staging.sort();
 
         // `add` covers a deletion as well as a change, so a turn that removed a
-        // tracked file commits the removal rather than skipping it.
+        // tracked file commits the removal rather than skipping it. Except one
+        // already staged, from `git rm` or the old half of `git mv`: `add` fails
+        // on a path that's in neither the index nor the tree. `commit` below
+        // still takes it, since the path is in `HEAD`.
         let mut add = vec!["add", "--"];
-        add.extend(staging.iter().map(String::as_str));
-        run(&self.workspace, &add).await?;
+        add.extend(
+            staging
+                .iter()
+                .filter(|path| to_add.contains(*path))
+                .map(String::as_str),
+        );
+        if add.len() > 2 {
+            run(&self.workspace, &add).await?;
+        }
 
         // `-- <paths>` implies `--only`. Someone's unrelated staged work is
         // still staged when this returns.
@@ -351,21 +373,39 @@ impl Repo {
     /// compared with what was asked. Without that, a workspace below the root
     /// sees none of its own changes, and every commit from it is refused as
     /// already matching the last one.
-    async fn dirty(&self, paths: &[String]) -> Result<BTreeSet<String>, String> {
-        let mut args = vec!["status", "--porcelain", "-z", "--"];
+    ///
+    /// Two flags keep the user's config out of the answer, and both matter.
+    /// `--untracked-files=all` because `status.showUntrackedFiles=no` would hide
+    /// every file a turn created. `--no-renames` because a rename entry holds a
+    /// second path with no status columns in front of it, and with this every
+    /// entry has the one shape: a staged `git mv` is an `A` and a `D`.
+    async fn dirty(&self, paths: &[String]) -> Result<Dirty, String> {
+        let mut args = vec![
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+            "--",
+        ];
         args.extend(paths.iter().map(String::as_str));
         let output = run(&self.workspace, &args).await?;
 
-        Ok(output
-            .split('\0')
-            .filter(|entry| entry.len() > 3)
-            // `XY <path>`: two status columns, a space, then the path. Rename
-            // entries carry a second NUL-separated path, which cannot appear
-            // here — a rename needs both halves in the pathspec, and even then
-            // the entry names the destination, which is the path we asked about.
-            .filter_map(|entry| entry[3..].strip_prefix(self.prefix.as_str()))
-            .map(str::to_string)
-            .collect())
+        let mut dirty = Dirty::default();
+        for entry in output.split('\0') {
+            // `XY <path>`: two status columns, a space, then the path.
+            let (Some(columns), Some(path)) = (entry.get(..2), entry.get(3..)) else {
+                continue;
+            };
+            let Some(path) = path.strip_prefix(self.prefix.as_str()) else {
+                continue;
+            };
+            dirty.changed.insert(path.to_string());
+            if columns != "D " {
+                dirty.to_add.insert(path.to_string());
+            }
+        }
+        Ok(dirty)
     }
 
     /// Which of `paths` git is deliberately ignoring, asked in one process.
@@ -1057,5 +1097,77 @@ mod tests {
         let subject = subject_of(&"x".repeat(200));
         assert!(subject.chars().count() <= SUBJECT_MAX_CHARS, "{subject}");
         assert!(subject.ends_with('…'));
+    }
+
+    /// Commits everything there, so a test starts from a clean tree.
+    async fn commit_all(fixture: &Fixture) {
+        run(&fixture.root, &["add", "--all"]).await.unwrap();
+        run(&fixture.root, &["commit", "-m", "base"]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rename_git_already_knows_about_is_committed_whole() {
+        needs_git!();
+        let fixture = Fixture::new().await;
+        // The `é` straddles the byte the status columns end at, which is where
+        // a slice of the old path's entry panicked.
+        fixture.write("abé.txt", "contents\n");
+        commit_all(&fixture).await;
+        run(&fixture.root, &["mv", "abé.txt", "new.txt"])
+            .await
+            .unwrap();
+
+        let paths = vec!["abé.txt".to_string(), "new.txt".to_string()];
+        let commit = fixture
+            .repo()
+            .await
+            .commit(&paths, "move it")
+            .await
+            .unwrap();
+        assert_eq!(commit.files, ["abé.txt", "new.txt"]);
+        assert!(commit.skipped.is_empty(), "{:?}", commit.skipped);
+        let status = run(&fixture.root, &["status", "--porcelain"])
+            .await
+            .unwrap();
+        assert_eq!(status, "", "nothing of the rename is left uncommitted");
+    }
+
+    #[tokio::test]
+    async fn a_deletion_already_staged_is_committed() {
+        needs_git!();
+        let fixture = Fixture::new().await;
+        fixture.write("gone.txt", "contents\n");
+        commit_all(&fixture).await;
+        run(&fixture.root, &["rm", "--quiet", "gone.txt"])
+            .await
+            .unwrap();
+
+        let paths = vec!["gone.txt".to_string()];
+        let commit = fixture
+            .repo()
+            .await
+            .commit(&paths, "drop it")
+            .await
+            .unwrap();
+        assert_eq!(commit.files, paths);
+    }
+
+    #[tokio::test]
+    async fn a_new_file_is_seen_whatever_status_is_configured_to_show() {
+        needs_git!();
+        let fixture = Fixture::new().await;
+        fixture.write("base.txt", "contents\n");
+        commit_all(&fixture).await;
+        run(
+            &fixture.root,
+            &["config", "status.showUntrackedFiles", "no"],
+        )
+        .await
+        .unwrap();
+        fixture.write("new/file.txt", "contents\n");
+
+        let paths = vec!["new/file.txt".to_string()];
+        let commit = fixture.repo().await.commit(&paths, "add it").await.unwrap();
+        assert_eq!(commit.files, paths);
     }
 }

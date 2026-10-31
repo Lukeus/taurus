@@ -193,7 +193,6 @@ pub struct PromptedScanner {
     buf: String,
     state: State,
     saw_tool_call: bool,
-    next_id: u32,
 }
 
 impl Default for PromptedScanner {
@@ -208,7 +207,6 @@ impl PromptedScanner {
             buf: String::new(),
             state: State::Text,
             saw_tool_call: false,
-            next_id: 0,
         }
     }
 
@@ -279,8 +277,9 @@ impl PromptedScanner {
 
     fn emit_call(&mut self, payload: &str) -> Vec<StreamEvent> {
         self.saw_tool_call = true;
-        self.next_id += 1;
-        let id = format!("ptc_{}", self.next_id);
+        // Unique across requests, not only this one: a scanner lasts one
+        // request, and the ids pair calls with results over a whole history.
+        let id = crate::new_tool_use_id();
 
         let parsed: Option<serde_json::Value> = serde_json::from_str(payload.trim()).ok();
         let (name, input) = match parsed.as_ref().and_then(|v| v.as_object()) {
@@ -334,6 +333,22 @@ mod tests {
     use super::*;
     use crate::message::Role;
     use crate::stream::StreamAccumulator;
+
+    #[test]
+    fn a_later_requests_scanner_does_not_reuse_an_id() {
+        // A scanner lasts one request and ids pair calls over a whole history.
+        let call = "<tool_call>{\"name\":\"x\",\"input\":{}}</tool_call>";
+        let id = |events: Vec<StreamEvent>| {
+            events.into_iter().find_map(|event| match event {
+                StreamEvent::ToolUseStart { id, .. } => Some(id),
+                _ => None,
+            })
+        };
+        let first = id(PromptedScanner::new().feed(call));
+        let second = id(PromptedScanner::new().feed(call));
+        assert!(first.is_some());
+        assert_ne!(first, second);
+    }
 
     fn drive(chunks: &[&str]) -> (Vec<StreamEvent>, bool) {
         let mut scanner = PromptedScanner::new();

@@ -212,9 +212,10 @@ pub async fn resume_session(
     // `loaded` is carried alongside so the log below can be opened on the
     // transcript this was actually read from — see `SessionLog::resume`.
     let (session, provider_id, switches, plan_edits, turns, loaded) =
-        match state.sessions.get(&session_id) {
-            Some(open) => {
-                let entry = open.clone();
+        // Cloned out of the map first, or the guard would keep the shard locked
+        // through every await in the arm below, the transcript load included.
+        match state.sessions.get(&session_id).map(|open| open.clone()) {
+            Some(entry) => {
                 // Reopening is the opposite of letting go: a conversation released
                 // while its turn ran must not be reaped out from under the window
                 // that has just come back to it. See `reap_released`.

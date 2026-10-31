@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { currentTool, stateOf, type AgentRun, type AgentState } from "../lib/agents";
 import { reportLabel } from "../lib/delegate";
-import { duration, plural } from "../lib/format";
+import { clip, duration, plural } from "../lib/format";
 import { useNow } from "../lib/useNow";
 import { useStore, type Entry } from "../state/store";
 import { DrawerHead } from "./Drawer";
@@ -181,7 +181,7 @@ export function questions(entries: Entry[]): Question[] {
 
 function firstLine(text: string): string {
   const line = text.trim().split("\n")[0] ?? "";
-  return line.length > 120 ? `${line.slice(0, 120)}…` : line;
+  return line.length > 120 ? `${clip(line, 120)}…` : line;
 }
 
 function isRunning(call: ToolEntry, run: AgentRun | undefined): boolean {

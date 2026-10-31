@@ -1,6 +1,6 @@
 //! Content blocks to OpenAI messages.
 
-use taurus_provider::{relocated_note, ChatRequest, ContentBlock, ToolDef};
+use taurus_provider::{relocated_note, replay_input, ChatRequest, ContentBlock, ToolDef};
 
 pub fn tools_to_wire(tools: &[ToolDef]) -> Vec<serde_json::Value> {
     tools
@@ -46,6 +46,9 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
         let mut images = Vec::new();
         let mut tool_calls = Vec::new();
         let mut results = Vec::new();
+        // After every result rather than beside its own: the next result still
+        // has to follow the assistant's calls with nothing between.
+        let mut relocated_images = Vec::new();
 
         for block in &message.content {
             match block {
@@ -68,7 +71,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
                         "function": {
                             "name": name,
                             // Arguments are a JSON *string* here, unlike Ollama.
-                            "arguments": input.to_string(),
+                            "arguments": replay_input(input).to_string(),
                         }
                     }));
                 }
@@ -78,8 +81,8 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
                     is_error,
                 } => {
                     // `role: "tool"` carries a string and nothing else here,
-                    // so an image a tool handed back travels as the user
-                    // message directly after it.
+                    // so an image a tool handed back travels as a user message
+                    // after the round's results.
                     let (body, relocated) = content.split_relocating_images();
                     // No error flag on this message shape, so the marker has
                     // to be in the text.
@@ -104,7 +107,7 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
                                 "image_url": { "url": format!("data:{mime_type};base64,{data}") }
                             })
                         }));
-                        results.push(serde_json::json!({
+                        relocated_images.push(serde_json::json!({
                             "role": "user",
                             "content": parts,
                         }));
@@ -112,6 +115,8 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
                 }
             }
         }
+
+        results.append(&mut relocated_images);
 
         if !text.is_empty() || !images.is_empty() || !tool_calls.is_empty() {
             let mut msg = serde_json::Map::new();
@@ -146,6 +151,46 @@ pub fn messages_to_wire(request: &ChatRequest) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_never_lands_between_two_results() {
+        let output = taurus_provider::ToolOutput::image("image/png", "aGk=");
+        let request = ChatRequest::new(
+            "gpt",
+            vec![
+                taurus_provider::Message::new(
+                    taurus_provider::Role::Assistant,
+                    vec![
+                        ContentBlock::tool_use("a", "shot", serde_json::json!({})),
+                        ContentBlock::tool_use("b", "read", serde_json::json!({})),
+                    ],
+                ),
+                taurus_provider::Message::new(
+                    taurus_provider::Role::User,
+                    vec![
+                        ContentBlock::tool_result("a", output),
+                        ContentBlock::tool_result("b", "text"),
+                    ],
+                ),
+            ],
+        );
+        let wire = messages_to_wire(&request);
+        let roles: Vec<&str> = wire.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["assistant", "tool", "tool", "user"]);
+    }
+
+    #[test]
+    fn a_call_whose_input_never_parsed_goes_back_as_an_empty_object() {
+        let request = ChatRequest::new(
+            "gpt",
+            vec![taurus_provider::Message::new(
+                taurus_provider::Role::Assistant,
+                vec![ContentBlock::tool_use("a", "x", serde_json::Value::Null)],
+            )],
+        );
+        let wire = messages_to_wire(&request);
+        assert_eq!(wire[0]["tool_calls"][0]["function"]["arguments"], "{}");
+    }
     use taurus_provider::{Message, Role};
 
     #[test]

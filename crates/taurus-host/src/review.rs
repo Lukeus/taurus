@@ -54,7 +54,7 @@
 //! window of every later request in that conversation, which is exactly the
 //! cost this design exists to avoid paying.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -507,9 +507,10 @@ pub(crate) fn copy_reviews(workspace: &Path, from: &str, to: &str, before: u32) 
     else {
         return;
     };
-    let Ok(text) = std::fs::read_to_string(&source) else {
+    let Ok(text) = std::fs::read(&source) else {
         return;
     };
+    let text = String::from_utf8_lossy(&text);
     let kept: String = text
         .lines()
         .filter(|line| {
@@ -529,9 +530,7 @@ pub(crate) fn copy_reviews(workspace: &Path, from: &str, to: &str, before: u32) 
 /// recent, when there are several.
 pub fn stored(workspace: &Path, session_id: &str, fingerprint: &str) -> Option<ReviewReport> {
     let file = std::fs::File::open(reviews_path(workspace, session_id)?).ok()?;
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
+    crate::sessions::lines_of(BufReader::new(file))
         .filter_map(|line| serde_json::from_str::<ReviewReport>(&line).ok())
         .filter(|report| report.fingerprint == fingerprint)
         .last()
@@ -554,9 +553,7 @@ pub fn kept(workspace: &Path, session_id: &str, turns: &[Checkpoint]) -> Vec<Rev
     else {
         return Vec::new();
     };
-    let all: Vec<ReviewReport> = BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
+    let all: Vec<ReviewReport> = crate::sessions::lines_of(BufReader::new(file))
         .filter_map(|line| serde_json::from_str::<ReviewReport>(&line).ok())
         .collect();
     turns
@@ -579,7 +576,13 @@ pub fn store(workspace: &Path, session_id: &str, report: &ReviewReport) {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut line = serde_json::to_vec(report)?;
+        // A newline first if the last write was cut short, so this review
+        // isn't glued to what's left of that one.
+        let mut line = Vec::new();
+        if crate::sessions::ends_mid_line(&path) {
+            line.push(b'\n');
+        }
+        line.extend(serde_json::to_vec(report)?);
         line.push(b'\n');
         std::fs::OpenOptions::new()
             .create(true)
@@ -951,5 +954,37 @@ mod tests {
         assert!(stored(workspace, "s1", "different").is_none());
         assert!(stored(workspace, "s2", "abc").is_none(), "per conversation");
         assert!(stored(workspace, "../escape", "abc").is_none());
+    }
+
+    #[test]
+    fn a_review_cut_short_on_disk_costs_only_itself() {
+        let _home = crate::testing::isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let report = |fingerprint: &str| ReviewReport {
+            turn: 1,
+            files: 1,
+            model: "m".into(),
+            text: "fine".into(),
+            omitted: Vec::new(),
+            read_claims: false,
+            fingerprint: fingerprint.into(),
+            at: 1,
+            cached: false,
+        };
+        store(workspace, "torn", &report("before"));
+        let path = reviews_path(workspace, "torn").unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"{\"turn\":1,\"text\":\"caf\xC3").unwrap();
+        drop(file);
+        store(workspace, "torn", &report("after"));
+
+        assert!(stored(workspace, "torn", "before").is_some());
+        assert!(
+            stored(workspace, "torn", "after").is_some(),
+            "a review written after a torn line has to be found"
+        );
     }
 }

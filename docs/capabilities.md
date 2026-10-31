@@ -79,7 +79,13 @@ entire content is `@RTK.md` would otherwise read as a single meaningless line.
 A line counts as an import only when the whole line is `@` followed by a path.
 So `Ask @alice before releasing` is prose and stays prose. An import of a
 missing file is reported, not passed through, because a pointer at nothing
-tells the model less than nothing.
+tells the model less than nothing. Inside a code fence a line is always text,
+so a `@dataclass` in an example stays in the example. A bare word with no `.`
+or `/`, like `@alice` alone on a line, is an import only if that file exists.
+
+A project's file can only import from inside its workspace, checked after
+symlinks resolve. One that leaves is reported and not read. Your own files in
+your home folder can import from anywhere you can read.
 
 A file longer than 12 KB is cut on a line boundary, and both the prompt and
 the Skills drawer say so. Without the cap, a checked-in handbook could spend an

@@ -169,6 +169,11 @@ pub struct PluginSource {
     /// purpose.
     #[ts(optional)]
     pub commit: Option<String>,
+    /// The ref it was added at, so an update stays on it. None for the default
+    /// branch, and for anything installed before this was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub git_ref: Option<String>,
 }
 
 /// A plugin and where its parts are.
@@ -521,7 +526,12 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
             }
         },
         // Optional, as in Claude Code: a folder of parts is named after itself.
-        Err(_) => Manifest::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::default(),
+        // There, but not readable, which isn't the same as not there.
+        Err(e) => {
+            problems.push(format!("couldn't read {}: {e}", manifest_path.display()));
+            Manifest::default()
+        }
     };
     let name = manifest.name.clone().unwrap_or_else(|| folder.clone());
     if let Err(e) = check_name(&name) {
@@ -726,9 +736,17 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
 
     let consulted = consulted(root, &manifest, &mcp_files, &taurus_hook_files);
 
-    let source = std::fs::read_to_string(root.join(SOURCE_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok());
+    // A record that can't be read means the plugin looks like one you made.
+    let source = match std::fs::read_to_string(root.join(SOURCE_FILE)) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| warnings.push(format!("{SOURCE_FILE} doesn't parse: {e}")))
+            .ok(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            warnings.push(format!("couldn't read {SOURCE_FILE}: {e}"));
+            None
+        }
+    };
 
     let summary = PluginSummary {
         skills: entries(&skill_dirs, |path| {
@@ -930,7 +948,7 @@ pub fn update(name: &str, scope: Scope, workspace: Option<&Path>) -> Result<Plug
                 target.display()
             )
         })?;
-    let staged = Staged::fetch(&source.from, None, &plugins)?;
+    let staged = Staged::fetch(&source.from, source.git_ref.as_deref(), &plugins)?;
     let plugin = load(staged.path(), scope, workspace);
     if !plugin.summary.problems.is_empty() {
         return Err(format!(
@@ -1059,6 +1077,7 @@ impl Staged {
             source: PluginSource {
                 from: from.to_string(),
                 commit: None,
+                git_ref: git_ref.map(str::to_string),
             },
             branch: None,
             kept: false,
@@ -1101,6 +1120,18 @@ impl Staged {
                 .map_err(|e| format!("{from} isn't a folder here, or a git URL ({e})"))?;
             if !folder.is_dir() {
                 return Err(format!("{from} isn't a folder or a git URL"));
+            }
+            // Staged inside itself, the copy would walk into its own output
+            // until the path grew too long for the system.
+            if plugins
+                .canonicalize()
+                .is_ok_and(|plugins| plugins.starts_with(&folder))
+            {
+                return Err(format!(
+                    "{from} holds the folder plugins are installed into, so it can't be copied \
+                     there. Add a folder that doesn't contain {}.",
+                    plugins.display()
+                ));
             }
             staged.path = staged.root.join(source_name(&folder.display().to_string()));
             copy_dir(&folder, &staged.path)?;
@@ -2313,5 +2344,120 @@ mod tests {
         let missing = tempfile::tempdir().unwrap().path().join("nothing.git");
         let refused = add(missing.to_str().unwrap(), None, Scope::Global, None).unwrap_err();
         assert!(refused.contains("git couldn't fetch"), "{refused}");
+    }
+
+    /// A git repository in a folder ending `.git`, which `add` reads as one,
+    /// with the plugin at 1.0.0 on the tag `v1` and at 2.0.0 on its branch.
+    fn tagged_repo(parent: &Path) -> PathBuf {
+        let repo = parent.join("kit.git");
+        let git = |args: &[&str]| {
+            let done = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "{args:?}: {done:?}");
+        };
+        let manifest = |version: &str| {
+            write(
+                &repo,
+                &[(
+                    MANIFEST,
+                    &format!(r#"{{"name": "kit", "version": "{version}"}}"#),
+                )],
+            )
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "--quiet"]);
+        manifest("1.0.0");
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "one"]);
+        git(&["tag", "v1"]);
+        manifest("2.0.0");
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "two"]);
+        repo
+    }
+
+    #[test]
+    fn an_update_stays_on_the_ref_it_was_added_at() {
+        let _home = isolated_home();
+        let parent = tempfile::tempdir().unwrap();
+        let repo = tagged_repo(parent.path());
+        let from = format!("file://{}", repo.display());
+        // `file://` clones honor --depth, and the name still ends `.git`.
+        let added = add(&from, Some("v1"), Scope::Global, None).unwrap();
+        assert_eq!(added.version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            added.source.as_ref().unwrap().git_ref.as_deref(),
+            Some("v1")
+        );
+
+        let updated = update("kit", Scope::Global, None).unwrap();
+        assert_eq!(updated.version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn a_source_recorded_before_refs_were_kept_still_reads() {
+        let source: PluginSource =
+            serde_json::from_str(r#"{"from": "x", "commit": "abc"}"#).unwrap();
+        assert_eq!(source.git_ref, None);
+    }
+
+    #[test]
+    fn a_folder_holding_the_plugin_folder_is_refused_rather_than_copied_into_itself() {
+        let _home = isolated_home();
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        write(&root, &[(MANIFEST, r#"{"name": "own"}"#)]);
+        crate::trust::trust(&root).unwrap();
+
+        let why = add(root.to_str().unwrap(), None, Scope::Workspace, Some(&root)).unwrap_err();
+        assert!(
+            why.contains("holds the folder plugins are installed into"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_that_cant_be_read_is_a_problem_and_not_an_absence() {
+        let _home = isolated_home();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("thing");
+        write(&path, &[("skills/.keep", "")]);
+        std::fs::create_dir_all(path.join(MANIFEST).parent().unwrap()).unwrap();
+        std::fs::write(path.join(MANIFEST), [0xFF, 0xFE]).unwrap();
+
+        let plugin = load(&path, Scope::Global, None);
+        assert!(
+            plugin
+                .summary
+                .problems
+                .iter()
+                .any(|p| p.contains("couldn't read")),
+            "{:?}",
+            plugin.summary.problems
+        );
+    }
+
+    #[test]
+    fn a_source_record_that_wont_parse_is_said_rather_than_read_as_yours() {
+        let _home = isolated_home();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("thing");
+        write(&path, &[(SOURCE_FILE, "{")]);
+
+        let plugin = load(&path, Scope::Global, None);
+        assert!(
+            plugin
+                .summary
+                .warnings
+                .iter()
+                .any(|w| w.contains(SOURCE_FILE)),
+            "{:?}",
+            plugin.summary.warnings
+        );
     }
 }

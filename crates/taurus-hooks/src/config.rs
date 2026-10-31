@@ -212,7 +212,8 @@ impl Hook {
 /// Reads one layer, keeping unparseable entries as diagnostics.
 ///
 /// A missing file is an empty config, not an error: neither layer is required,
-/// and most people will never write one.
+/// and most people will never write one. A file that's there and can't be read
+/// is the opposite case, see [`refusing`].
 pub fn load(dir: &Path) -> Result<HookConfig, String> {
     load_file(&config_file(dir))
 }
@@ -220,8 +221,10 @@ pub fn load(dir: &Path) -> Result<HookConfig, String> {
 /// [`load`], for a hooks file wherever it is. A plugin names its own.
 pub fn load_file(path: &Path) -> Result<HookConfig, String> {
     let path = path.to_path_buf();
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(HookConfig::default());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HookConfig::default()),
+        Err(e) => return Ok(refusing(&path, &e)),
     };
 
     // Parsed loosely first, so one bad entry costs itself rather than the file.
@@ -279,6 +282,44 @@ pub fn load_file(path: &Path) -> Result<HookConfig, String> {
         }
     }
     Ok(config)
+}
+
+/// What stands in for a `command` when the hooks that should have run are in a
+/// file that can't be read.
+///
+/// Parenthesized so it reads as what it is in a listing. The runner refuses on
+/// it without starting anything, giving `args[0]` as the reason.
+pub const UNREADABLE: &str = "(unreadable hooks file)";
+
+/// The layer a hooks file that exists and can't be read amounts to.
+///
+/// Permissions, a directory in its place, bytes that aren't UTF-8. Whatever
+/// guards that file holds aren't known, so this can't say which calls they'd
+/// cover, and treating it as empty would turn every one of them off with nothing
+/// said. So it refuses on both events that can still stop something, in line
+/// with a hook that can't run, and it's reported as a problem as well.
+fn refusing(path: &Path, error: &std::io::Error) -> HookConfig {
+    let reason = format!(
+        "{} could not be read, so the hooks in it can't run: {error}. Fix or remove the file.",
+        path.display()
+    );
+    let mut config = HookConfig::default();
+    for on in [HookEvent::PreToolUse, HookEvent::UserPromptSubmit] {
+        config.hooks.insert(
+            format!("{FILE_NAME} unreadable ({})", on.label()),
+            HookEntry::Hook(Box::new(Hook {
+                on,
+                command: UNREADABLE.to_string(),
+                args: vec![reason.clone()],
+                matches: None,
+                timeout_seconds: default_timeout(),
+                disabled: false,
+                foreign: None,
+            })),
+        );
+    }
+    config.invalid.insert(FILE_NAME.to_string(), reason);
+    config
 }
 
 /// Whether an entry is a bare `{"disabled": ...}` rather than a hook.
@@ -390,6 +431,24 @@ mod tests {
     fn a_missing_file_is_an_empty_config_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load(dir.path()).unwrap().hooks.is_empty());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_reported_and_refuses() {
+        // Bytes that aren't UTF-8, which fail the read on every platform and
+        // for every user, root included.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_file(dir.path()), [0xff, 0xfe, 0x00]).unwrap();
+
+        let (hooks, problems) = merge(vec![load(dir.path()).unwrap()]);
+
+        assert!(
+            problems.iter().any(|p| p.contains("could not be read")),
+            "{problems:?}"
+        );
+        let events: Vec<HookEvent> = hooks.iter().map(|(_, hook)| hook.on).collect();
+        assert!(events.contains(&HookEvent::PreToolUse), "{events:?}");
+        assert!(events.contains(&HookEvent::UserPromptSubmit), "{events:?}");
     }
 
     #[test]

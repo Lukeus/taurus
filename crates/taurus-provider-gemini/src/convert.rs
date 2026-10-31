@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
 use taurus_provider::{
-    is_openai_reasoning, relocated_note, ChatRequest, ContentBlock, Role, ToolDef,
+    gemini_signature, relocated_note, replay_input, ChatRequest, ContentBlock, Role, ToolDef,
 };
 
 /// The one `tools` entry, holding every declaration.
@@ -336,6 +336,9 @@ fn tool_names_by_id(request: &ChatRequest) -> HashMap<&str, &str> {
 
 fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) -> Vec<Value> {
     let mut parts = Vec::new();
+    // After every response rather than beside its own, so one call's picture
+    // never splits a round's answers.
+    let mut relocated_images = Vec::new();
     for block in &message.content {
         match block {
             ContentBlock::Text { text } if text.is_empty() => {}
@@ -345,10 +348,11 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
             // also validates that a turn which reasoned before calling a tool
             // comes back intact. Without one there is nothing to prove the
             // block's origin, so it is left out rather than sent unsigned.
-            // OpenAI's encrypted reasoning, from a conversation that changed
-            // provider, proves nothing here either.
+            // Another provider's signature, from a conversation that changed
+            // provider, proves nothing here either. Only one this API issued
+            // comes back, past the prefix the adapter put it behind.
             ContentBlock::Thinking { text, signature } => {
-                if let Some(signature) = signature.as_deref().filter(|s| !is_openai_reasoning(s)) {
+                if let Some(signature) = signature.as_deref().and_then(gemini_signature) {
                     parts.push(json!({
                         "text": text,
                         "thought": true,
@@ -371,7 +375,7 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
                         // defines.
                         "id": id,
                         "name": name,
-                        "args": input,
+                        "args": replay_input(input),
                     }
                 });
                 // Rides the part rather than the call, which is where it
@@ -403,7 +407,7 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
                 // picture a tool handed back cannot ride inside it. Unlike
                 // OpenAI and Ollama it does not need a message of its own
                 // either: this API takes mixed parts, so the image follows the
-                // response in the same user content.
+                // round's responses in the same user content.
                 let (body, relocated) = content.split_relocating_images();
                 parts.push(json!({
                     "functionResponse": {
@@ -419,11 +423,11 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
                     }
                 }));
                 if !relocated.is_empty() {
-                    parts.push(json!({
+                    relocated_images.push(json!({
                         "text": relocated_note(Some(name), relocated.len())
                     }));
                     for (mime_type, data) in relocated {
-                        parts.push(json!({
+                        relocated_images.push(json!({
                             "inlineData": { "mimeType": mime_type, "data": data }
                         }));
                     }
@@ -435,7 +439,67 @@ fn part_list(message: &taurus_provider::Message, names: &HashMap<&str, &str>) ->
             })),
         }
     }
+    parts.extend(relocated_images);
     parts
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use taurus_provider::Message;
+
+    #[test]
+    fn an_image_never_lands_between_two_responses() {
+        let output = taurus_provider::ToolOutput::image("image/png", "aGk=");
+        let request = ChatRequest::new(
+            "m",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![
+                        ContentBlock::tool_use("a", "shot", Value::Null),
+                        ContentBlock::tool_use("b", "read", json!({})),
+                    ],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![
+                        ContentBlock::tool_result("a", output),
+                        ContentBlock::tool_result("b", "text"),
+                    ],
+                ),
+            ],
+        );
+        let wire = contents_to_wire(&request);
+        assert_eq!(wire[0]["parts"][0]["functionCall"]["args"], json!({}));
+        let parts = wire[1]["parts"].as_array().unwrap();
+        assert!(parts[0].get("functionResponse").is_some());
+        assert!(parts[1].get("functionResponse").is_some());
+        assert!(parts[3].get("inlineData").is_some());
+    }
+
+    #[test]
+    fn only_a_signature_gemini_issued_is_replayed() {
+        let thinking = |signature: String| ContentBlock::Thinking {
+            text: "t".into(),
+            signature: Some(signature),
+        };
+        let request = ChatRequest::new(
+            "m",
+            vec![Message::new(
+                Role::Assistant,
+                vec![
+                    // A bare one is Anthropic's, from before the switch.
+                    thinking("anthropic-sig".into()),
+                    thinking(format!("{}own", taurus_provider::GEMINI_THOUGHT_PREFIX)),
+                ],
+            )],
+        );
+        let wire = contents_to_wire(&request);
+        let parts = wire[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1, "{parts:#?}");
+        assert_eq!(parts[0]["thoughtSignature"], "own");
+    }
 }
 
 #[cfg(test)]

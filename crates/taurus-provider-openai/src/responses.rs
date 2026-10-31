@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 use taurus_provider::{
-    relocated_note, ChatRequest, ContentBlock, StreamEvent, TokenUsage, ToolDef,
+    relocated_note, replay_input, ChatRequest, ContentBlock, StreamEvent, TokenUsage, ToolDef,
     OPENAI_REASONING_PREFIX,
 };
 
@@ -123,6 +123,8 @@ pub fn input_items(request: &ChatRequest) -> Vec<Value> {
         let role = message.role.as_str();
         let assistant = role == "assistant";
         let mut results = Vec::new();
+        // After every result, the same as on chat completions.
+        let mut relocated_images = Vec::new();
         let mut items = Vec::new();
         // Text and images collect into one message item until something that
         // isn't a message — reasoning, a call — has to come between.
@@ -182,7 +184,7 @@ pub fn input_items(request: &ChatRequest) -> Vec<Value> {
                         "type": "function_call",
                         "call_id": id,
                         "name": name,
-                        "arguments": input.to_string(),
+                        "arguments": replay_input(input).to_string(),
                     }));
                 }
                 ContentBlock::ToolResult {
@@ -215,7 +217,7 @@ pub fn input_items(request: &ChatRequest) -> Vec<Value> {
                                 "image_url": format!("data:{mime_type};base64,{data}"),
                             })
                         }));
-                        results.push(json!({
+                        relocated_images.push(json!({
                             "type": "message",
                             "role": "user",
                             "content": content,
@@ -226,6 +228,7 @@ pub fn input_items(request: &ChatRequest) -> Vec<Value> {
         }
         flush(&mut parts, &mut items);
         out.extend(results);
+        out.extend(relocated_images);
         out.extend(items);
     }
     out
@@ -493,6 +496,49 @@ impl Stopper {
     /// Whatever was held back, once the stream has ended without completing it.
     pub fn finish(&mut self) -> String {
         std::mem::take(&mut self.held)
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use taurus_provider::{Message, Role};
+
+    #[test]
+    fn an_image_never_lands_between_two_results() {
+        let output = taurus_provider::ToolOutput::image("image/png", "aGk=");
+        let request = ChatRequest::new(
+            "m",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![
+                        ContentBlock::tool_use("a", "shot", Value::Null),
+                        ContentBlock::tool_use("b", "read", json!({})),
+                    ],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![
+                        ContentBlock::tool_result("a", output),
+                        ContentBlock::tool_result("b", "text"),
+                    ],
+                ),
+            ],
+        );
+        let items = input_items(&request);
+        let kinds: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "function_call",
+                "function_call",
+                "function_call_output",
+                "function_call_output",
+                "message"
+            ]
+        );
+        assert_eq!(items[0]["arguments"], "{}");
     }
 }
 

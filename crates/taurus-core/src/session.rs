@@ -488,9 +488,7 @@ impl Session {
         for (index, message) in self.messages.iter_mut().enumerate().take(cutoff) {
             for (position, block) in message.content.iter_mut().enumerate() {
                 let ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
+                    content, is_error, ..
                 } = block
                 else {
                     continue;
@@ -498,7 +496,7 @@ impl Session {
                 if *is_error {
                     continue;
                 }
-                let Some(call) = call_of.get(tool_use_id.as_str()) else {
+                let Some(call) = call_of.get(&(index, position)) else {
                     continue;
                 };
 
@@ -621,6 +619,7 @@ fn squeeze_floor(name: &str) -> usize {
 }
 
 /// The call a tool result answers.
+#[derive(Clone)]
 struct Call {
     name: String,
     /// Tool name plus serialized input. Two calls with the same signature ask
@@ -630,44 +629,53 @@ struct Call {
     target: Option<String>,
 }
 
-/// Maps every tool-use id to its call, and every call signature to the last
-/// message that made it *and got an answer*.
+/// Maps every tool result, by message and block, to the call it answers, and
+/// every call signature to the last message that made it *and got an answer*.
+///
+/// By position rather than by id alone, because an id isn't unique across every
+/// transcript: the prompted fallback used to start again from `ptc_1` on each
+/// request. A result answers the nearest call before it under that id. Keyed by
+/// the id alone, every result would resolve to the last call of that name, and
+/// the read of one file would be dropped as superseded by the read of another.
 ///
 /// Answered is the load-bearing part: a call with no result behind it cannot
 /// supersede anything, because there is nothing to point the model at. That
 /// covers the canceled turn, whose assistant message is in history while the
 /// tool's answer never arrived, and the call that failed, where the earlier
 /// result is the only one that ever worked.
-fn index_calls(messages: &[Message]) -> (HashMap<String, Call>, HashMap<String, usize>) {
-    let answered: std::collections::HashSet<&str> = messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .filter_map(|block| match block {
-            ContentBlock::ToolResult {
-                tool_use_id,
-                is_error: false,
-                ..
-            } => Some(tool_use_id.as_str()),
-            _ => None,
-        })
-        .collect();
-
+fn index_calls(messages: &[Message]) -> (HashMap<(usize, usize), Call>, HashMap<String, usize>) {
+    let mut latest: HashMap<&str, (Call, usize)> = HashMap::new();
     let mut call_of = HashMap::new();
-    let mut last_use = HashMap::new();
+    let mut last_use: HashMap<String, usize> = HashMap::new();
     for (index, message) in messages.iter().enumerate() {
-        for (id, name, input) in message.tool_uses() {
-            let signature = format!("{name}\u{0}{input}");
-            if answered.contains(id) {
-                last_use.insert(signature.clone(), index);
+        for (position, block) in message.content.iter().enumerate() {
+            match block {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
+                    let call = Call {
+                        name: name.clone(),
+                        signature: format!("{name}\u{0}{input}"),
+                        target: target_of(input),
+                    };
+                    latest.insert(id.as_str(), (call, index));
+                }
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } => {
+                    let Some((call, made_at)) = latest.get(tool_use_id.as_str()) else {
+                        continue;
+                    };
+                    if !is_error {
+                        let last = last_use.entry(call.signature.clone()).or_insert(*made_at);
+                        *last = (*last).max(*made_at);
+                    }
+                    call_of.insert((index, position), call.clone());
+                }
+                _ => {}
             }
-            call_of.insert(
-                id.to_string(),
-                Call {
-                    name: name.to_string(),
-                    signature,
-                    target: target_of(input),
-                },
-            );
         }
     }
     (call_of, last_use)
@@ -920,6 +928,47 @@ fn starts_with_tool_result(message: &Message) -> bool {
             .content
             .first()
             .is_some_and(|b| matches!(b, ContentBlock::ToolResult { .. }))
+}
+
+#[cfg(test)]
+mod repeated_id_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_result_answers_the_nearest_call_under_its_id() {
+        // What an older prompted transcript holds: every round's call is
+        // `ptc_1`. The read of `a` must not read as superseded by those of `b`.
+        let round = |path: &str, body: String| {
+            [
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "ptc_1",
+                        "read_file",
+                        json!({"path": path}),
+                    )],
+                ),
+                Message::new(Role::User, vec![ContentBlock::tool_result("ptc_1", body)]),
+            ]
+        };
+        let mut session = Session::new("m");
+        for (path, body) in [("a", "A"), ("b", "B"), ("b", "B")] {
+            session.messages.extend(round(path, body.repeat(2_000)));
+        }
+        session.messages.push(Message::user("next"));
+
+        // Every older result is in reach, and nothing but a repeat is cut below
+        // the squeeze floor's concern: the first `a` keeps its head either way.
+        session.trim_tool_results(1, &|_| true);
+
+        let ContentBlock::ToolResult { content, .. } = &session.messages[1].content[0] else {
+            panic!("a result");
+        };
+        let text = content.to_text();
+        assert!(!text.contains("[dropped"), "{text}");
+        assert!(text.starts_with('A'), "{text}");
+    }
 }
 
 #[cfg(test)]

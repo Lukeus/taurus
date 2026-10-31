@@ -171,3 +171,19 @@ describe("editing the pinned plan", () => {
     expect(rows[1].textContent).not.toContain("added by you");
   });
 });
+
+describe("an input method", () => {
+  it("keeps Enter in the new step's box when it is accepting a candidate", () => {
+    const panel = mount(plan(), vi.fn());
+    panel.open();
+    panel.click("Edit");
+    const box = panel.$<HTMLInputElement>('input[aria-label="New step"]')!;
+    panel.type(box, "手順");
+    const before = panel.host.querySelectorAll(".plan-step").length;
+    act(() => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }));
+    });
+    expect(panel.host.querySelectorAll(".plan-step")).toHaveLength(before);
+    expect(box.value).toBe("手順");
+  });
+});
