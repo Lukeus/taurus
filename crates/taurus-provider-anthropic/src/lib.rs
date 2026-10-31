@@ -157,7 +157,7 @@ impl AnthropicProvider {
             api_prefix: DEFAULT_API_PREFIX.to_string(),
             api_key,
             api_key_header: DEFAULT_API_KEY_HEADER.to_string(),
-            client: http::Client::new(),
+            client: new_client(),
             capabilities: AnthropicCapabilities::default(),
             thinking: Thinking::default(),
             models: Vec::new(),
@@ -522,7 +522,9 @@ impl Provider for AnthropicProvider {
 
         Ok(match stop_reason.as_deref() {
             Some("tool_use") => StopReason::ToolUse,
-            Some("max_tokens") => StopReason::MaxTokens,
+            // The window rather than the cap, but the answer is cut off the same
+            // way, and a caller reading it as finished would keep half of it.
+            Some("max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
             Some("stop_sequence") => StopReason::StopSequence,
             // `refusal` and `pause_turn` both end the turn with something to
             // say. Neither is a tool call and neither is an error the harness
@@ -565,6 +567,21 @@ fn normalize_prefix(prefix: &str) -> String {
     }
 }
 
+/// The process's shared client, in the app, which has one runtime.
+#[cfg(not(test))]
+fn new_client() -> http::Client {
+    http::Client::new()
+}
+
+/// A client of its own, in a test. Each `#[tokio::test]` is its own runtime and
+/// a pooled connection dies with the runtime that opened it, so a shared pool
+/// fails a later test whose mock server lands on the same port ("runtime dropped
+/// the dispatch task").
+#[cfg(test)]
+fn new_client() -> http::Client {
+    http::Client::stalling_after(http::STALL_TIMEOUT)
+}
+
 async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> {
     tx.send(event).await.map_err(|_| ProviderError::Canceled)
 }
@@ -604,6 +621,12 @@ mod tests {
 
         let whole = format!("{cut}data: {{\"type\":\"message_stop\"}}\n\n");
         assert_eq!(streamed(&whole).await.unwrap(), StopReason::EndTurn);
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_window_cut_off_is_not_a_finished_one() {
+        let body = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n";
+        assert_eq!(streamed(body).await.unwrap(), StopReason::MaxTokens);
     }
 
     #[test]

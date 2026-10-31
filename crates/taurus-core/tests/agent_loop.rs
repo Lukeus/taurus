@@ -3611,3 +3611,45 @@ async fn a_turn_that_ran_its_check_is_left_alone() {
     assert!(check_nudges(&sent).is_empty());
     assert_eq!(nudges(&sent), 0);
 }
+
+#[tokio::test]
+async fn a_transcript_that_reused_a_tool_id_is_sent_with_unique_ones() {
+    // An older prompted conversation, moved to a native model. The session keeps
+    // what it holds; only the request is rewritten.
+    let h = harness(vec![ScriptedTurn::text("ok")]);
+    let mut session = Session::new("m");
+    for body in ["first", "second"] {
+        session.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "ptc_1",
+                "read_file",
+                serde_json::json!({}),
+            )],
+        ));
+        session.push(Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result("ptc_1", body)],
+        ));
+    }
+    let (tx, _rx) = mpsc::channel(256);
+    h.agent
+        .run_turn(&mut session, Message::user("go"), tx)
+        .await
+        .unwrap();
+
+    let seen = h.provider.seen.lock().await;
+    let ids: Vec<&str> = seen[0]
+        .messages
+        .iter()
+        .flat_map(Message::tool_uses)
+        .map(|(id, _, _)| id)
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(
+        session.messages[2].tool_uses().next().unwrap().0,
+        "ptc_1",
+        "the session itself is left as it was"
+    );
+}

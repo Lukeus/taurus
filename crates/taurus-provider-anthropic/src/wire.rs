@@ -56,7 +56,7 @@ impl MessagesBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ModelsResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub data: Vec<ModelEntry>,
 }
 
@@ -210,10 +210,27 @@ impl Usage {
 
 #[derive(Debug, Deserialize)]
 pub struct ApiError {
-    #[serde(default, rename = "type")]
+    #[serde(
+        default,
+        rename = "type",
+        deserialize_with = "taurus_provider::null_as_default"
+    )]
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub message: String,
+}
+
+#[cfg(test)]
+mod null_tests {
+    use super::*;
+
+    #[test]
+    fn an_in_stream_error_with_null_fields_is_still_an_error() {
+        let frame: StreamFrame =
+            serde_json::from_str(r#"{"type":"error","error":{"type":"api_error","message":null}}"#)
+                .unwrap();
+        assert!(matches!(frame, StreamFrame::Error { .. }));
+    }
 }
 
 #[cfg(test)]

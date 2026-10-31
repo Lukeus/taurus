@@ -17,8 +17,9 @@ pub mod stream;
 
 pub use error::{brief, ProviderError, Result};
 pub use message::{
-    is_openai_reasoning, relocated_note, ContentBlock, Message, Role, ToolOutput, ToolResultBlock,
-    OPENAI_REASONING_PREFIX,
+    anthropic_signature, gemini_signature, is_openai_reasoning, relocated_note, replay_input,
+    with_unique_tool_ids, ContentBlock, Message, Role, ToolOutput, ToolResultBlock,
+    GEMINI_THOUGHT_PREFIX, OPENAI_REASONING_PREFIX,
 };
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
@@ -28,4 +29,19 @@ pub use stream::{ModelSpend, Spend, StopReason, StreamAccumulator, StreamEvent, 
 /// Fresh tool-call id. Used by adapters whose wire format omits one.
 pub fn new_tool_use_id() -> String {
     format!("tu_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Reads an explicit `null` as the type's default.
+///
+/// `#[serde(default)]` only covers a field that's absent. A server built on a
+/// model class writes every unset field as `null`, and on a `Vec` or a `String`
+/// that fails the whole frame, which the adapters skip with a warning: an entire
+/// answer can vanish that way, one chunk at a time, with no error. Goes with
+/// `default`: `#[serde(default, deserialize_with = "taurus_provider::null_as_default")]`.
+pub fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
 }

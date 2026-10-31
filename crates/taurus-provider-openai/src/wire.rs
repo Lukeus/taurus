@@ -47,7 +47,7 @@ impl ChatBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ModelsResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub data: Vec<ModelEntry>,
 }
 
@@ -61,7 +61,7 @@ pub struct StreamChunk {
     /// A failure after the 200, which gateways send in place of a chunk.
     #[serde(default)]
     pub error: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub choices: Vec<Choice>,
     #[serde(default)]
     pub usage: Option<Usage>,
@@ -82,7 +82,7 @@ pub struct Delta {
     /// Non-standard but widely used by reasoning-model servers.
     #[serde(default, alias = "reasoning")]
     pub reasoning_content: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub tool_calls: Vec<ToolCallDelta>,
 }
 
@@ -158,7 +158,7 @@ pub struct RerankBody<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct RerankResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub results: Vec<RerankResult>,
 }
 
@@ -185,7 +185,7 @@ pub struct EmbedBody<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct EmbedResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub data: Vec<Embedding>,
 }
 
@@ -197,4 +197,26 @@ pub struct Embedding {
     #[serde(default)]
     pub index: usize,
     pub embedding: Vec<f32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_field_written_as_null_does_not_lose_the_chunk() {
+        // How a server built on a model class writes everything it didn't set.
+        let chunk: StreamChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":"hi","tool_calls":null},"finish_reason":null}]}"#,
+        )
+        .unwrap();
+        let delta = chunk.choices[0].delta.as_ref().unwrap();
+        assert_eq!(delta.content.as_deref(), Some("hi"));
+        assert!(delta.tool_calls.is_empty());
+
+        let usage: StreamChunk =
+            serde_json::from_str(r#"{"choices":null,"usage":{"prompt_tokens":3}}"#).unwrap();
+        assert!(usage.choices.is_empty());
+        assert!(usage.usage.is_some());
+    }
 }

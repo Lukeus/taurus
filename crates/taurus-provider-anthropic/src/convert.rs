@@ -6,7 +6,9 @@
 //! loss. This file is mostly renaming fields.
 
 use serde_json::{json, Value};
-use taurus_provider::{is_openai_reasoning, ChatRequest, ContentBlock, Role, ToolDef};
+use taurus_provider::{
+    anthropic_signature, replay_input, ChatRequest, ContentBlock, Role, ToolDef,
+};
 
 /// Marks a prefix worth caching on the way out.
 ///
@@ -146,11 +148,11 @@ fn block_list(content: &[ContentBlock]) -> Vec<Value> {
             // provider returned redacted, and it is the known gap in this
             // adapter rather than a silent one: the request that follows may be
             // rejected, with an error that says so.
-            // OpenAI's encrypted reasoning, from earlier in a conversation that
+            // Another provider's signature, from earlier in a conversation that
             // changed provider, is left out like an unsigned block: this API
             // can't verify it, and sending it is a 400.
             ContentBlock::Thinking { text, signature } => {
-                if let Some(signature) = signature.as_deref().filter(|s| !is_openai_reasoning(s)) {
+                if let Some(signature) = signature.as_deref().and_then(anthropic_signature) {
                     blocks.push(json!({
                         "type": "thinking",
                         "thinking": text,
@@ -166,7 +168,7 @@ fn block_list(content: &[ContentBlock]) -> Vec<Value> {
                 "id": id,
                 "name": name,
                 // An object here, unlike OpenAI, where it is a JSON string.
-                "input": input,
+                "input": replay_input(input),
             })),
 
             // The one adapter that can carry a picture inside the result
@@ -390,6 +392,46 @@ mod tests {
         let blocks = wire[0]["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 1, "{blocks:#?}");
         assert_eq!(blocks[0]["text"], "answer");
+    }
+
+    #[test]
+    fn a_call_whose_input_never_parsed_goes_back_as_an_empty_object() {
+        // Truncated at max_tokens, recorded as null, and refused on replay on
+        // every request after it. Transcripts already hold these.
+        let request = ChatRequest::new(
+            "m",
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use("t1", "write_file", Value::Null)],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::tool_error("t1", "bad input")],
+                ),
+            ],
+        );
+        let wire = messages_to_wire(&request);
+        assert_eq!(wire[0]["content"][0]["input"], json!({}));
+    }
+
+    #[test]
+    fn a_gemini_signature_is_left_out() {
+        let request = ChatRequest::new(
+            "m",
+            vec![Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        text: "reasoned on Gemini".into(),
+                        signature: Some(format!("{}g", taurus_provider::GEMINI_THOUGHT_PREFIX)),
+                    },
+                    ContentBlock::text("answer"),
+                ],
+            )],
+        );
+        let wire = messages_to_wire(&request);
+        assert_eq!(wire[0]["content"].as_array().unwrap().len(), 1);
     }
 
     #[test]

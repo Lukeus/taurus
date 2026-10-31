@@ -11,8 +11,8 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
-    ChatRequest, ContentBlock, Message, Provider, Role, Spend, StopReason, StreamAccumulator,
-    StreamEvent, TokenUsage, ToolDef,
+    with_unique_tool_ids, ChatRequest, ContentBlock, Message, Provider, Role, Spend, StopReason,
+    StreamAccumulator, StreamEvent, TokenUsage, ToolDef,
 };
 use taurus_tools::{
     Arrival, Effect, OutputBudget, Pending, PlanBoard, ToolContext, ToolError, ToolProgress,
@@ -335,9 +335,11 @@ fn take_spent(spent: &std::sync::Mutex<Spend>) -> Spend {
 fn without_images(messages: &[Message]) -> Vec<Message> {
     // The common case by far: nothing to do, and no history copied twice.
     if !messages.iter().any(|m| {
-        m.content
-            .iter()
-            .any(|b| matches!(b, ContentBlock::Image { .. }))
+        m.content.iter().any(|b| match b {
+            ContentBlock::Image { .. } => true,
+            ContentBlock::ToolResult { content, .. } => content.has_images(),
+            _ => false,
+        })
     }) {
         return messages.to_vec();
     }
@@ -351,6 +353,17 @@ fn without_images(messages: &[Message]) -> Vec<Message> {
                 .iter()
                 .map(|block| match block {
                     ContentBlock::Image { .. } => ContentBlock::text(IMAGE_OMITTED),
+                    // A tool's picture too: a screenshot from an MCP server is
+                    // as unreadable here as a pasted one.
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => ContentBlock::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        content: content.without_images(),
+                        is_error: *is_error,
+                    },
                     other => other.clone(),
                 })
                 .collect(),
@@ -374,8 +387,8 @@ const CANCELED_BEFORE_IT_RAN: &str =
 /// the truth, and which a resumed conversation can read.
 ///
 /// A call cut off while its arguments were still streaming has none that
-/// parse, and the accumulator leaves those as `null`. That is refused as a
-/// call's input on its own, so it becomes an empty object.
+/// parse, and the accumulator leaves those as `null`. It becomes an empty object
+/// here as well as on replay, so the transcript reads as what was sent.
 fn settle_canceled_calls(assistant: &mut Message) -> Vec<ContentBlock> {
     let mut results = Vec::new();
     for block in &mut assistant.content {
@@ -1377,6 +1390,7 @@ impl Agent {
         } else {
             without_images(&session.messages)
         };
+        messages = with_unique_tool_ids(messages);
         let volatile_tail = self.append_plan(&mut messages);
 
         ChatRequest {
@@ -2275,6 +2289,7 @@ impl Agent {
             instruction,
             schema,
         } = ask;
+        let messages = with_unique_tool_ids(messages);
         let caps = self.provider.capabilities(model).await.ok();
         if caps.is_some_and(|caps| caps.native_tools) {
             let mut history = if caps.is_some_and(|caps| caps.vision) {
@@ -2588,6 +2603,30 @@ impl ToolProgress for CallProgress {
                 label,
             })
             .await;
+    }
+}
+
+#[cfg(test)]
+mod without_images_tests {
+    use super::*;
+
+    #[test]
+    fn a_tools_picture_is_taken_out_for_a_model_that_cannot_see() {
+        let output = taurus_provider::ToolOutput::image("image/png", "aGk=");
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result("t1", output)],
+        )];
+        let sent = without_images(&messages);
+        let ContentBlock::ToolResult { content, .. } = &sent[0].content[0] else {
+            panic!("a result");
+        };
+        assert!(!content.has_images(), "{content}");
+        // And it's only what is sent: the session keeps the picture.
+        let ContentBlock::ToolResult { content, .. } = &messages[0].content[0] else {
+            panic!("a result");
+        };
+        assert!(content.has_images());
     }
 }
 

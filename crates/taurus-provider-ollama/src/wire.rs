@@ -114,17 +114,17 @@ pub struct ChatChunk {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ChunkMessage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub content: String,
     #[serde(default)]
     pub thinking: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub tool_calls: Vec<WireToolCall>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TagsResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub models: Vec<TagModel>,
 }
 
@@ -144,9 +144,9 @@ pub struct TagDetails {
 #[derive(Debug, Deserialize)]
 pub struct ShowResponse {
     /// e.g. `["completion", "vision", "tools", "thinking"]`
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub capabilities: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub model_info: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -167,6 +167,22 @@ impl ShowResponse {
 /// is the only thing tying a vector back to the text it came from.
 #[derive(Debug, serde::Deserialize)]
 pub struct EmbedResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub embeddings: Vec<Vec<f32>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_field_written_as_null_does_not_lose_the_line() {
+        let chunk: ChatChunk =
+            serde_json::from_str(r#"{"message":{"content":"hi","tool_calls":null},"done":false}"#)
+                .unwrap();
+        assert_eq!(chunk.message.unwrap().content, "hi");
+        let empty: ChatChunk =
+            serde_json::from_str(r#"{"message":{"content":null},"done":true}"#).unwrap();
+        assert_eq!(empty.message.unwrap().content, "");
+    }
 }
