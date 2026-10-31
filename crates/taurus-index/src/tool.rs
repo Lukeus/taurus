@@ -493,7 +493,7 @@ mod tests {
     }
 
     /// Two passages, each about a different thing, both indexed.
-    async fn two_passage_workspace(ctx: &ToolContext) {
+    fn two_passage_workspace(ctx: &ToolContext) {
         write(
             &ctx.workspace,
             "src/net.rs",
@@ -518,7 +518,7 @@ mod tests {
     async fn a_reranker_can_overturn_the_similarity_order() {
         let (ctx, _dir) = allowing_ctx();
         let index_dir = tempfile::TempDir::new().unwrap();
-        two_passage_workspace(&ctx).await;
+        two_passage_workspace(&ctx);
 
         // The embedding pass puts net.rs first for this query. The reranker
         // disagrees, and the reranker is the one that decides.
@@ -555,7 +555,7 @@ mod tests {
         // it — a reranker's score is not a cosine and is routinely negative.
         let (ctx, _dir) = allowing_ctx();
         let index_dir = tempfile::TempDir::new().unwrap();
-        two_passage_workspace(&ctx).await;
+        two_passage_workspace(&ctx);
 
         let out = tool(index_dir.path())
             .with_rerank(
@@ -584,7 +584,7 @@ mod tests {
         // retrieval away — least of all mid-turn, which is when it would.
         let (ctx, _dir) = allowing_ctx();
         let index_dir = tempfile::TempDir::new().unwrap();
-        two_passage_workspace(&ctx).await;
+        two_passage_workspace(&ctx);
 
         let out = tool(index_dir.path())
             .with_rerank(
@@ -611,7 +611,7 @@ mod tests {
         // than "rerank with a model called nothing".
         let (ctx, _dir) = allowing_ctx();
         let index_dir = tempfile::TempDir::new().unwrap();
-        two_passage_workspace(&ctx).await;
+        two_passage_workspace(&ctx);
 
         let out = tool(index_dir.path())
             .with_rerank(

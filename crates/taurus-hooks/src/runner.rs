@@ -164,12 +164,6 @@ pub struct Outcome {
     pub stopped: bool,
 }
 
-impl Outcome {
-    pub fn is_denied(&self) -> bool {
-        self.denied.is_some()
-    }
-}
-
 /// The configured hooks, ready to run.
 ///
 /// Built once per reload and shared, like the tool registry: matching is a
@@ -326,7 +320,7 @@ pub fn summarize(name: &str, hook: &Hook) -> HookSummary {
             format!("{} {}", hook.command, hook.args.join(" "))
         },
         matches: match &hook.foreign {
-            Some(foreign) => describe_foreign(foreign),
+            Some(foreign) => Some(describe_foreign(foreign)),
             None => hook.matches.as_ref().and_then(describe_match),
         },
         // What it will actually get, which is what a list of what will run is
@@ -351,7 +345,7 @@ fn describe_match(matches: &crate::config::Match) -> Option<String> {
 }
 
 /// A foreign hook's narrowing, in words, saying whose format it's in.
-fn describe_foreign(foreign: &crate::dialect::Foreign) -> Option<String> {
+fn describe_foreign(foreign: &crate::dialect::Foreign) -> String {
     let whose = match foreign.dialect {
         crate::dialect::Dialect::Claude => "Claude Code format",
         crate::dialect::Dialect::Copilot => "Copilot format",
@@ -363,7 +357,7 @@ fn describe_foreign(foreign: &crate::dialect::Foreign) -> Option<String> {
     if let Some(when) = &foreign.when {
         parts.push(format!("if {when}"));
     }
-    Some(parts.join("; "))
+    parts.join("; ")
 }
 
 /// One hook's verdict.
@@ -779,7 +773,7 @@ mod tests {
         let payload = HookPayload::new(HookEvent::PreToolUse, dir.path());
         let outcome = runner.run(&payload, &CancellationToken::new()).await;
 
-        assert!(outcome.is_denied());
+        assert!(outcome.denied.is_some());
         // The model has to be told why, or its next move is to try the same
         // thing again.
         let reason = outcome.denied.unwrap();
@@ -804,7 +798,7 @@ mod tests {
 
         // The whole argument for fail-closed: a guard that breaks must not
         // quietly stop guarding.
-        assert!(outcome.is_denied());
+        assert!(outcome.denied.is_some());
         assert!(outcome.denied.unwrap().contains("/nonexistent/guard"));
     }
 
@@ -824,7 +818,7 @@ mod tests {
             .await;
 
         // The call already ran. Refusing it now would be a claim about the past.
-        assert!(!outcome.is_denied());
+        assert!(outcome.denied.is_none());
         assert_eq!(outcome.notes.len(), 1);
     }
 
@@ -847,7 +841,7 @@ mod tests {
             )
             .await;
 
-        assert!(!outcome.is_denied());
+        assert!(outcome.denied.is_none());
         assert!(
             outcome.notes[0].contains("formatted 2 files"),
             "{outcome:?}"
@@ -899,7 +893,7 @@ mod tests {
             )
             .await;
 
-        assert!(outcome.is_denied());
+        assert!(outcome.denied.is_some());
         assert!(outcome.denied.unwrap().contains("did not finish"));
         // Or stopping it proved nothing.
         assert!(started.exists(), "the hook never started");
@@ -935,7 +929,7 @@ mod tests {
             )
             .await;
 
-        assert!(!outcome.is_denied(), "{:?}", outcome.denied);
+        assert!(outcome.denied.is_none(), "{:?}", outcome.denied);
         assert!(
             outcome.notes.iter().any(|n| n.contains("fine")),
             "{:?}",
@@ -1014,7 +1008,10 @@ mod tests {
             .await;
 
         assert!(outcome.stopped, "{outcome:?}");
-        assert!(!outcome.is_denied(), "Stop is not a hook refusing the call");
+        assert!(
+            outcome.denied.is_none(),
+            "Stop is not a hook refusing the call"
+        );
         assert!(
             began.elapsed() < Duration::from_secs(3),
             "took {:?}, so the hook ran to its end",
@@ -1083,7 +1080,10 @@ mod tests {
         let outcome = runner.run(&payload, &CancellationToken::new()).await;
         let took = started.elapsed();
 
-        assert!(outcome.is_denied(), "a hook that never answered was obeyed");
+        assert!(
+            outcome.denied.is_some(),
+            "a hook that never answered was obeyed"
+        );
         assert!(
             took < Duration::from_secs(5),
             "the 1s timeout took {took:?}, so stdin blocked outside it"
@@ -1469,7 +1469,7 @@ mod tests {
             )
             .await;
 
-        assert!(outcome.is_denied());
+        assert!(outcome.denied.is_some());
         // The answer is already no; the user should not wait for three more
         // programs to agree.
         assert!(!marker.exists(), "later hooks must not run after a refusal");
@@ -1499,7 +1499,8 @@ mod tests {
         assert!(runner
             .run(&git, &CancellationToken::new())
             .await
-            .is_denied());
+            .denied
+            .is_some());
 
         // Keyed by the leading word, the same unit an "always allow" uses —
         // approving `git` never approved `rm`, and a hook about `git` is not
@@ -1509,10 +1510,11 @@ mod tests {
             serde_json::json!({"command": "ls -la"}),
             vec![],
         );
-        assert!(!runner
+        assert!(runner
             .run(&other, &CancellationToken::new())
             .await
-            .is_denied());
+            .denied
+            .is_none());
     }
 
     #[tokio::test]
@@ -1539,17 +1541,19 @@ mod tests {
         assert!(runner
             .run(&rust, &CancellationToken::new())
             .await
-            .is_denied());
+            .denied
+            .is_some());
 
         let prose = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
             "write_file",
             serde_json::json!({"path": "README.md"}),
             vec!["README.md".into()],
         );
-        assert!(!runner
+        assert!(runner
             .run(&prose, &CancellationToken::new())
             .await
-            .is_denied());
+            .denied
+            .is_none());
     }
 
     #[tokio::test]
@@ -1609,10 +1613,11 @@ exit 0"#,
             serde_json::json!({"path": "a", "content": "git push"}),
             vec![],
         );
-        assert!(!runner
+        assert!(runner
             .run(&write, &CancellationToken::new())
             .await
-            .is_denied());
+            .denied
+            .is_none());
 
         // Its tool, a harmless command: passes, and the empty stdout is no note.
         let status = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
@@ -1622,7 +1627,7 @@ exit 0"#,
         );
         let outcome = runner.run(&status, &CancellationToken::new()).await;
         assert!(
-            !outcome.is_denied() && outcome.notes.is_empty(),
+            outcome.denied.is_none() && outcome.notes.is_empty(),
             "{outcome:?}"
         );
     }

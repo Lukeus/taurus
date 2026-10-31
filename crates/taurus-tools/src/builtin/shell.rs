@@ -483,7 +483,7 @@ async fn start_in_background(
     let mut child = taurus_process::Tree::spawn(piped(program, args, &cwd, input.stdin.is_some()))
         .map_err(cannot_start)?;
     feed_stdin(child.take_stdin(), input.stdin.as_deref()).await;
-    let id = jobs.adopt(input.command.clone(), child, before).await;
+    let id = jobs.adopt(input.command.clone(), child, before);
 
     Ok(format!(
         "Started #{id} in the background: {}\nRead what it says with check_command (id {id}), \

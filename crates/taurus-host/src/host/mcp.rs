@@ -15,7 +15,7 @@ impl Host {
     /// long as it takes the second call to land.
     pub async fn mcp_servers(&self) -> Vec<McpServerView> {
         let workspace = self.workspace.read().await.clone();
-        let (config, defined_in, problems) = self.mcp_layers(&workspace);
+        let (config, defined_in, problems) = Self::mcp_layers(&workspace);
         // Recorded here as well as at a reload, because this is what the MCP
         // panel reads when it opens. A file broken by hand since the last
         // reload would otherwise take its servers off the list with nothing
@@ -68,7 +68,7 @@ impl Host {
     /// which is the only one that can open a window. See `taurus_mcp::oauth`.
     pub async fn begin_mcp_sign_in(&self, name: &str) -> Result<taurus_mcp::oauth::SignIn, String> {
         let workspace = self.workspace.read().await.clone();
-        let (config, _, _) = self.mcp_layers(&workspace);
+        let (config, _, _) = Self::mcp_layers(&workspace);
         let server = config
             .servers
             .get(name)
@@ -96,10 +96,7 @@ impl Host {
     /// project.
     /// And what was wrong with either: the same problems [`Self::reload_mcp`]
     /// records, so a caller that reads the files can say what it read.
-    pub(super) fn mcp_layers(
-        &self,
-        workspace: &Path,
-    ) -> (taurus_mcp::McpConfig, LayerOf, Vec<Problem>) {
+    pub(super) fn mcp_layers(workspace: &Path) -> (taurus_mcp::McpConfig, LayerOf, Vec<Problem>) {
         let mut layers = Vec::new();
         let mut defined_in: LayerOf = BTreeMap::new();
         let mut problems = Vec::new();

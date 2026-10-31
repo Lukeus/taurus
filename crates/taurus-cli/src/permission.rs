@@ -111,7 +111,7 @@ impl TerminalPrompt {
         self.interactive
     }
 
-    fn ask(&self, request: &PermissionRequest) -> PermissionDecision {
+    fn ask(request: &PermissionRequest) -> PermissionDecision {
         // Prompts go to stderr so `taurus run > out.txt` still shows them and
         // the redirected stdout stays clean for the model's answer.
         let mut err = std::io::stderr();
@@ -235,11 +235,7 @@ impl PermissionPrompt for TerminalPrompt {
 
         if self.interactive {
             // The prompt blocks on stdin, which would stall the async runtime.
-            let this = TerminalPrompt {
-                policy: self.policy.clone(),
-                interactive: true,
-            };
-            return tokio::task::spawn_blocking(move || this.ask(&request))
+            return tokio::task::spawn_blocking(move || Self::ask(&request))
                 .await
                 .unwrap_or(PermissionDecision::Deny);
         }

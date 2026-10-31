@@ -10,7 +10,6 @@ description = "OpenAI-compatible adapter for the Taurus agent harness"
 taurus-provider = { workspace = true, features = ["http"] }
 async-trait.workspace = true
 bytes.workspace = true
-futures.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

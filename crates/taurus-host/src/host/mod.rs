@@ -551,7 +551,7 @@ impl Host {
         // unfamiliar export is exactly who wants them, and the per-turn set is
         // the one sub-agents do not get.
         {
-            let dir = self.data_dir_for(&workspace);
+            let dir = Self::data_dir_for(&workspace);
             registry.register(Arc::new(taurus_data::LoadDataset::new(
                 self.engine.clone(),
                 dir.clone(),

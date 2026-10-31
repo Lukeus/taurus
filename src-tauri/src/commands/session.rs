@@ -486,7 +486,7 @@ pub async fn send_message(
     let live = Arc::new(Live::new());
     live.attach(on_event).await;
     *entry.live.lock().await = Some(live.clone());
-    emit_turn(state.inner(), &session_id, Some(live.as_ref().into())).await;
+    emit_turn(state.inner(), &session_id, Some(live.as_ref().into()));
 
     // A fresh token per turn: reusing a canceled one would abort the next turn
     // before it started.
@@ -563,7 +563,7 @@ pub async fn send_message(
     // conversation is declared idle.
     let _ = fan.await;
     *entry.live.lock().await = None;
-    emit_turn(state.inner(), &session_id, None).await;
+    emit_turn(state.inner(), &session_id, None);
     // Before the release below, which is half of how it decides whether
     // anybody saw this end.
     notify_done(

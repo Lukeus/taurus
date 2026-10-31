@@ -268,7 +268,7 @@ pub struct TurnState {
 ///
 /// Never fails the turn. A window that has gone away is the case this whole
 /// path exists to survive.
-pub async fn emit_turn(state: &AppState, session_id: &str, turn: Option<RunningTurn>) {
+pub fn emit_turn(state: &AppState, session_id: &str, turn: Option<RunningTurn>) {
     let payload = TurnState {
         session: session_id.to_string(),
         turn,

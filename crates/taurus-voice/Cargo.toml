@@ -10,13 +10,11 @@ description = "Speech input for Taurus: microphone capture and on-device transcr
 cpal = "0.18"
 futures.workspace = true
 reqwest.workspace = true
-serde.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-ts-rs.workspace = true
 whisper-rs = { version = "0.15", features = ["tracing_backend"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
