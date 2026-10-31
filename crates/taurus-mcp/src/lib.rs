@@ -118,7 +118,8 @@ struct Connection {
 /// in the application's own working directory, which a folder switch does not
 /// change. Variables come from the process environment, not the workspace. The
 /// client declares no `roots`, so a server has no way to ask where the
-/// workspace is. And sign-in is keyed by the server's name alone. So two
+/// workspace is. And sign-in is keyed by the server's name and bound to its
+/// URL, both of which are in the entry. So two
 /// folders whose layers merge to the same entry get the same server, and it
 /// can be left running across the switch. A folder whose layers merge to a
 /// different one resolves differently, and that is a restart.
@@ -623,7 +624,7 @@ async fn handshake(
                  * server that needs signing in fails, says so, and waits.
                  */
                 let manager = match vault.clone() {
-                    Some(vault) => oauth::manager_for(&url, name, vault).await,
+                    Some(vault) => oauth::manager_for(&url, name, vault).await?,
                     None => None,
                 };
 

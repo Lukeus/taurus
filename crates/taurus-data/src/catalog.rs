@@ -117,12 +117,48 @@ fn available(all: &[Dataset]) -> String {
 /// Re-loading a *different* file under a name already taken is the case
 /// [`suggest_name`] keeps from arising in the first place.
 pub fn register(dir: &Path, dataset: Dataset) -> Result<(), DataError> {
+    let _writing = writing();
     let mut all = load(dir);
     match all.iter_mut().find(|d| d.name == dataset.name) {
         Some(existing) => *existing = dataset,
         None => all.push(dataset),
     }
     save(dir, &all)
+}
+
+/// [`register`], unless the name now points at a different file.
+///
+/// Hands back whatever holds the name instead. The check and the write happen
+/// under one lock, because the check [`taken_by`] makes ahead of a slow read can
+/// be stale by the time that read ends: `load_dataset` runs concurrently, so
+/// `train/data.csv` and `eval/data.csv` loaded in one response both find `data`
+/// free, and the second would quietly repoint the first.
+pub fn claim(dir: &Path, dataset: Dataset) -> Result<Option<Dataset>, DataError> {
+    let _writing = writing();
+    let mut all = load(dir);
+    if let Some(existing) = all
+        .iter()
+        .find(|d| d.name == dataset.name && d.path != dataset.path)
+    {
+        return Ok(Some(existing.clone()));
+    }
+    match all.iter_mut().find(|d| d.name == dataset.name) {
+        Some(existing) => *existing = dataset,
+        None => all.push(dataset),
+    }
+    save(dir, &all)?;
+    Ok(None)
+}
+
+/// Held across every read-modify-write of a list.
+///
+/// One lock for the process rather than one per workspace: these writes take
+/// microseconds, and the tools and the pane's commands all go through here.
+fn writing() -> std::sync::MutexGuard<'static, ()> {
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    WRITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Removes a dataset, reporting whether there was one to remove.
@@ -132,6 +168,7 @@ pub fn register(dir: &Path, dataset: Dataset) -> Result<(), DataError> {
 /// that could delete its targets would make forgetting a dataset a destructive
 /// act, which is not how a list should behave.
 pub fn forget(dir: &Path, name: &str) -> Result<bool, DataError> {
+    let _writing = writing();
     let mut all = load(dir);
     let before = all.len();
     all.retain(|d| d.name != name);
@@ -156,7 +193,9 @@ fn save(dir: &Path, all: &[Dataset]) -> Result<(), DataError> {
 
     std::fs::create_dir_all(dir).map_err(|e| unsaved(e.to_string()))?;
     let text = serde_json::to_string_pretty(all).map_err(|e| unsaved(e.to_string()))?;
-    let temporary = dir.join(format!("{CATALOG_FILE}.tmp"));
+    // Named per process, so a second copy of Taurus on this workspace can't
+    // rename this file out from under this write.
+    let temporary = dir.join(format!("{CATALOG_FILE}.{}.tmp", std::process::id()));
     std::fs::write(&temporary, text).map_err(|e| unsaved(e.to_string()))?;
     std::fs::rename(&temporary, &path).map_err(|e| unsaved(e.to_string()))
 }
@@ -278,6 +317,50 @@ mod tests {
             path: path.into(),
             format: Format::Csv,
         }
+    }
+
+    #[test]
+    fn claiming_a_name_held_by_another_file_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            claim(dir.path(), dataset("data", "train/data.csv")).unwrap(),
+            None
+        );
+
+        let holder = claim(dir.path(), dataset("data", "eval/data.csv")).unwrap();
+
+        assert_eq!(holder.unwrap().path, "train/data.csv");
+        assert_eq!(find(dir.path(), "data").unwrap().path, "train/data.csv");
+    }
+
+    #[test]
+    fn claiming_a_name_again_for_the_same_file_is_a_reload() {
+        let dir = TempDir::new().unwrap();
+        claim(dir.path(), dataset("data", "train/data.csv")).unwrap();
+        assert_eq!(
+            claim(dir.path(), dataset("data", "train/data.csv")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn registrations_from_several_threads_are_all_kept() {
+        // A read-modify-write with nothing around it loses whichever entries
+        // landed between another thread's read and its write.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        let threads: Vec<_> = (0..16)
+            .map(|i| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    register(&root, dataset(&format!("d{i}"), &format!("{i}.csv"))).unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(load(&root).len(), 16);
     }
 
     #[test]

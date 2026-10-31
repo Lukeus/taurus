@@ -200,14 +200,23 @@ impl Tool for LoadDataset {
         }
 
         let schema = self.engine.schema(&source).await?;
-        catalog::register(
+        // Checked again as it's written. See `catalog::claim`: calls in one
+        // response run at once, so the check above can be out of date by now.
+        if let Some(existing) = catalog::claim(
             &self.dir,
             Dataset {
                 name: name.clone(),
                 path: shown.clone(),
                 format: source.format,
             },
-        )?;
+        )? {
+            return Err(DataError::NameTaken {
+                name,
+                existing: existing.path,
+                path: shown,
+            }
+            .into());
+        }
 
         Ok(describe_schema(&name, &shown, source.format, &schema).into())
     }
@@ -584,23 +593,21 @@ impl Tool for RunRecipe {
         // about, and making somebody load a file this harness just wrote would
         // be the harness forgetting what it did a second ago.
         let name = catalog::suggest_name(&output);
-        let loaded = match catalog::taken_by(&self.dir, &name, &shown) {
+        let claimed = catalog::claim(
+            &self.dir,
+            Dataset {
+                name: name.clone(),
+                path: shown.clone(),
+                format: Format::of(&output)?,
+            },
+        )?;
+        let loaded = match claimed {
             // Not an error, and not a silent repoint either. The file is
             // written; the only question left is what to call it, and quietly
             // moving somebody's existing dataset onto a new file would be the
             // worse of the two answers.
             Some(existing) => Err(existing),
-            None => {
-                catalog::register(
-                    &self.dir,
-                    Dataset {
-                        name: name.clone(),
-                        path: shown.clone(),
-                        format: Format::of(&output)?,
-                    },
-                )?;
-                Ok(name)
-            }
+            None => Ok(name),
         };
 
         Ok(describe_run(&recipe, &run, &shown, &loaded).into())
@@ -1233,6 +1240,35 @@ mod calls {
             dir,
             home,
         )
+    }
+
+    /// The two calls a model makes in one response when it wants both files,
+    /// which the loop runs at once. Both find `data` free before either writes.
+    #[tokio::test]
+    async fn two_files_loaded_at_once_cannot_share_a_name() {
+        let (ctx, dir, home) = workspace();
+        let root = dir.path().canonicalize().unwrap();
+        for folder in ["train", "eval"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+            std::fs::write(root.join(folder).join("data.csv"), EVENTS).unwrap();
+        }
+        let (load, _) = tools(&home);
+
+        let (train, eval) = tokio::join!(
+            load.execute(serde_json::json!({"path": "train/data.csv"}), &ctx),
+            load.execute(serde_json::json!({"path": "eval/data.csv"}), &ctx),
+        );
+
+        assert_eq!(
+            [train.is_ok(), eval.is_ok()]
+                .iter()
+                .filter(|ok| **ok)
+                .count(),
+            1,
+            "one has to be told the name is taken"
+        );
+        let refused = train.err().or(eval.err()).unwrap().to_string();
+        assert!(refused.contains("already loaded"), "{refused}");
     }
 
     fn tools(home: &TempDir) -> (LoadDataset, ProfileDataset) {

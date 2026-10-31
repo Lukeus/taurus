@@ -145,11 +145,14 @@ pub fn config_file(home: &Path) -> PathBuf {
     home.join("mcp.json")
 }
 
-/// Reads `~/.taurus/mcp.json`. A missing file means no servers, not an error.
+/// Reads `~/.taurus/mcp.json`. A missing file means no servers, not an error,
+/// and one that's there and can't be read is an error rather than no servers.
 pub fn load(home: &Path) -> Result<McpConfig, String> {
     let path = config_file(home);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(McpConfig::default());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(McpConfig::default()),
+        Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
     };
     parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -460,6 +463,16 @@ fn edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_cannot_be_read_says_so_rather_than_reading_as_no_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load(dir.path()).unwrap().servers.is_empty());
+
+        std::fs::write(config_file(dir.path()), [0xff, 0xfe]).unwrap();
+        let refused = load(dir.path()).unwrap_err();
+        assert!(refused.contains("could not be read"), "{refused}");
+    }
     use tempfile::TempDir;
 
     #[test]

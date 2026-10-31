@@ -320,13 +320,15 @@ pub struct RunArgs {
 #[derive(Args, Clone, Default)]
 pub struct PolicyArgs {
     /// Allow a tool without prompting, e.g. `--allow write_file`. Repeatable.
+    /// A write to a file that decides what runs, like `.git/hooks/*`, is never
+    /// covered.
     #[arg(long = "allow", value_name = "TOOL")]
     pub allow: Vec<String>,
 
     /// Allow a shell program without prompting, e.g. `--allow-command git`.
     /// Repeatable. A chained line needs one for each program it runs, so
-    /// `git` does not grant `git status; rm -rf .`, and a redirect or a `$(...)`
-    /// is never covered.
+    /// `git` does not grant `git status; rm -rf .`, and a redirect, a `$(...)`
+    /// or text fed on stdin is never covered.
     #[arg(long = "allow-command", value_name = "PROGRAM")]
     pub allow_command: Vec<String>,
 
@@ -635,7 +637,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 .await
                 .map_err(|e| format!("could not reach provider '{provider_id}': {e}"))?;
             for model in models {
-                println!("{}", model.display_name);
+                println!("{}", model_line(&model));
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -662,6 +664,17 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 usage_cmd::Fixed::new(&host.system_prompt().await, host.tool_definitions().await);
             usage_cmd::run(&workspace, id.as_deref(), all, &fixed)
         }
+    }
+}
+
+/// One line of `taurus models`: the id first, because that's what `--model`
+/// takes. A backend's display name can be something else entirely, and nothing
+/// maps one back.
+fn model_line(model: &taurus_provider::ModelInfo) -> String {
+    if model.display_name == model.id {
+        model.id.clone()
+    } else {
+        format!("{:<32} {}", model.id, model.display_name)
     }
 }
 
@@ -783,6 +796,19 @@ async fn build_host_quietly(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listed_model_leads_with_what_the_model_flag_takes() {
+        let model = |id: &str, name: &str| taurus_provider::ModelInfo {
+            id: id.into(),
+            display_name: name.into(),
+            context_length: None,
+        };
+        let named = model_line(&model("claude-opus-5", "Claude Opus 5"));
+        assert!(named.starts_with("claude-opus-5 "), "{named}");
+        assert!(named.ends_with("Claude Opus 5"), "{named}");
+        assert_eq!(model_line(&model("llama3", "llama3")), "llama3");
+    }
 
     #[test]
     fn only_a_command_that_needs_the_servers_starts_them() {

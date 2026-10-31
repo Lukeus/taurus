@@ -230,8 +230,10 @@ impl Tool for RunSkillScript {
         // otherwise flash up a window on Windows for the length of the script.
         taurus_tools::no_console(&mut command);
 
-        let mut child = command
-            .spawn()
+        // A tree, because a script is nearly always a shell or an interpreter
+        // running something else, and ending only that leaves the build or the
+        // `sleep` it started running while this says it stopped.
+        let mut child = taurus_process::Tree::spawn(command)
             .map_err(|e| ToolError::Failed(format!("cannot start {interpreter_name}: {e}")))?;
 
         // Both pipes are drained from the moment the script starts, beside the
@@ -239,8 +241,8 @@ impl Tool for RunSkillScript {
         // prints more than that blocks on its next write until somebody reads:
         // read only once it has exited, it never exits, and the timeout and
         // Stop would both be stuck inside the same wait.
-        let stdout = Drain::start(child.stdout.take());
-        let stderr = Drain::start(child.stderr.take());
+        let stdout = Drain::start(child.take_stdout());
+        let stderr = Drain::start(child.take_stderr());
         let timeout =
             std::time::Duration::from_secs(input.timeout_secs.unwrap_or(120).clamp(1, 600));
 
@@ -253,11 +255,19 @@ impl Tool for RunSkillScript {
                 Err(_) => Ended::TimedOut,
             },
         };
-        if !matches!(ended, Ended::Exited(_)) {
-            // Before anything waits on the pipes: they reach end-of-file only
-            // once the script is gone.
-            let _ = child.start_kill();
-        }
+        // Before anything waits on the pipes: they reach end-of-file only once
+        // the script is gone.
+        let unfinished = if matches!(ended, Ended::Exited(_)) {
+            String::new()
+        } else {
+            match child.end().await {
+                Ok(()) => String::new(),
+                Err(trouble) => {
+                    tracing::warn!(%trouble, "a skill script may have left something running");
+                    format!(", though what it started may still be running: {trouble}")
+                }
+            }
+        };
         if matches!(ended, Ended::Canceled) {
             stdout.abandon();
             stderr.abandon();
@@ -277,7 +287,8 @@ impl Tool for RunSkillScript {
             // usually said why by then, and a run that comes back empty is run
             // again and costs the whole timeout twice.
             Ended::TimedOut => Err(ToolError::Failed(format!(
-                "{} timed out after {}s and was stopped. Its output until then:\n{report}",
+                "{} timed out after {}s and was stopped{unfinished}. Its output until \
+                 then:\n{report}",
                 input.script,
                 timeout.as_secs()
             ))),
@@ -410,14 +421,15 @@ fn report(out: &str, err: &str, script: &str, ctx: &ToolContext) -> String {
 /// repository, no git, or no answer within a few seconds: then nothing counts
 /// as the project's, and a procedure has to carry what it uses.
 async fn tracked_files(workspace: &std::path::Path) -> std::collections::HashSet<String> {
-    let listing = tokio::process::Command::new("git")
-        .arg("-C")
+    let mut git = tokio::process::Command::new("git");
+    git.arg("-C")
         .arg(workspace)
         .args(["ls-files", "-z"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
+        .kill_on_drop(true);
+    taurus_tools::no_console(&mut git);
+    let listing = git.output();
     match tokio::time::timeout(std::time::Duration::from_secs(5), listing).await {
         Ok(Ok(out)) if out.status.success() => out
             .stdout
@@ -644,6 +656,110 @@ mod tests {
             perms.set_mode(0o755);
             std::fs::set_permissions(&path, perms).unwrap();
         }
+    }
+
+    /// Whether a process is still there, zombies aside.
+    #[cfg(unix)]
+    fn running(pid: &str) -> bool {
+        let state = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&state.stdout);
+        !state.trim().is_empty() && !state.trim().starts_with('Z')
+    }
+
+    #[cfg(unix)]
+    async fn gone(pid: &str) -> bool {
+        for _ in 0..50 {
+            if !running(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timed_out_script_takes_what_it_started_with_it() {
+        let f = fixture(&[(
+            "alpha",
+            "scripts:\n  - path: run.sh\n    interpreter: bash\n",
+        )]);
+        let pid_file = f.ctx.workspace.join("child.pid");
+        write_script(
+            f.skills.path(),
+            "alpha",
+            "run.sh",
+            &format!(
+                "#!/bin/bash\nsleep 317 &\necho $! > '{}'\nwait\n",
+                pid_file.display()
+            ),
+        );
+
+        let result = RunSkillScript::new(f.catalog.clone())
+            .execute(
+                serde_json::json!({"skill": "alpha", "script": "run.sh", "timeout_secs": 1}),
+                &f.ctx,
+            )
+            .await;
+
+        assert!(result.is_err(), "it timed out");
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim();
+        let left = gone(pid).await;
+        if !left {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid])
+                .status();
+        }
+        assert!(left, "the sleep it started is still running");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopped_script_takes_what_it_started_with_it() {
+        let f = fixture(&[(
+            "alpha",
+            "scripts:\n  - path: run.sh\n    interpreter: bash\n",
+        )]);
+        let pid_file = f.ctx.workspace.join("child.pid");
+        write_script(
+            f.skills.path(),
+            "alpha",
+            "run.sh",
+            &format!(
+                "#!/bin/bash\nsleep 319 &\necho $! > '{}'\nwait\n",
+                pid_file.display()
+            ),
+        );
+        let stop = f.ctx.cancel.clone();
+        let stopping = pid_file.clone();
+        tokio::spawn(async move {
+            while !stopping.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            stop.cancel();
+        });
+
+        let result = RunSkillScript::new(f.catalog.clone())
+            .execute(
+                serde_json::json!({"skill": "alpha", "script": "run.sh", "timeout_secs": 60}),
+                &f.ctx,
+            )
+            .await;
+
+        assert!(matches!(result, Err(ToolError::Canceled)));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim();
+        let left = gone(pid).await;
+        if !left {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid])
+                .status();
+        }
+        assert!(left, "the sleep it started is still running");
     }
 
     #[tokio::test]

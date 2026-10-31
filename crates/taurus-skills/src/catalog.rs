@@ -104,9 +104,23 @@ impl SkillCatalog {
                             );
                         }
                     }
-                    Err(SkillError::Io(_)) => {
+                    Err(SkillError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                         // A directory with no SKILL.md is not a skill; that is
                         // normal, not an error worth showing the user.
+                    }
+                    Err(SkillError::Io(e)) => {
+                        // One that's there and can't be read is somebody's skill
+                        // gone missing, and they'd want to know which.
+                        let file = if source.origin == SkillOrigin::PluginCommand {
+                            dir.clone()
+                        } else {
+                            dir.join(SKILL_FILE)
+                        };
+                        warn!(file = %file.display(), error = %e, "skipping unreadable skill");
+                        problems.push(SkillError::Invalid {
+                            path: file.display().to_string(),
+                            message: format!("could not be read: {e}"),
+                        });
                     }
                     Err(e) => {
                         warn!(dir = %dir.display(), error = %e, "skipping malformed skill");
@@ -222,9 +236,10 @@ pub fn command_files(dir: &Path) -> Vec<PathBuf> {
 /// Directories a skill may bundle resources in, per the specification.
 const RESOURCE_DIRS: [&str; 3] = ["scripts", "references", "assets"];
 
-/// How many bundled files are listed before the rest are summarized. A skill
+/// How many bundled files are listed; the rest stay on disk, unlisted. A skill
 /// with two hundred assets should not spend the model's context introducing
-/// them.
+/// them. Only the listing: finding its scripts looks at all of them, since
+/// `assets/` sorts ahead of `scripts/`.
 const MAX_RESOURCES: usize = 40;
 
 fn load_skill(
@@ -253,10 +268,11 @@ fn load_skill(
         }
     }
 
-    let resources = bundled_resources(dir);
+    let mut resources = bundled_resources(dir);
     frontmatter
         .scripts
         .extend(undeclared_scripts(&frontmatter.scripts, &resources));
+    resources.truncate(MAX_RESOURCES);
 
     // Resolve interpreters once, at load time: the alternative is discovering
     // that python is missing halfway through a task.
@@ -307,7 +323,6 @@ fn bundled_resources(dir: &Path) -> Vec<String> {
     // Directory order is arbitrary and would reshuffle the model's context and
     // the drawer's list between runs for no reason.
     found.sort();
-    found.truncate(MAX_RESOURCES);
     found
 }
 
@@ -364,6 +379,73 @@ mod tests {
             format!("---\nname: {name}\ndescription: {description}\n---\n\nBody of {name}.\n"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_full_assets_folder_does_not_hide_the_skills_scripts() {
+        let root = TempDir::new().unwrap();
+        write_skill(root.path(), "alpha", "when alpha", "");
+        let assets = root.path().join("alpha/assets");
+        let scripts = root.path().join("alpha/scripts");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::create_dir_all(&scripts).unwrap();
+        for i in 0..MAX_RESOURCES {
+            std::fs::write(assets.join(format!("a{i}.txt")), "x").unwrap();
+        }
+        std::fs::write(scripts.join("run.py"), "print(1)\n").unwrap();
+
+        let (catalog, _) = SkillCatalog::discover(&sources(vec![(SkillTier::User, root.path())]));
+        let skill = catalog.get("alpha").unwrap();
+
+        assert!(
+            skill
+                .frontmatter
+                .scripts
+                .iter()
+                .any(|s| s.path == "scripts/run.py"),
+            "{:?}",
+            skill.frontmatter.scripts
+        );
+        assert_eq!(
+            skill.resources.len(),
+            MAX_RESOURCES,
+            "the listing is still capped"
+        );
+    }
+
+    #[test]
+    fn a_skill_file_that_cannot_be_read_is_reported() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("alpha");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(SKILL_FILE), [0xff, 0xfe]).unwrap();
+        // A folder with no SKILL.md in it is still nothing to mention.
+        std::fs::create_dir_all(root.path().join("not-a-skill")).unwrap();
+
+        let (_, problems) = SkillCatalog::discover(&sources(vec![(SkillTier::User, root.path())]));
+
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        let said = problems[0].to_string();
+        assert!(
+            said.contains(SKILL_FILE) && said.contains("could not be read"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_command_file_that_cannot_be_read_is_reported() {
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("review.md"), [0xff, 0xfe]).unwrap();
+
+        let (_, problems) = SkillCatalog::discover(&[SkillSource {
+            tier: SkillTier::User,
+            origin: SkillOrigin::PluginCommand,
+            dir: root.path().to_path_buf(),
+            plugin: Some("tools".into()),
+        }]);
+
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].to_string().contains("review.md"));
     }
 
     fn sources(dirs: Vec<(SkillTier, &Path)>) -> Vec<SkillSource> {

@@ -371,7 +371,7 @@ pub fn validate(frontmatter: &AgentFrontmatter, body: &str, path: &str) -> Resul
     Ok(())
 }
 
-fn is_kebab_case(s: &str) -> bool {
+pub(crate) fn is_kebab_case(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')

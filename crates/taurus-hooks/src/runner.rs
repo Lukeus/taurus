@@ -445,6 +445,12 @@ async fn execute(
     payload: &HookPayload,
     cancel: &CancellationToken,
 ) -> Verdict {
+    // Nothing to start: this stands for hooks in a file that couldn't be read.
+    if hook.command == crate::config::UNREADABLE {
+        let reason = hook.args.first().map_or("", String::as_str);
+        return Verdict::Denied(reason.to_string());
+    }
+
     let foreign = hook.foreign.as_deref();
     let body = match foreign {
         Some(foreign) => serde_json::to_vec(&crate::dialect::payload(foreign, payload)),
@@ -747,6 +753,27 @@ mod tests {
             path.display().to_string()
         };
         hook(&command, on)
+    }
+
+    #[tokio::test]
+    async fn a_hooks_file_that_cannot_be_read_refuses_a_call() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(crate::config::config_file(dir.path()), [0xff, 0xfe]).unwrap();
+        let (hooks, _) = crate::config::merge(vec![crate::config::load(dir.path()).unwrap()]);
+        let runner = HookRunner::new(hooks);
+
+        for payload in [
+            HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+                "write_file",
+                serde_json::json!({}),
+                vec![],
+            ),
+            HookPayload::new(HookEvent::UserPromptSubmit, dir.path()).with_prompt("hello"),
+        ] {
+            let outcome = runner.run(&payload, &CancellationToken::new()).await;
+            let denied = outcome.denied.expect("a guard that can't run refuses");
+            assert!(denied.contains("could not be read"), "{denied}");
+        }
     }
 
     fn hook(command: &str, on: HookEvent) -> Hook {

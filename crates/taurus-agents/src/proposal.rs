@@ -204,6 +204,15 @@ fn token_set(text: &str) -> std::collections::BTreeSet<String> {
 ///
 /// Called only after the user accepts. Returns the file written.
 pub fn save(proposal: &AgentProposal, agents_root: &Path) -> std::io::Result<PathBuf> {
+    // Validation already rejected anything but kebab-case, so the name cannot
+    // carry a separator, but this is the last place it could go wrong, and a
+    // filename is built from it.
+    if !crate::agent::is_kebab_case(&proposal.name) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("'{}' can't name an agent's file", proposal.name),
+        ));
+    }
     std::fs::create_dir_all(agents_root)?;
 
     let frontmatter = proposal.frontmatter();
@@ -211,9 +220,6 @@ pub fn save(proposal: &AgentProposal, agents_root: &Path) -> std::io::Result<Pat
         .unwrap_or_else(|_| format!("name: {}\n", proposal.name));
     let contents = format!("---\n{yaml}---\n\n{}\n", proposal.prompt.trim());
 
-    // Validation already rejected anything but kebab-case, so the name cannot
-    // carry a separator — but this is the last place it could go wrong, and a
-    // filename is built from it.
     let path = agents_root.join(format!("{}.md", proposal.name));
     std::fs::write(&path, contents)?;
     Ok(path)
@@ -247,6 +253,22 @@ impl AgentProposalSink for CollectingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_that_is_not_a_filename_is_refused_with_nothing_written() {
+        let root = tempfile::TempDir::new().unwrap();
+        let agents = root.path().join("agents");
+        for name in ["../outside", "a/b", ".."] {
+            let proposal = AgentProposal::new(
+                name,
+                "Reads a diff and reports what is wrong",
+                "Read the diff you are given and report what is wrong with it.",
+            );
+            assert!(save(&proposal, &agents).is_err(), "{name}");
+        }
+        assert!(!root.path().join("outside.md").exists());
+        assert!(!agents.exists());
+    }
     use crate::agent::AgentTier;
     use crate::catalog::AgentSource;
     use tempfile::TempDir;
