@@ -248,14 +248,15 @@ pub fn copy_skill(skill: &Skill, root: &Path) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("{} has no folder name", skill.dir.display()))?,
     };
     let target = root.join(&folder);
+    // This one first: the folder being there is true of the skill itself too.
+    if same_place(&skill.dir, &target) {
+        return Err(format!("\"{}\" is already yours to change.", skill.name()));
+    }
     if target.exists() {
         return Err(format!(
             "there's already a skill folder at {}. Open that one, or delete it first.",
             target.display()
         ));
-    }
-    if same_place(&skill.dir, &target) {
-        return Err(format!("\"{}\" is already yours to change.", skill.name()));
     }
 
     if skill.origin == SkillOrigin::PluginCommand {
@@ -709,5 +710,14 @@ mod tests {
                 .any(|root| root.starts_with(home.path().join("plugins"))),
             "no plugin was made here, so none is listed: {roots:?}"
         );
+    }
+
+    #[test]
+    fn copying_a_skill_onto_itself_says_its_already_yours() {
+        let ours = TempDir::new().unwrap();
+        write_skill(ours.path(), "cut-release");
+        let skill = load_skill(ours.path(), SkillOrigin::Taurus, None);
+        let why = copy_skill(&skill, ours.path()).unwrap_err();
+        assert!(why.contains("already yours"), "{why}");
     }
 }

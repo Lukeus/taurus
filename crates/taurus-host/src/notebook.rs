@@ -239,6 +239,12 @@ pub fn list(workspace: Option<&Path>) -> Vec<PageRef> {
                 if !meta.is_file() {
                     return None;
                 }
+                // Every other call goes through `check`, which refuses this name
+                // or trims it into a different note's. Listed, it's a row that
+                // can't be opened or deleted, or one that acts on the wrong file.
+                if check(&name).ok().as_deref() != Some(name.as_str()) {
+                    return None;
+                }
                 Some(PageRef {
                     scope,
                     kind,
@@ -942,7 +948,12 @@ impl taurus_tools::Tool for WriteNote {
             &input.name,
         )
         .ok()?;
-        let before = std::fs::read_to_string(&path).ok();
+        // Unreadable isn't absent: no diff, rather than one showing a new file.
+        let before = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return None,
+        };
         Some(taurus_tools::diff::of_change(
             shown(input.scope, PageKind::Note, &input.name),
             before.as_deref(),
@@ -974,7 +985,18 @@ impl taurus_tools::Tool for WriteNote {
         }
         // The file's own line endings, the rule `write_file` and the editor's
         // save both keep — a note written on Windows stays a CRLF note.
-        let existing = std::fs::read_to_string(&path).ok();
+        //
+        // Only a missing file counts as new. One that can't be read isn't
+        // overwritten, since its contents couldn't be read back first.
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(ToolError::Failed(format!(
+                    "could not read the note '{name}' ({e}), so it wasn't written over"
+                )))
+            }
+        };
         let created = existing.is_none();
         let text = match existing.as_deref() {
             Some(prior) if prior.contains("\r\n") => {
@@ -1807,5 +1829,37 @@ mod tests {
             let why = read(Scope::Workspace, Some(w), PageKind::Note, "Ghost").unwrap_err();
             assert!(why.contains("no note called 'Ghost'"), "{why}");
         });
+    }
+
+    #[test]
+    fn a_file_no_note_could_be_called_is_not_listed() {
+        // The space is the sharp one: it lists as ` Plan`, and `check` trims
+        // that to `Plan`, so deleting the row would delete a different note.
+        isolated(|w| {
+            page(Scope::Workspace, w, "Plan");
+            let dir = dir(Scope::Workspace, Some(w)).unwrap();
+            for stray in [" Plan.md", ".draft.md", "a:b.md"] {
+                std::fs::write(dir.join(stray), "x").unwrap();
+            }
+            let names: Vec<String> = list(Some(w)).into_iter().map(|p| p.name).collect();
+            assert_eq!(names, ["Plan"]);
+        });
+    }
+
+    #[tokio::test]
+    async fn the_tool_wont_write_over_a_note_it_cant_read() {
+        use taurus_tools::Tool;
+        let _home = crate::testing::isolated_home();
+        let workspace = TempDir::new().unwrap();
+        let w = workspace.path();
+        page(Scope::Workspace, w, "Binary");
+        let path = dir(Scope::Workspace, Some(w)).unwrap().join("Binary.md");
+        std::fs::write(&path, [0xFF, 0xFE, 0x00]).unwrap();
+
+        let tool = WriteNote::new(w);
+        let input = serde_json::json!({"scope": "workspace", "name": "Binary", "text": "new"});
+        assert!(tool.diff(&input, w).await.is_none());
+        assert!(tool.execute(input, &context(w)).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), [0xFF, 0xFE, 0x00]);
     }
 }

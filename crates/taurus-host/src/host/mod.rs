@@ -763,7 +763,7 @@ impl Host {
     /// the same class of blind spot [`crate::freshness`] already documents, and
     /// this window is at a turn boundary rather than across a whole turn.
     async fn load_instructions(&self, workspace: &Path) -> Vec<Problem> {
-        let loaded = instructions::load(instructions::sources(Some(workspace)));
+        let loaded = instructions::load(instructions::sources(Some(workspace)), Some(workspace));
         info!(files = loaded.instructions.len(), "instructions loaded");
         // Files plus directories. The named briefs and whatever they import are
         // watched by name; Copilot's scoped instructions live in a folder, so

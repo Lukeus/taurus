@@ -106,11 +106,35 @@ fn notes_path(workspace: &Path) -> PathBuf {
 /// A line that will not parse is skipped rather than failing the read. This is
 /// a record of work, not a configuration file: one torn line costs the note it
 /// held, and refusing to load the rest would cost the lot.
+///
+/// A file that can't be read at all reads as no notes here, where the answer
+/// only decides what to show. Anything about to write the set back uses
+/// [`read_notes`], which says so instead.
 pub fn load(workspace: &Path) -> Vec<Note> {
-    let Ok(text) = std::fs::read_to_string(notes_path(workspace)) else {
-        return Vec::new();
+    read_notes(workspace).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "could not read the memory notes");
+        Vec::new()
+    })
+}
+
+/// The notes, or why they can't be read. No file is no notes. Any other failure
+/// is an error, because a writer that took it for no notes would replace the
+/// whole file with its one change.
+fn read_notes(workspace: &Path) -> Result<Vec<Note>, String> {
+    let path = notes_path(workspace);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(format!(
+                "could not read {} ({e}), so nothing was changed",
+                path.display()
+            ))
+        }
     };
-    text.lines()
+    // Lossy, so one bad byte costs at most its own line.
+    Ok(String::from_utf8_lossy(&bytes)
+        .lines()
         .filter_map(|line| serde_json::from_str::<Note>(line).ok())
         .map(|mut note| {
             if note.id.is_empty() {
@@ -118,7 +142,7 @@ pub fn load(workspace: &Path) -> Vec<Note> {
             }
             note
         })
-        .collect()
+        .collect())
 }
 
 /// An id for a note that arrived without one, from what the note says.
@@ -145,6 +169,10 @@ fn derived_id(note: &Note) -> String {
 }
 
 /// Serializes every read-modify-write of a notes file in this process.
+///
+/// A second process, the CLI beside the app, isn't covered. Its write can still
+/// replace a change made since it read, but the atomic replace in [`write`]
+/// means neither can tear the file.
 ///
 /// Each writer loads the whole set, changes it, and writes it back, so two at
 /// once each write a set missing the other's change. They do run at once:
@@ -193,7 +221,7 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
     let text = checked(text)?;
 
     let _writing = writing();
-    let mut notes = load(workspace);
+    let mut notes = read_notes(workspace)?;
     notes.push(Note {
         id: fresh_id(),
         at: now(),
@@ -218,7 +246,7 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
 pub fn edit(workspace: &Path, id: &str, text: &str) -> Result<Vec<Note>, String> {
     let text = checked(text)?;
     let _writing = writing();
-    let mut notes = load(workspace);
+    let mut notes = read_notes(workspace)?;
     let note = notes
         .iter_mut()
         .find(|note| note.id == id)
@@ -251,9 +279,7 @@ fn write(workspace: &Path, notes: &[Note]) -> Result<(), String> {
         body.push('\n');
     }
 
-    let temporary = dir.join("notes.jsonl.tmp");
-    std::fs::write(&temporary, body).map_err(|e| format!("could not write a memory: {e}"))?;
-    std::fs::rename(&temporary, notes_path(workspace))
+    crate::config::replace_file(&notes_path(workspace), &body)
         .map_err(|e| format!("could not save a memory: {e}"))
 }
 
@@ -301,7 +327,7 @@ pub fn section(notes: &[Note], current: &str) -> Option<String> {
 /// state they wanted is the state they get.
 pub fn forget(workspace: &Path, id: &str) -> Result<Vec<Note>, String> {
     let _writing = writing();
-    let notes: Vec<Note> = load(workspace)
+    let notes: Vec<Note> = read_notes(workspace)?
         .into_iter()
         .filter(|note| note.id != id)
         .collect();
@@ -826,5 +852,45 @@ mod tests {
         let notes = load(&workspace());
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].text, "intact");
+    }
+
+    #[test]
+    fn a_stray_byte_costs_its_own_line_and_not_the_rest() {
+        let _home = isolated_home();
+        write("s1", "kept");
+        let path = notes_path(&workspace());
+        let mut raw = std::fs::read(&path).unwrap();
+        raw.extend_from_slice(b"not a note \xFF\n");
+        std::fs::write(&path, raw).unwrap();
+
+        let notes = write("s2", "added");
+        let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(texts, ["kept", "added"]);
+    }
+
+    #[test]
+    fn notes_that_cant_be_read_are_not_written_over() {
+        // A folder where the file goes is an unreadable file on every platform.
+        let _home = isolated_home();
+        let path = notes_path(&workspace());
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("marker"), "here").unwrap();
+
+        let why = append(&workspace(), "s1", "new").unwrap_err();
+        assert!(why.contains("nothing was changed"), "{why}");
+        assert!(forget(&workspace(), "x").is_err());
+        assert!(edit(&workspace(), "x", "y").is_err());
+        assert!(path.join("marker").exists());
+        // Reading still answers, for the prompt and the drawer.
+        assert!(load(&workspace()).is_empty());
+    }
+
+    #[test]
+    fn a_leftover_temporary_of_the_old_name_is_no_obstacle() {
+        // Every writer used one fixed temporary, so two processes shared it and
+        // anything in the way of that name stopped every note.
+        let _home = isolated_home();
+        std::fs::create_dir_all(memory_dir(&workspace()).join("notes.jsonl.tmp")).unwrap();
+        assert_eq!(write("s1", "kept").len(), 1);
     }
 }

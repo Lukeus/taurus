@@ -259,7 +259,10 @@ pub struct Loaded {
 }
 
 /// Reads every source that exists, in order.
-pub fn load(sources: Vec<InstructionsSource>) -> Loaded {
+///
+/// `workspace` is the folder a project-tier file's imports have to stay in. See
+/// [`resolve_imports`].
+pub fn load(sources: Vec<InstructionsSource>, workspace: Option<&Path>) -> Loaded {
     let mut loaded = Vec::new();
     let mut problems = Vec::new();
     let mut read = Vec::new();
@@ -273,8 +276,20 @@ pub fn load(sources: Vec<InstructionsSource>) -> Loaded {
         // Before the read, and whether or not it succeeds. A source that is not
         // there is a dependency on it staying not there.
         read.push(source.path.clone());
-        let Ok(raw) = std::fs::read_to_string(&source.path) else {
-            continue;
+        let raw = match std::fs::read_to_string(&source.path) {
+            Ok(raw) => raw,
+            // Not there is the ordinary case for most of these. A folder in the
+            // way of the path is the same answer.
+            Err(_) if !source.path.exists() => continue,
+            // There and unreadable is a brief that isn't arriving, which is
+            // worth saying.
+            Err(e) => {
+                problems.push(format!(
+                    "couldn't read {}, so it isn't in the brief: {e}",
+                    source.path.display()
+                ));
+                continue;
+            }
         };
         // Only for a file whose name says it has frontmatter. Stripping a
         // leading `---` block from every brief would eat a `CLAUDE.md` that
@@ -298,7 +313,11 @@ pub fn load(sources: Vec<InstructionsSource>) -> Loaded {
             continue;
         }
 
-        let (body, import_problems, imported) = resolve_imports(raw, &source.path);
+        let within = match source.tier {
+            InstructionsTier::User => None,
+            InstructionsTier::Project => workspace.or(source.path.parent()),
+        };
+        let (body, import_problems, imported) = resolve_imports(raw, &source.path, within);
         problems.extend(import_problems);
         read.extend(imported);
 
@@ -363,33 +382,73 @@ pub fn load(sources: Vec<InstructionsSource>) -> Loaded {
 /// A line qualifies only when the whole of it, trimmed, is `@` followed by a
 /// path. That keeps `email me @ support` and a doc comment mentioning `@param`
 /// out of it: those are prose, and rewriting prose into a file read would be a
-/// worse failure than not supporting imports at all.
+/// worse failure than not supporting imports at all. So is anything inside a
+/// code fence, where a line holding only `@dataclass` is an example. And a bare
+/// word with no `.` or `/` in it, like `@alice`, is an import only if that file
+/// is there; otherwise it stays as written, with nothing to report.
+///
+/// `within` keeps an import inside a folder, checked after symlinks resolve. A
+/// project's brief comes from a repository somebody may have just cloned, and
+/// `@../../.ssh/config` would otherwise send that file to the provider. So one
+/// that leaves is reported and not read. `None` for your own files, which may
+/// import from anywhere you can read.
 /// The third return is every path an import line pointed at, resolved but not
 /// necessarily found — a target that is missing today and appears tomorrow has
 /// to count as a change, so it is depended on either way.
-fn resolve_imports(raw: &str, file: &Path) -> (String, Vec<String>, Vec<PathBuf>) {
+fn resolve_imports(
+    raw: &str,
+    file: &Path,
+    within: Option<&Path>,
+) -> (String, Vec<String>, Vec<PathBuf>) {
     let dir = file.parent().unwrap_or(Path::new("."));
     let mut out = String::with_capacity(raw.len());
     let mut problems = Vec::new();
     let mut imported = Vec::new();
+    let mut fence = None;
 
     for line in raw.lines() {
-        match import_target(line) {
+        let fenced = crosses_fence(line, &mut fence) || fence.is_some();
+        match import_target(line).filter(|_| !fenced) {
             Some(target) => {
                 let path = dir.join(target);
                 imported.push(path.clone());
+                if !target.contains(['.', '/', '\\']) && !path.is_file() {
+                    out.push_str(line);
+                    out.push('\n');
+                    continue;
+                }
+                if let (Some(within), Ok(resolved)) = (within, path.canonicalize()) {
+                    if !within
+                        .canonicalize()
+                        .is_ok_and(|within| resolved.starts_with(within))
+                    {
+                        problems.push(format!(
+                            "{} imports {}, which is outside this workspace, so it isn't read",
+                            file.display(),
+                            target
+                        ));
+                        continue;
+                    }
+                }
                 match std::fs::read_to_string(&path) {
                     Ok(imported) => {
                         out.push_str(imported.trim());
                         out.push('\n');
                     }
-                    Err(_) => {
-                        // Named rather than passed through: the line is a
-                        // pointer, and a pointer at nothing tells the model
-                        // less than nothing. Reporting it is how the user finds
-                        // out the brief they wrote is not arriving.
+                    // Named rather than passed through: the line is a pointer,
+                    // and a pointer at nothing tells the model less than
+                    // nothing. Reporting it is how the user finds out the brief
+                    // they wrote is not arriving.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         problems.push(format!(
                             "{} imports {}, which does not exist",
+                            file.display(),
+                            target
+                        ));
+                    }
+                    Err(e) => {
+                        problems.push(format!(
+                            "{} imports {}, which couldn't be read: {e}",
                             file.display(),
                             target
                         ));
@@ -404,6 +463,33 @@ fn resolve_imports(raw: &str, file: &Path) -> (String, Vec<String>, Vec<PathBuf>
     }
 
     (out, problems, imported)
+}
+
+/// Keeps track of a Markdown code fence, and answers whether this line opens or
+/// closes one. A closing fence uses the opener's character, at least as many of
+/// them, and nothing after.
+fn crosses_fence(line: &str, fence: &mut Option<(char, usize)>) -> bool {
+    let trimmed = line.trim_start();
+    let Some(mark) = trimmed.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+        return false;
+    };
+    let run = trimmed.chars().take_while(|c| *c == mark).count();
+    if run < 3 {
+        return false;
+    }
+    match *fence {
+        None => {
+            *fence = Some((mark, run));
+            true
+        }
+        Some((open, length))
+            if open == mark && run >= length && trimmed[run..].trim().is_empty() =>
+        {
+            *fence = None;
+            true
+        }
+        Some(_) => false,
+    }
 }
 
 /// Whether this file is one of Copilot's scoped instruction files.
@@ -459,7 +545,8 @@ fn split_frontmatter(raw: &str) -> (&str, Option<String>) {
 fn import_target(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let target = trimmed.strip_prefix('@')?.trim();
-    // A path, not a sentence. One token, and one that looks like a file.
+    // A path, not a sentence: one token. Whether it's a file is the caller's
+    // to find out. See `resolve_imports`.
     if target.is_empty() || target.contains(char::is_whitespace) {
         return None;
     }
@@ -540,6 +627,12 @@ mod tests {
         }
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    /// [`super::load`] with nothing to stay inside, for the tests that aren't
+    /// about that. Project-tier files, since that's what [`source`] makes.
+    fn load(sources: Vec<InstructionsSource>) -> Loaded {
+        super::load(sources, Some(Path::new("/")))
     }
 
     fn source(path: PathBuf, origin: InstructionsOrigin) -> InstructionsSource {
@@ -840,5 +933,137 @@ mod tests {
         let (body, applies) = split_frontmatter("---\napplyTo: **\n\nnever closed\n");
         assert!(body.starts_with("---"));
         assert_eq!(applies, None);
+    }
+
+    #[test]
+    fn a_projects_import_cant_leave_the_workspace() {
+        let outside = tempdir();
+        let secret = write(outside.path(), "secret.md", "SECRET");
+        let workspace = tempdir();
+        let ws = workspace.path();
+        write(ws, "inside.md", "INSIDE");
+        let file = write(
+            ws,
+            "AGENTS.md",
+            &format!("@inside.md\n@{}\nend", secret.display()),
+        );
+
+        let loaded = super::load(vec![source(file, InstructionsOrigin::Agents)], Some(ws));
+        let body = &loaded.instructions[0].body;
+        assert!(body.contains("INSIDE"), "{body}");
+        assert!(!body.contains("SECRET"), "{body}");
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .any(|p| p.contains("outside this workspace")),
+            "{:?}",
+            loaded.problems
+        );
+    }
+
+    #[test]
+    fn a_projects_import_cant_climb_out_with_dots() {
+        let parent = tempdir();
+        write(parent.path(), "secret.md", "SECRET");
+        let ws = parent.path().join("ws");
+        let file = write(&ws, "AGENTS.md", "@../secret.md\nend");
+
+        let loaded = super::load(vec![source(file, InstructionsOrigin::Agents)], Some(&ws));
+        assert!(!loaded.instructions[0].body.contains("SECRET"));
+        assert_eq!(loaded.problems.len(), 1, "{:?}", loaded.problems);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_workspace_cant_carry_an_import_out() {
+        let outside = tempdir();
+        let secret = write(outside.path(), "secret.md", "SECRET");
+        let workspace = tempdir();
+        let ws = workspace.path();
+        std::os::unix::fs::symlink(&secret, ws.join("linked.md")).unwrap();
+        let file = write(ws, "AGENTS.md", "@linked.md\nend");
+
+        let loaded = super::load(vec![source(file, InstructionsOrigin::Agents)], Some(ws));
+        assert!(!loaded.instructions[0].body.contains("SECRET"));
+    }
+
+    #[test]
+    fn your_own_file_may_import_from_anywhere() {
+        let outside = tempdir();
+        let shared = write(outside.path(), "shared.md", "SHARED");
+        let home = tempdir();
+        let file = write(home.path(), "CLAUDE.md", &format!("@{}", shared.display()));
+
+        let loaded = super::load(
+            vec![InstructionsSource {
+                tier: InstructionsTier::User,
+                origin: InstructionsOrigin::Claude,
+                path: file,
+            }],
+            Some(tempdir().path()),
+        );
+        assert!(loaded.instructions[0].body.contains("SHARED"));
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    }
+
+    #[test]
+    fn a_decorator_in_a_code_example_stays_in_the_example() {
+        let dir = tempdir();
+        write(dir.path(), "real.md", "REAL");
+        let file = write(
+            dir.path(),
+            "CLAUDE.md",
+            "```python\n@dataclass\n@real.md\nclass A: ...\n```\n@real.md\n~~~\n@real.md\n```\n@real.md\n~~~\n",
+        );
+
+        let loaded = load(vec![source(file, InstructionsOrigin::Claude)]);
+        let body = &loaded.instructions[0].body;
+        assert!(body.contains("@dataclass"), "{body}");
+        assert_eq!(body.matches("REAL").count(), 1, "{body}");
+        assert_eq!(body.matches("@real.md").count(), 3, "{body}");
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    }
+
+    #[test]
+    fn a_bare_word_is_an_import_only_if_that_file_is_there() {
+        let dir = tempdir();
+        write(dir.path(), "Makefile", "RULES");
+        let file = write(dir.path(), "CLAUDE.md", "@alice\n@Makefile\n");
+
+        let loaded = load(vec![source(file, InstructionsOrigin::Claude)]);
+        let body = &loaded.instructions[0].body;
+        assert!(body.contains("@alice"), "{body}");
+        assert!(body.contains("RULES"), "{body}");
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    }
+
+    #[test]
+    fn a_brief_that_cant_be_read_is_reported() {
+        let dir = tempdir();
+        let file = dir.path().join("CLAUDE.md");
+        std::fs::write(&file, [0xFF, 0xFE]).unwrap();
+        let bad_import = write(dir.path(), "AGENTS.md", "@CLAUDE.md\nend");
+
+        let loaded = load(vec![
+            source(file, InstructionsOrigin::Claude),
+            source(bad_import, InstructionsOrigin::Agents),
+        ]);
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .any(|p| p.contains("isn't in the brief")),
+            "{:?}",
+            loaded.problems
+        );
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .any(|p| p.contains("couldn't be read")),
+            "{:?}",
+            loaded.problems
+        );
     }
 }

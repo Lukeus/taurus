@@ -180,7 +180,8 @@ fn search_one(meta: SessionMeta, path: &Path, needle: &str, raw_ok: bool) -> Opt
                 let at = from + at;
                 hits += 1;
                 if matches.len() < MAX_MATCHES {
-                    matches.push(excerpt(text, at, needle.len(), index as u32, role));
+                    let (start, end) = in_original(text, at, at + needle.len());
+                    matches.push(excerpt(text, start, end - start, index as u32, role));
                 }
                 from = at + needle.len();
             }
@@ -195,6 +196,33 @@ fn search_one(meta: SessionMeta, path: &Path, needle: &str, raw_ok: bool) -> Opt
         hits,
         matches,
     })
+}
+
+/// A byte range of `text.to_lowercase()`, as the range of `text` it came from.
+///
+/// The two aren't the same length: `İ` is two bytes and lowercases to three, and
+/// the Kelvin sign is three and lowercases to one. So a place in one is not the
+/// same place in the other, and may not even be inside it. A range that starts
+/// or ends partway through what one character became takes in the whole
+/// character.
+///
+/// Walked per character, which agrees with the whole-string lowercasing in
+/// length: the one contextual rule, Greek final sigma, picks between two letters
+/// of the same size.
+fn in_original(text: &str, from: usize, to: usize) -> (usize, usize) {
+    let mut lowered = 0;
+    let mut start = None;
+    for (at, c) in text.char_indices() {
+        let width: usize = c.to_lowercase().map(char::len_utf8).sum();
+        if start.is_none() && from < lowered + width {
+            start = Some(at);
+        }
+        if lowered >= to {
+            return (start.unwrap_or(at), at);
+        }
+        lowered += width;
+    }
+    (start.unwrap_or(text.len()), text.len())
 }
 
 /// The text around a hit, cut to something readable.
@@ -434,5 +462,44 @@ mod tests {
         // longer remember which project it was.
         let everywhere = search(None, "widget");
         assert_eq!(everywhere.sessions.len(), 2);
+    }
+
+    #[test]
+    fn a_hit_after_a_character_that_lowercases_longer_is_marked_where_it_is() {
+        // `İ` is two bytes and lowercases to three, so an offset in the lowered
+        // text ran off the end of the original and panicked the whole search.
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/dotted");
+        record("d1", workspace, &[("İ foo", "ok")]);
+
+        let found = search(Some(workspace), "foo");
+        assert_eq!(found.sessions.len(), 1);
+        let hit = &found.sessions[0].matches[0];
+        assert_eq!(hit.excerpt, "İ foo");
+        assert_eq!((hit.from, hit.to), (2, 5));
+    }
+
+    #[test]
+    fn a_hit_after_a_character_that_lowercases_shorter_is_marked_where_it_is() {
+        // The Kelvin sign is three bytes and lowercases to one.
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/kelvin-mark");
+        record("d2", workspace, &[("\u{212A}\u{212A} bar baz", "ok")]);
+
+        let hit = &search(Some(workspace), "bar").sessions[0].matches[0];
+        let marked: String = hit
+            .excerpt
+            .encode_utf16()
+            .skip(hit.from as usize)
+            .take((hit.to - hit.from) as usize)
+            .map(|unit| char::from_u32(unit as u32).unwrap())
+            .collect();
+        assert_eq!(marked, "bar");
+    }
+
+    #[test]
+    fn a_hit_on_a_character_that_changed_size_marks_that_character() {
+        assert_eq!(in_original("aİb", 1, 4), (1, 3));
+        assert_eq!(in_original("\u{212A}x", 0, 1), (0, 3));
     }
 }
