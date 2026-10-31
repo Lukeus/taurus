@@ -2,6 +2,8 @@
 
 use super::*;
 
+use dashmap::DashMap;
+
 #[tauri::command]
 pub async fn list_permission_rules(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<AllowedRule>> {
     Ok(state.host.permissions().await.allowed_rules().await)
@@ -427,49 +429,86 @@ pub async fn respond_skill_proposal(
     state: State<'_, Arc<AppState>>,
     response: ProposalResponse,
 ) -> CmdResult<Option<String>> {
-    let Some((_, original)) = state.pending_proposals.remove(&response.id) else {
-        return Err(format!("no pending proposal '{}'", response.id));
-    };
+    let state = state.inner();
+    let id = response.id.clone();
+    settling(
+        &state.pending_proposals,
+        &id,
+        "proposal",
+        |original| async move {
+            if !response.approve {
+                info!(skill = %original.name, "skill proposal rejected");
+                return Ok(None);
+            }
 
-    if !response.approve {
-        info!(skill = %original.name, "skill proposal rejected");
-        return Ok(None);
+            // Re-checked when the person changed it, as an agent proposal is: what
+            // the model proposed passed on the way in, and an edited name or trigger
+            // line never has. The bundling check is not run again — the scripts are
+            // the model's and weren't edited, and a procedure the person rewrote to
+            // name a file is one they mean to add.
+            let proposal = match response.edited {
+                Some(edited) => {
+                    taurus_skills::proposal::validate_proposal(
+                        &edited,
+                        &*state.host.catalog().read().await,
+                    )
+                    .map_err(|e| format!("this skill can't be saved as written: {e}"))?;
+                    edited
+                }
+                None => original,
+            };
+            let root = match response.target.unwrap_or(SaveTarget::Project) {
+                SaveTarget::Project => {
+                    taurus_host::config::workspace_skills_dir(&state.host.workspace().await)
+                }
+                SaveTarget::User => taurus_host::config::user_skills_dir(),
+            };
+
+            let dir = save(&proposal, &root).map_err(|e| format!("could not save skill: {e}"))?;
+            info!(skill = %proposal.name, dir = %dir.display(), "skill approved");
+
+            // Reloaded so the skill is usable in the session that just proposed it.
+            // The local half only: a skill changes nothing an MCP server is running
+            // with, so there is nothing to restart one for.
+            state.host.reload_local().await;
+            // And so the count on the rail moves with it, rather than on whatever
+            // the user does next.
+            emit_status(state).await;
+            Ok(Some(dir.display().to_string()))
+        },
+    )
+    .await
+}
+
+/// Runs what a person decided about a proposal, and only forgets the proposal
+/// once that has worked.
+///
+/// The card stays on screen when a save fails, because the window takes it down
+/// only on success. Taken out of the map first, every later press on that card
+/// would answer "no pending proposal", and it could be neither saved nor
+/// discarded.
+///
+/// `what` finishes the message for an id that isn't there.
+pub(super) async fn settling<T, R, F, Fut>(
+    pending: &DashMap<String, T>,
+    id: &str,
+    what: &str,
+    work: F,
+) -> CmdResult<R>
+where
+    T: Clone,
+    F: FnOnce(T) -> Fut,
+    Fut: std::future::Future<Output = CmdResult<R>>,
+{
+    // Cloned out, so no shard stays locked across the save.
+    let Some(original) = pending.get(id).map(|entry| entry.value().clone()) else {
+        return Err(format!("no pending {what} '{id}'"));
+    };
+    let outcome = work(original).await;
+    if outcome.is_ok() {
+        pending.remove(id);
     }
-
-    // Re-checked when the person changed it, as an agent proposal is: what the
-    // model proposed passed on the way in, and an edited name or trigger line
-    // never has. The bundling check is not run again — the scripts are the
-    // model's and weren't edited, and a procedure the person rewrote to name a
-    // file is one they mean to add.
-    let proposal = match response.edited {
-        Some(edited) => {
-            taurus_skills::proposal::validate_proposal(
-                &edited,
-                &*state.host.catalog().read().await,
-            )
-            .map_err(|e| format!("this skill can't be saved as written: {e}"))?;
-            edited
-        }
-        None => original,
-    };
-    let root = match response.target.unwrap_or(SaveTarget::Project) {
-        SaveTarget::Project => {
-            taurus_host::config::workspace_skills_dir(&state.host.workspace().await)
-        }
-        SaveTarget::User => taurus_host::config::user_skills_dir(),
-    };
-
-    let dir = save(&proposal, &root).map_err(|e| format!("could not save skill: {e}"))?;
-    info!(skill = %proposal.name, dir = %dir.display(), "skill approved");
-
-    // Reloaded so the skill is usable in the session that just proposed it.
-    // The local half only: a skill changes nothing an MCP server is running
-    // with, so there is nothing to restart one for.
-    state.host.reload_local().await;
-    // And so the count on the rail moves with it, rather than on whatever the
-    // user does next.
-    emit_status(&state).await;
-    Ok(Some(dir.display().to_string()))
+    outcome
 }
 
 /// Retunes one agent's iteration limit. Returns the file that now holds it,
@@ -546,36 +585,43 @@ pub async fn respond_agent_proposal(
     state: State<'_, Arc<AppState>>,
     response: AgentProposalResponse,
 ) -> CmdResult<Option<String>> {
-    let Some((_, original)) = state.pending_agent_proposals.remove(&response.id) else {
-        return Err(format!("no pending agent proposal '{}'", response.id));
-    };
+    let state = state.inner();
+    let id = response.id.clone();
+    settling(
+        &state.pending_agent_proposals,
+        &id,
+        "agent proposal",
+        |original| async move {
+            if !response.approve {
+                info!(agent = %original.name, "agent proposal rejected");
+                return Ok(None);
+            }
 
-    if !response.approve {
-        info!(agent = %original.name, "agent proposal rejected");
-        return Ok(None);
-    }
+            let proposal = response.edited.unwrap_or(original);
 
-    let proposal = response.edited.unwrap_or(original);
+            // Re-validated because the card is editable. What the model proposed
+            // passed on the way in; what the user is about to save may be
+            // something else entirely, and a hand-edited name or tool list has
+            // never been checked.
+            let root = validated_agent_root(
+                state,
+                &proposal,
+                response.target.unwrap_or(AgentSaveTarget::Project),
+            )
+            .await?;
 
-    // Re-validated because the card is editable. What the model proposed passed
-    // on the way in; what the user is about to save may be something else
-    // entirely, and a hand-edited name or tool list has never been checked.
-    let root = validated_agent_root(
-        &state,
-        &proposal,
-        response.target.unwrap_or(AgentSaveTarget::Project),
+            let path = save_agent_file(&proposal, &root)
+                .map_err(|e| format!("could not save agent: {e}"))?;
+            info!(agent = %proposal.name, path = %path.display(), "agent approved");
+
+            // Narrower than `reload`, which would restart every MCP server to
+            // pick up one markdown file.
+            state.host.rescan_agents().await;
+            emit_status(state).await;
+            Ok(Some(path.display().to_string()))
+        },
     )
-    .await?;
-
-    let path =
-        save_agent_file(&proposal, &root).map_err(|e| format!("could not save agent: {e}"))?;
-    info!(agent = %proposal.name, path = %path.display(), "agent approved");
-
-    // Narrower than `reload`, which would restart every MCP server to pick up
-    // one markdown file.
-    state.host.rescan_agents().await;
-    emit_status(&state).await;
-    Ok(Some(path.display().to_string()))
+    .await
 }
 
 /// Turns the terminal's shell integration on or off. See

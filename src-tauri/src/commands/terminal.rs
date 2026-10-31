@@ -142,8 +142,13 @@ pub fn terminal_ack(state: State<'_, Arc<AppState>>, id: String, bytes: usize) {
 /// also the only thing that tells a shell where to wrap. A pane that resizes
 /// without saying so leaves every program inside it drawing to the old
 /// geometry.
+///
+/// Not async, for the reason [`terminal_write`] isn't: two async commands can
+/// land in either order, and a pane being dragged would be left at a size it had
+/// already moved on from. A resize is one `ioctl`, which doesn't wait on the
+/// program.
 #[tauri::command]
-pub async fn terminal_resize(
+pub fn terminal_resize(
     state: State<'_, Arc<AppState>>,
     id: String,
     rows: u16,

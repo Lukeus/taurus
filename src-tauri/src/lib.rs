@@ -214,12 +214,12 @@ pub fn run() {
                 // A reply from the old page would go on being read with no
                 // button left to stop it.
                 state.speaker.stop();
-                // The same for the turns the old page started and the dialogs
-                // it was showing for them: nothing is left to answer either,
-                // and a turn parked on one holds its conversation until the app
-                // restarts. See `AppState::abandon_turns`.
+                // The turns the old page started keep running, and the new page
+                // picks them up. What's withdrawn is the dialogs it was showing
+                // for them: nothing is left to answer those, and a turn parked on
+                // one holds its conversation. See `state::let_go_of_page`.
                 let state = state.inner().clone();
-                tauri::async_runtime::spawn(async move { state.abandon_turns().await });
+                tauri::async_runtime::spawn(async move { state.page_replaced().await });
             }
         })
         .on_window_event(|window, event| {
