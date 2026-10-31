@@ -73,6 +73,16 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
+    /// A stream that closed cleanly without saying how the answer ended. A
+    /// proxy whose upstream died looks like this, and what arrived may be half
+    /// an answer or half a tool call: retried, not kept.
+    pub fn cut_off(provider: &str) -> Self {
+        Self::Stream {
+            provider: provider.to_string(),
+            message: "the stream closed before the response finished".into(),
+        }
+    }
+
     /// A stable, low-cardinality name for this kind of failure.
     ///
     /// For `error.type` on a span, where the value is meant to be something a

@@ -343,6 +343,7 @@ impl Provider for OllamaProvider {
         let mut saw_tool_call = false;
         let mut usage = TokenUsage::default();
         let mut done_reason = None;
+        let mut done = false;
 
         loop {
             let line = tokio::select! {
@@ -428,8 +429,13 @@ impl Provider for OllamaProvider {
                     ..Default::default()
                 };
                 done_reason = chunk.done_reason;
+                done = true;
                 break;
             }
+        }
+
+        if !done {
+            return Err(ProviderError::cut_off(&self.id));
         }
 
         if let Some(scanner) = scanner.as_mut() {
@@ -464,6 +470,42 @@ mod tests {
     use taurus_provider::Message;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// What the adapter makes of this stream body.
+    async fn streamed(body: &str) -> Result<StopReason> {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::path("/api/show"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body.to_string()),
+            )
+            .mount(&server)
+            .await;
+        let provider = OllamaProvider::new(server.uri());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let request = ChatRequest::new("m", vec![taurus_provider::Message::user("hi")]);
+        provider
+            .stream(request, tx, tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_closes_before_done_is_an_error() {
+        let cut = "{\"message\":{\"role\":\"assistant\",\"content\":\"half\"},\"done\":false}\n";
+        assert!(matches!(
+            streamed(cut).await,
+            Err(ProviderError::Stream { .. })
+        ));
+
+        let whole = format!("{cut}{{\"done\":true}}\n");
+        assert_eq!(streamed(&whole).await.unwrap(), StopReason::EndTurn);
+    }
 
     /// A server that answers `/api/show` for a model with the given trained
     /// window, and `/api/chat` with an empty final chunk.

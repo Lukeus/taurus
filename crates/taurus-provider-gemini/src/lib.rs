@@ -372,9 +372,6 @@ impl Provider for GeminiProvider {
         let mut usage = TokenUsage::default();
         let mut finish_reason = None;
         let mut saw_tool_call = false;
-        // Ids are this harness's own: the wire format has none, and the
-        // normalized form needs one per call to pair a result with it.
-        let mut call_index = 0usize;
 
         loop {
             let data = tokio::select! {
@@ -431,10 +428,12 @@ impl Provider for GeminiProvider {
             for part in content.parts {
                 if let Some(call) = part.function_call {
                     saw_tool_call = true;
-                    let id = call.id.unwrap_or_else(|| {
-                        call_index += 1;
-                        format!("call_{call_index}")
-                    });
+                    // Ours when the wire format gives none, and the normalized
+                    // form needs one to pair a result with its call. Unique
+                    // across requests, not only this one: results are paired
+                    // over the whole history, and a counter restarting here
+                    // sent an old result back under a later call's name.
+                    let id = call.id.unwrap_or_else(taurus_provider::new_tool_use_id);
                     // Arrives whole rather than in fragments, so the three
                     // events go out back to back. Consumers cannot tell.
                     send(
@@ -476,6 +475,10 @@ impl Provider for GeminiProvider {
             }
         }
 
+        if finish_reason.is_none() {
+            return Err(ProviderError::cut_off(&self.id));
+        }
+
         send(&tx, StreamEvent::Usage { usage }).await?;
 
         Ok(if saw_tool_call {
@@ -512,13 +515,16 @@ mod tests {
     async fn replay(chunks: &[&str]) -> (Message, TokenUsage) {
         // Recorded chunks are written across lines for reading. A newline ends
         // a `data:` line, so each one is re-serialized onto one.
-        let body: String = chunks
+        let mut body: String = chunks
             .iter()
             .map(|raw| {
                 let chunk: serde_json::Value = serde_json::from_str(raw).expect(raw);
                 format!("data: {chunk}\n\n")
             })
             .collect();
+        // Every recording ends the way a real stream does; one that doesn't is
+        // `a_stream_that_closes_without_a_finish_reason_is_an_error`.
+        body.push_str("data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n");
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
@@ -593,6 +599,41 @@ mod tests {
         let ids: Vec<&str> = message.tool_uses().map(|(id, _, _)| id).collect();
         assert_eq!(ids.len(), 2);
         assert_ne!(ids[0], ids[1]);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_closes_without_a_finish_reason_is_an_error() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"half\"}]}}]}\n\n",
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+        let provider = GeminiProvider::new("gemini", server.uri(), None);
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = provider
+            .stream(
+                ChatRequest::new("gemini-2.5-pro", vec![Message::user("go")]),
+                tx,
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(outcome, Err(ProviderError::Stream { .. })));
+    }
+
+    #[tokio::test]
+    async fn two_requests_never_reuse_an_id() {
+        let frame = r#"{"candidates":[{"content":{"parts":[
+                {"functionCall":{"name":"read_file","args":{}}}],"role":"model"}}]}"#;
+        let (first, _) = replay(&[frame]).await;
+        let (second, _) = replay(&[frame]).await;
+        assert_ne!(
+            first.tool_uses().next().unwrap().0,
+            second.tool_uses().next().unwrap().0
+        );
     }
 
     #[tokio::test]

@@ -566,6 +566,7 @@ impl OpenAiProvider {
         let mut open_calls: HashMap<u32, String> = HashMap::new();
         let mut usage = TokenUsage::default();
         let mut finish_reason = None;
+        let mut saw_done = false;
 
         loop {
             let data = tokio::select! {
@@ -577,6 +578,7 @@ impl OpenAiProvider {
                 break;
             };
             if data == "[DONE]" {
+                saw_done = true;
                 break;
             }
 
@@ -587,6 +589,17 @@ impl OpenAiProvider {
                     continue;
                 }
             };
+
+            if let Some(error) = chunk.error {
+                return Err(ProviderError::Stream {
+                    provider: self.id.clone(),
+                    message: error
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| error.to_string()),
+                });
+            }
 
             if let Some(u) = chunk.usage {
                 usage = TokenUsage {
@@ -605,6 +618,12 @@ impl OpenAiProvider {
                 continue;
             };
             if let Some(reason) = choice.finish_reason {
+                if reason == "error" {
+                    return Err(ProviderError::Stream {
+                        provider: self.id.clone(),
+                        message: "the backend ended the answer with an error".into(),
+                    });
+                }
                 finish_reason = Some(reason);
             }
 
@@ -648,6 +667,11 @@ impl OpenAiProvider {
                     }
                 }
             }
+        }
+
+        // Either will do: compatible servers don't all send both.
+        if !saw_done && finish_reason.is_none() {
+            return Err(ProviderError::cut_off(&self.id));
         }
 
         let mut saw_tool_call = !open_calls.is_empty();
@@ -832,10 +856,7 @@ impl OpenAiProvider {
             // The route always says how a response ended. A stream that closed
             // without saying was cut off, and what arrived may be half an
             // answer: retried, not kept.
-            None => Err(ProviderError::Stream {
-                provider: self.id.clone(),
-                message: "the stream closed before the response finished".into(),
-            }),
+            None => Err(ProviderError::cut_off(&self.id)),
         }
     }
 }
@@ -903,6 +924,55 @@ async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the adapter makes of this stream body.
+    async fn streamed(body: &str) -> Result<StopReason> {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body.to_string()),
+            )
+            .mount(&server)
+            .await;
+        let provider =
+            OpenAiProvider::new("gateway", server.uri(), None, OpenAiCapabilities::default());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let request = ChatRequest::new("m", vec![taurus_provider::Message::user("hi")]);
+        provider
+            .stream(request, tx, tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn an_error_inside_the_stream_is_not_a_finished_turn() {
+        for body in [
+            "data: {\"error\":{\"message\":\"upstream died\"}}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\n",
+        ] {
+            assert!(
+                matches!(streamed(body).await, Err(ProviderError::Stream { .. })),
+                "{body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chat_stream_that_closes_without_ending_is_an_error() {
+        let cut = "data: {\"choices\":[{\"delta\":{\"content\":\"half\"}}]}\n\n";
+        assert!(matches!(
+            streamed(cut).await,
+            Err(ProviderError::Stream { .. })
+        ));
+
+        // Either marker is enough: compatible servers don't all send both.
+        let done = format!("{cut}data: [DONE]\n\n");
+        assert_eq!(streamed(&done).await.unwrap(), StopReason::EndTurn);
+        let reason = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        assert_eq!(streamed(reason).await.unwrap(), StopReason::EndTurn);
+    }
 
     fn provider(base_url: &str, prefix: Option<&str>) -> OpenAiProvider {
         OpenAiProvider::new("test", base_url, None, OpenAiCapabilities::default())

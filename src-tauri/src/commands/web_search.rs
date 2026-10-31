@@ -63,7 +63,7 @@ pub async fn save_search_settings(
     selected: Option<String>,
     backends: Vec<SearchBackend>,
 ) -> CmdResult<()> {
-    let mut file = state.host.global_search();
+    let mut file = state.host.global_search_to_edit()?;
 
     // Entries are updated in place rather than rebuilt, so fields the settings
     // screen does not know about survive a save by someone who hand-edited the
@@ -77,8 +77,7 @@ pub async fn save_search_settings(
     }
     file.backend = selected.filter(|id| !id.trim().is_empty());
 
-    state.host.set_search(file).await;
-    Ok(())
+    state.host.set_search(file).await
 }
 
 #[tauri::command]

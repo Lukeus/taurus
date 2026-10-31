@@ -697,7 +697,10 @@ impl Captured {
     /// What was kept, with a line saying how much was not.
     fn text(&self) -> String {
         let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut text = String::from_utf8_lossy(&kept.0).into_owned();
+        // Stripped because it ends up in a tool result. A hook is often a shell
+        // starting a shell, and a PowerShell that loads a profile paints its
+        // prompt down a pipe as readily as into a terminal.
+        let mut text = taurus_process::ansi::strip_ansi(&String::from_utf8_lossy(&kept.0));
         if kept.1 > 0 {
             text.push_str(&format!("\n[… {} more bytes not shown]", kept.1));
         }
@@ -806,6 +809,28 @@ mod tests {
         // quietly stop guarding.
         assert!(outcome.is_denied());
         assert!(outcome.denied.unwrap().contains("/nonexistent/guard"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hooks_note_arrives_without_its_terminal_sequences() {
+        let dir = tempfile::tempdir().unwrap();
+        // What a shell integration and a coloured prompt leave in a pipe.
+        let noisy = script(
+            dir.path(),
+            "noisy",
+            r"printf '\033]133;A\007\033]9;9;C:\\repo\007\033[32mformatted\033[0m\r\n'",
+        );
+        let runner = HookRunner::new(vec![("noisy".into(), hook(&noisy, HookEvent::PostToolUse))]);
+
+        let outcome = runner
+            .run(
+                &HookPayload::new(HookEvent::PostToolUse, dir.path()),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(outcome.notes, ["hook 'noisy': formatted"]);
     }
 
     #[tokio::test]

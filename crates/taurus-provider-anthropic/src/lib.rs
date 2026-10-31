@@ -390,6 +390,7 @@ impl Provider for AnthropicProvider {
         let mut open_tools: HashMap<u32, String> = HashMap::new();
         let mut usage = TokenUsage::default();
         let mut stop_reason = None;
+        let mut stopped = false;
 
         loop {
             let data = tokio::select! {
@@ -487,7 +488,10 @@ impl Provider for AnthropicProvider {
                     stop_reason = delta.stop_reason.or(stop_reason);
                 }
 
-                StreamFrame::MessageStop => break,
+                StreamFrame::MessageStop => {
+                    stopped = true;
+                    break;
+                }
 
                 // A 200 was already sent, so this cannot arrive as a status
                 // code. Surfaced as an API error so the agent loop's retry
@@ -503,6 +507,10 @@ impl Provider for AnthropicProvider {
 
                 StreamFrame::Other => {}
             }
+        }
+
+        if !stopped && stop_reason.is_none() {
+            return Err(ProviderError::cut_off(&self.id));
         }
 
         // A block left open by a truncated stream still has to be closed, or the
@@ -537,7 +545,12 @@ fn status_for(kind: &str) -> u16 {
         "authentication_error" => 401,
         "permission_error" => 403,
         "not_found_error" => 404,
-        _ => 400,
+        "invalid_request_error" => 400,
+        "request_too_large" => 413,
+        "timeout_error" => 504,
+        // The server failed in a way this hasn't heard of. Filed as a client
+        // error it would never be retried.
+        _ => 500,
     }
 }
 
@@ -560,6 +573,45 @@ async fn send(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> Result<()> 
 mod tests {
     use super::*;
     use taurus_provider::{ContentBlock, Message, StreamAccumulator};
+
+    /// What the adapter makes of this stream body.
+    async fn streamed(body: &str) -> Result<StopReason> {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body.to_string()),
+            )
+            .mount(&server)
+            .await;
+        let provider = AnthropicProvider::new("anthropic", server.uri(), Some("sk-test".into()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let request = ChatRequest::new("claude-opus-5", vec![taurus_provider::Message::user("hi")]);
+        provider
+            .stream(request, tx, tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_closes_without_ending_is_an_error() {
+        let cut = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"half\"}}\n\n";
+        assert!(matches!(
+            streamed(cut).await,
+            Err(ProviderError::Stream { .. })
+        ));
+
+        let whole = format!("{cut}data: {{\"type\":\"message_stop\"}}\n\n");
+        assert_eq!(streamed(&whole).await.unwrap(), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn only_a_clients_mistake_is_filed_as_one() {
+        assert_eq!(status_for("invalid_request_error"), 400);
+        assert_eq!(status_for("timeout_error"), 504);
+        assert_eq!(status_for("something_new"), 500);
+    }
 
     fn provider() -> AnthropicProvider {
         AnthropicProvider::new("anthropic", DEFAULT_BASE_URL, Some("sk-test".into()))

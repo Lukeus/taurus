@@ -3381,6 +3381,100 @@ async fn a_summary_answered_with_a_call_is_asked_again_without_tools() {
 }
 
 #[tokio::test]
+async fn stop_during_a_summary_leaves_the_history_alone() {
+    let (h, mut session) = crowded(
+        vec![ScriptedTurn::stopped_after(vec![StreamEvent::TextDelta {
+            text: r#"{"goal":"fix the"#.into(),
+        }])],
+        AgentConfig {
+            keep_recent_messages: 2,
+            ..Default::default()
+        },
+        8_000,
+    );
+    let before = session.messages.len();
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+
+    assert_eq!(outcome.unwrap().stop_reason, StopReason::Canceled);
+    assert!(
+        session.messages.len() > before,
+        "nothing was summarized away"
+    );
+    assert!(!session.messages[0].text().contains("goal"));
+    let summaries = h
+        .provider
+        .seen
+        .lock()
+        .await
+        .iter()
+        .filter(|r| r.response_schema.is_some())
+        .count();
+    assert_eq!(summaries, 1, "not asked again");
+    assert!(
+        !events.iter().any(|e| matches!(e, UiEvent::Error { .. })),
+        "Stop is not a failure: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_summary_cut_off_at_the_token_limit_is_not_kept() {
+    let (h, mut session) = crowded(
+        vec![
+            ScriptedTurn {
+                stop: StopReason::MaxTokens,
+                ..ScriptedTurn::text(r#"{"goal":"fix the"#)
+            },
+            ScriptedTurn::text("Carrying on."),
+        ],
+        AgentConfig {
+            keep_recent_messages: 2,
+            ..Default::default()
+        },
+        8_000,
+    );
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(!session.messages[0].text().contains("goal"));
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            UiEvent::Error { message } if message.contains("cut off")
+        )),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_call_with_words_in_front_of_it_is_not_a_summary() {
+    let mut call = ScriptedTurn::tool_call("c1", "read_file", serde_json::json!({ "path": "a" }));
+    call.events.insert(
+        0,
+        StreamEvent::TextDelta {
+            text: "Let me check that first.".into(),
+        },
+    );
+    let (h, mut session) = crowded(
+        vec![
+            call,
+            ScriptedTurn::text("SUMMARY OF EARLIER WORK"),
+            ScriptedTurn::text("Carrying on."),
+        ],
+        AgentConfig {
+            keep_recent_messages: 2,
+            ..Default::default()
+        },
+        8_000,
+    );
+    let (outcome, _) = run(&h, &mut session, "continue").await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(session.messages[0]
+        .text()
+        .contains("SUMMARY OF EARLIER WORK"));
+}
+
+#[tokio::test]
 async fn a_working_context_compacts_a_large_window_early() {
     // A 128k model held to 8k behaves as an 8k one: the conversation is
     // compacted, and the window reported is the one being worked in.

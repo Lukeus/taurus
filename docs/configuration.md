@@ -208,7 +208,7 @@ ignored.
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Fine. Anything on stdout reaches the model as a note. |
+| `0` | Fine. Anything on stdout reaches the model as a note, without terminal escapes. |
 | `2` | Refused. stderr (or stdout) becomes the reason the model is given. |
 | anything else | The hook didn't work. |
 
