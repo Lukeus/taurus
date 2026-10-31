@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type IDecoration, type IMarker } from "@xterm/xterm";
 import "../vendor.css";
 
@@ -179,8 +180,7 @@ export function TerminalDock({
       fontFamily: terminalFont(font.current.family),
       fontSize: font.current.size,
       // A terminal is read in long lines and the app's body leading is set for
-      // prose; at the body's ratio the rows drift apart enough that a box-drawn
-      // frame stops looking like one.
+      // prose. A frame survives the gap between rows because of `drawnByGpu`.
       lineHeight: 1.2,
       cursorBlink: true,
       // What a shell's own scrollback would be. Past this the pane forgets, and
@@ -199,6 +199,7 @@ export function TerminalDock({
     emulator.loadAddon(fitter);
     emulator.open(element);
     fitter.fit();
+    drawnByGpu(emulator);
 
     term.current = emulator;
     fit.current = fitter;
@@ -689,6 +690,37 @@ function read(name: string): string {
 /** A backend message, which starts lowercase, shown as a sentence. */
 function sentence(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Draws the emulator with WebGL, which draws box characters itself.
+ *
+ * The default renderer takes them from the font, and they can't join up there.
+ * Our Source Code Pro stops short of them, so they come from whichever face is
+ * next in the stack, in rows sized for a different face and then opened up by
+ * `lineHeight`: a frame comes out as dashes. No font setting can fix that, but
+ * drawing each line to the edges of its cell does.
+ *
+ * Where WebGL isn't to be had, or the context is lost later, as a GPU reset does,
+ * the emulator goes back to the default renderer: gaps in a frame, and nothing
+ * worse.
+ *
+ * This renderer also keeps every glyph it has drawn, so one drawn in a fallback
+ * before the real face arrived would stay. Hence the clearing once it has.
+ */
+function drawnByGpu(emulator: Terminal) {
+  try {
+    const addon = new WebglAddon();
+    addon.onContextLoss(() => addon.dispose());
+    emulator.loadAddon(addon);
+  } catch (e) {
+    console.warn("the terminal is drawing without WebGL", e);
+    return;
+  }
+  document.fonts
+    ?.load(`${emulator.options.fontSize}px ${emulator.options.fontFamily}`)
+    .then(() => emulator.clearTextureAtlas())
+    .catch(() => {});
 }
 
 /**

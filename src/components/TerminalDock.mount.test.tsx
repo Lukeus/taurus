@@ -48,6 +48,20 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+const webgl = vi.hoisted(() => ({ fails: false, lost: [] as (() => void)[], disposed: 0 }));
+vi.mock("@xterm/addon-webgl", () => ({
+  WebglAddon: class {
+    constructor() {
+      if (webgl.fails) throw new Error("no WebGL here");
+    }
+    onContextLoss(handler: () => void) {
+      webgl.lost.push(handler);
+    }
+    dispose() {
+      webgl.disposed += 1;
+    }
+  },
+}));
 vi.mock("../vendor.css", () => ({}));
 
 (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
@@ -63,6 +77,9 @@ afterEach(() => {
   document.body.innerHTML = "";
   invoke.mockReset();
   typed.length = 0;
+  webgl.fails = false;
+  webgl.lost.length = 0;
+  webgl.disposed = 0;
 });
 
 async function mount() {
@@ -89,6 +106,32 @@ async function mount() {
     );
   return { host, root, button };
 }
+
+describe("the renderer", () => {
+  const opens = () =>
+    invoke.mockImplementation((command: string) =>
+      command === "terminal_open" ? Promise.resolve("t1") : Promise.resolve(),
+    );
+
+  it("still opens the shell where WebGL isn't to be had", async () => {
+    webgl.fails = true;
+    opens();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dock = await mount();
+    expect(invoke).toHaveBeenCalledWith("terminal_open", expect.anything());
+    expect(dock.host.textContent).not.toContain("couldn't start");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("lets go of WebGL when its context is lost", async () => {
+    opens();
+    await mount();
+    expect(webgl.lost).toHaveLength(1);
+    webgl.lost[0]();
+    expect(webgl.disposed).toBe(1);
+  });
+});
 
 describe("a shell that never starts", () => {
   it("says so, offers Restart, and stops queueing what's typed", async () => {

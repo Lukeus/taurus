@@ -901,6 +901,12 @@ the backlog, and they're the minority.
   can't be confused with your own prompt. It's agreed and not built:
   mirrored, not run in your shell, because the agent's path needs a stable
   folder and output it can capture exactly.
+- **Without WebGL, a box-drawn frame in the terminal has gaps.** The dock draws
+  with WebGL, which draws box characters itself so they join up. If WebGL isn't
+  available, or its context is lost, the dock falls back to xterm's default
+  renderer for the rest of that shell's life. That renderer takes those
+  characters from a font, and they don't reach across rows. Everything else in
+  the pane still works.
 - **What you run in the terminal is outside the undo history.** Every command
   the *agent* runs is bracketed by a sweep of the workspace, so a rewind can
   put back anything it changed. A command you type in the dock isn't. The

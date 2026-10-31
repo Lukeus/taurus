@@ -336,6 +336,7 @@ fn pump(
 
     let mut buf = [0u8; 8192];
     let mut carry = Utf8Carry::default();
+    let mut unfinished = EscapeCarry::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
@@ -350,7 +351,7 @@ fn pump(
                 // Never blocks: a display that has fallen behind loses lines
                 // rather than stalling the child, the same bargain the piped
                 // path makes.
-                let _ = tx.try_send(strip_ansi(&carry.text(&buf[..n])));
+                let _ = tx.try_send(unfinished.strip(&carry.text(&buf[..n])));
             }
         }
     }
@@ -380,6 +381,52 @@ fn finished(printed: &Mutex<Option<Capture>>) -> Captured {
         .map(Capture::finish)
         .unwrap_or(Captured::Whole(Vec::new()))
         .map_text(strip_ansi)
+}
+
+/// [`strip_ansi`] for text arriving in pieces.
+///
+/// A read ends wherever the pipe had got to, including halfway through an
+/// escape, and stripping each piece alone drops the front of that escape and
+/// shows its back as text: the stray `2m` in front of a line. So what could
+/// still be the start of something is held for the next piece — as is a final
+/// `\r`, which only the next piece can say is half of a CRLF.
+///
+/// A stream that ends with something held loses it, which is no loss: it was
+/// never going to be text.
+#[derive(Default)]
+pub(super) struct EscapeCarry(String);
+
+impl EscapeCarry {
+    /// Past this it is not an escape running long but a stray `ESC` in front
+    /// of ordinary output, and the view must not wait for it. The model's copy
+    /// is unaffected: it is stripped whole, from the capture.
+    const LONGEST: usize = 4096;
+
+    pub(super) fn strip(&mut self, piece: &str) -> String {
+        self.0.push_str(piece);
+        let held = unfinished_from(&self.0).filter(|at| self.0.len() - at <= Self::LONGEST);
+        let rest = held.map(|at| self.0.split_off(at)).unwrap_or_default();
+        strip_ansi(&std::mem::replace(&mut self.0, rest))
+    }
+}
+
+/// Where `text` stops being complete, if it does: the byte offset of an escape
+/// [`strip_ansi`] would run off the end of, or of a final `\r`.
+fn unfinished_from(text: &str) -> Option<usize> {
+    if text.ends_with('\r') {
+        return Some(text.len() - 1);
+    }
+    let at = text.rfind('\u{1b}')?;
+    let mut after = text[at + 1..].chars();
+    let finished = match after.next().unwrap_or('[') {
+        '[' => after.any(|c| ('\u{40}'..='\u{7e}').contains(&c)),
+        // The terminator's own `ESC` would have been the one found, so all
+        // that can finish a string from here is `BEL`.
+        ']' | 'P' | 'X' | '^' | '_' => after.any(|c| c == '\u{7}'),
+        '(' | ')' | '*' | '+' | '-' | '.' | '/' | '#' | ' ' => after.next().is_some(),
+        _ => true,
+    };
+    (!finished).then_some(at)
 }
 
 /// Removes terminal control sequences from output.
@@ -497,6 +544,27 @@ mod tests {
         // A bare carriage return means "redraw this line". Kept, it produces a
         // transcript that scrolls over itself.
         assert_eq!(strip_ansi("50%\r100%\r"), "50%\n100%\n");
+    }
+
+    #[test]
+    fn an_escape_split_between_reads_is_still_removed_whole() {
+        // Every place a read could end, including inside each form of escape
+        // and between the two halves of a CRLF.
+        let text = "\u{1b}[32m[+]\u{1b}[0m one\r\n\u{1b}]0;title\u{7}two\u{1b}(Bthree\r\n";
+        for cut in 0..=text.len() {
+            let mut carry = EscapeCarry::default();
+            let shown = carry.strip(&text[..cut]) + &carry.strip(&text[cut..]);
+            assert_eq!(shown, "[+] one\ntwothree\n", "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn a_stray_escape_does_not_hold_the_view_back_forever() {
+        let mut carry = EscapeCarry::default();
+        assert_eq!(carry.strip("before\u{1b}]no terminator "), "before");
+        let shown = carry.strip(&"x".repeat(EscapeCarry::LONGEST + 1));
+        assert!(!carry.0.contains('x') && shown.is_empty(), "{shown}");
+        assert_eq!(carry.strip("after"), "after");
     }
 
     #[test]
