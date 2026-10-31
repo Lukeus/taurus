@@ -137,3 +137,12 @@ describe("a byte count", () => {
     expect(size(3 * 1024 * 1024)).toBe("3.0 MB");
   });
 });
+
+describe("a long command's label", () => {
+  it("doesn't cut an emoji in half", () => {
+    for (let pad = 0; pad < 80; pad++) {
+      const cut = title(`${"x".repeat(pad)}${"😀".repeat(60)}`);
+      expect(cut).not.toMatch(/[\uD800-\uDBFF]…$/);
+    }
+  });
+});

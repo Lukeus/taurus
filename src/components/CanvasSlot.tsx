@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 
 import * as api from "../lib/api";
 import type { Document, Selection } from "../lib/api";
@@ -7,6 +7,26 @@ import { useStore } from "../state/store";
 import { Canvas } from "./Canvas";
 import type { SaveState } from "../state/notebook";
 import { ResizeHandle, type Resizable } from "./ResizeHandle";
+
+/**
+ * What was typed into a file that was left and couldn't be written.
+ *
+ * The notebook's rule, and for the same reason: leaving isn't a decision about
+ * whose version survives. Outside the component because closing the canvas
+ * unmounts it, and in memory only, so it lasts as long as the window.
+ */
+type Kept = { base: Document; draft: string };
+const kept = new Map<string, Kept>();
+const keyOf = (workspace: string | null, path: string) => `${workspace ?? ""}\u0000${path}`;
+
+/** How many files have a version kept for them in `workspace`. */
+export function keptIn(workspace: string | null): number {
+  const prefix = keyOf(workspace, "");
+  return [...kept.keys()].filter((key) => key.startsWith(prefix)).length;
+}
+
+type Written = "written" | "stale" | "failed";
+const nameOf = (path: string) => path.split("/").pop() ?? path;
 
 /**
  * The file open beside the conversation, and everything true of it that is not
@@ -34,6 +54,7 @@ export function CanvasSlot({
   onSelect,
   onAsk,
   onClose,
+  flushRef,
 }: {
   path: string;
   reveal: { from: number; to: number } | null;
@@ -48,6 +69,12 @@ export function CanvasSlot({
   onSelect: (selection: Selection | null) => void;
   onAsk: (text: string) => void;
   onClose: () => void;
+  /**
+   * Set to what writes the waiting typing now, for `App` to run before it
+   * switches workspace. By the time this component hears of a switch, the host
+   * already answers for the new folder, so a write then would land there.
+   */
+  flushRef?: MutableRefObject<(() => Promise<void>) | null>;
 }) {
   const noteError = useStore((s) => s.noteError);
   const wrote = useStore((s) => s.wrote);
@@ -90,6 +117,136 @@ export function CanvasSlot({
   const unsaved = !!doc && typed !== doc.text;
   useEffect(() => onUnsaved(unsaved), [unsaved, onUnsaved]);
 
+  // The same values, for code that runs after the render it was made in: a save
+  // answered after a switch, a cleanup on the way out.
+  const live = useRef({ doc, typed, conflict });
+  live.current = { doc, typed, conflict };
+  const workspaceNow = useRef(workspace);
+  workspaceNow.current = workspace;
+  /**
+   * Which opening of a file the editor is on. It moves the moment the editor
+   * leaves one, and an answer is applied only if it hasn't moved since it was
+   * asked. Applied anyway, a save answered after another file opened made the old
+   * file current again under the new one's text, and the next autosave wrote that
+   * text into the old file.
+   */
+  const session = useRef(0);
+  /** Where a version of the file now open would be kept. */
+  const where = useRef("");
+  /** The autosave waiting out its debounce, so leaving can run it now instead. */
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The save in flight, so another for that file waits rather than racing it. */
+  const saving = useRef<{ path: string; text: string; done: Promise<Written> } | null>(null);
+  /** What the last save wrote, with the fingerprint it came back with. */
+  const landed = useRef<Document | null>(null);
+
+  /**
+   * Writes `text` over the file `target` was read as.
+   *
+   * `stamp` is the opening it was asked in, taken once: a save queued behind
+   * another runs later, and must answer to the opening that asked for it.
+   */
+  const write = (
+    target: Document,
+    text: string,
+    stamp = { session: session.current, key: where.current },
+  ): Promise<Written> => {
+    const here = () => session.current === stamp.session;
+    const underway = saving.current;
+    if (underway?.path === target.path && underway.text === text) return underway.done;
+    // Another save of this file is still out. Sent now, this one would carry the
+    // fingerprint from before it, and the host would refuse it as a change on
+    // disk, which it is, by this editor's own hand. So it goes once the first
+    // has answered, with the fingerprint that one brought back.
+    if (underway?.path === target.path) {
+      const after: Promise<Written> = underway.done.then((first) => {
+        if (saving.current?.done === after) saving.current = null;
+        if (first === "written") {
+          return write(landed.current?.path === target.path ? landed.current : target, text, stamp);
+        }
+        // The first one's text was kept if the file has been left, and this is
+        // newer. It has already said why.
+        if (!here()) kept.set(stamp.key, { base: target, draft: text });
+        return first;
+      });
+      saving.current = { path: target.path, text, done: after };
+      return after;
+    }
+    setSaveState("saving");
+    const done = api
+      .saveDocument(target.path, text, target.fingerprint)
+      .then((result): Written => {
+        if (result.type === "stale") {
+          if (here()) {
+            // Not an error. Somebody wrote the file after this editor read it,
+            // so both versions exist and which one survives is not a decision
+            // this code gets to make.
+            setConflict(result.current);
+            setSaveState("typing");
+          } else {
+            kept.set(stamp.key, { base: target, draft: text });
+            noteError(
+              `"${nameOf(target.path)}" changed on disk while you were working on it, so your version was kept rather than saved. Open it again to choose between them.`,
+            );
+          }
+          return "stale";
+        }
+        landed.current = result.document;
+        if (here()) {
+          setDoc(result.document);
+          setSaveState("idle");
+        }
+        return "written";
+      })
+      .catch((e): Written => {
+        if (here()) {
+          setSaveState("failed");
+          setSaveError(String(e));
+          noteError(String(e));
+        } else {
+          kept.set(stamp.key, { base: target, draft: text });
+          noteError(`${String(e)} Your version of "${nameOf(target.path)}" is kept. Open it again to save it.`);
+        }
+        return "failed";
+      })
+      .finally(() => {
+        if (saving.current?.done === done) saving.current = null;
+      });
+    saving.current = { path: target.path, text, done };
+    return done;
+  };
+
+  /**
+   * The editor is coming off this opening: another file, another folder, or
+   * closed. The debounce is right while somebody is typing and wrong now, because
+   * cancelled by the move it would take the last sentence with it.
+   *
+   * What can't be written now is kept: a conflict still waiting for a choice, or
+   * anything at all once the folder has moved, since the host already answers
+   * for the new one and the same path there is a different file. `App` writes
+   * what it can before it asks for that switch, and says what was kept after it.
+   */
+  const leave = (from: string | null) => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    const { doc, typed, conflict } = live.current;
+    if (doc && typed !== doc.text) {
+      const moved = workspaceNow.current !== from;
+      if (conflict || moved) {
+        kept.set(where.current, { base: doc, draft: typed });
+        if (!moved) {
+          noteError(
+            `"${nameOf(doc.path)}" is showing two versions, so yours was kept rather than saved. Open it again to choose between them.`,
+          );
+        }
+      } else {
+        // Before the session moves, so this save knows it has been left.
+        void write(doc, typed);
+      }
+    }
+    session.current += 1;
+  };
+
   /*
    * Reads whatever the canvas is open on.
    *
@@ -105,14 +262,30 @@ export function CanvasSlot({
     setSaveState("idle");
     setSaveError(null);
     setGone(false);
+    const key = keyOf(workspace, path);
+    where.current = key;
     api
       .openDocument(path)
       .then((read) => {
         if (!current) return;
-        setDoc(read);
-        // The buffer starts as what was read. Everything after this point is
-        // the difference between the two.
-        setTyped(read.text);
+        const held = kept.get(key);
+        kept.delete(key);
+        if (!held || read.text === held.draft) {
+          setDoc(read);
+          // The buffer starts as what was read. Everything after this point is
+          // the difference between the two.
+          setTyped(read.text);
+        } else if (read.fingerprint === held.base.fingerprint) {
+          // Nothing has written it since the typing began: the kept version
+          // simply saves.
+          setDoc(read);
+          setTyped(held.draft);
+        } else {
+          // Asked about against the file as it is now, not as it was then.
+          setDoc(held.base);
+          setTyped(held.draft);
+          setConflict(read);
+        }
       })
       .catch((e) => current && setDocError(String(e)));
     // A file opened, then closed, then opened again before the first read
@@ -120,8 +293,26 @@ export function CanvasSlot({
     // one's name.
     return () => {
       current = false;
+      leave(workspace);
     };
+    // `leave` reads everything through refs, so naming it restarts nothing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, workspace]);
+
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = async () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+      timer.current = null;
+      const { doc, typed, conflict } = live.current;
+      if (doc && !conflict && typed !== doc.text) await write(doc, typed);
+    };
+    return () => {
+      flushRef.current = null;
+    };
+    // Reads everything through refs, like `leave`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flushRef]);
 
   /*
    * Writes what has been typed, once typing has stopped.
@@ -139,32 +330,19 @@ export function CanvasSlot({
     if (!doc || conflict || typed === doc.text) return;
     setSaveState("typing");
     setSaveError(null);
-    const timer = setTimeout(() => {
-      setSaveState("saving");
-      api
-        .saveDocument(doc.path, typed, doc.fingerprint)
-        .then((result) => {
-          if (result.type === "stale") {
-            // Not an error. Somebody wrote the file after this editor read it,
-            // so both versions exist and which one survives is not a decision
-            // this code gets to make.
-            setConflict(result.current);
-            setSaveState("typing");
-            return;
-          }
-          setDoc(result.document);
-          setSaveState("idle");
-        })
-        .catch((e) => {
-          setSaveState("failed");
-          setSaveError(String(e));
-          noteError(String(e));
-        });
+    const pending = setTimeout(() => {
+      timer.current = null;
+      void write(doc, typed);
     }, SAVE_AFTER_MS);
-    return () => clearTimeout(timer);
-    // `noteError` is a store action and never changes, so naming it restarts
-    // nothing — a fast typist still reaches the end of the timer.
-  }, [typed, doc, conflict, noteError]);
+    timer.current = pending;
+    return () => {
+      clearTimeout(pending);
+      if (timer.current === pending) timer.current = null;
+    };
+    // `write` works through refs and a store action that never changes, so this
+    // restarts on typing and nothing else.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typed, doc, conflict]);
 
   /*
    * What to do when the running turn writes the file that is open.
@@ -177,10 +355,17 @@ export function CanvasSlot({
     if (!wrote || !doc) return;
     if (!wrote.paths.includes(doc.path)) return;
     let current = true;
+    // Not cancelled by the path changing, since this hangs off the counter, so
+    // the opening it was asked in is checked as well. And what's compared is the
+    // buffer now: typing may have gone on while the read was out.
+    const opening = session.current;
+    const still = () => current && session.current === opening;
     api
       .openDocument(doc.path)
       .then((read) => {
-        if (!current) return;
+        if (!still()) return;
+        const { doc, typed } = live.current;
+        if (!doc) return;
         setGone(false);
         const what = reconcile({ base: doc.text, draft: typed }, read.text);
         if (what.kind === "same") {
@@ -203,14 +388,13 @@ export function CanvasSlot({
         // — what is on screen is still what was there, and saying so with an
         // empty editor would be a lie about the file. The header says the
         // file is gone, which before this only a failed save found out.
-        if (current) setGone(true);
+        if (still()) setGone(true);
       });
     return () => {
       current = false;
     };
-    // Only the counter. The document and the typing are read through the
-    // closure, and depending on them would re-read the file on every keystroke
-    // while the same write was still the newest one.
+    // Only the counter. Depending on the document or the typing would re-read
+    // the file on every keystroke while the same write was still the newest one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wrote?.at]);
 

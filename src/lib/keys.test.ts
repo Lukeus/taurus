@@ -74,3 +74,15 @@ describe("recognising a chord", () => {
     expect(mac.isChord(press({ key: "j", metaKey: true }), "k")).toBe(false);
   });
 });
+
+describe("an input method's keys", () => {
+  it("are recognised by either signal, on a native or a React event", async () => {
+    const { isComposing } = await on(MAC);
+    expect(isComposing({ isComposing: true, keyCode: 13 })).toBe(true);
+    // WebKit's confirming Enter: the composition has already ended.
+    expect(isComposing({ isComposing: false, keyCode: 229 })).toBe(true);
+    expect(isComposing({ nativeEvent: { isComposing: false, keyCode: 229 } })).toBe(true);
+    expect(isComposing({ isComposing: false, keyCode: 13 })).toBe(false);
+    expect(isComposing({ nativeEvent: { isComposing: false, keyCode: 13 } })).toBe(false);
+  });
+});

@@ -178,3 +178,24 @@ describe("help with the syntax", () => {
     expect(box(host).value).toBe("- an item");
   });
 });
+
+it("leaves Enter to an input method, by either signal", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  const changed = vi.fn();
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  await act(async () => {
+    createRoot(host).render(<ProseEditor text={"- item"} onChange={changed} />);
+  });
+  const box = host.querySelector("textarea")!;
+  box.setSelectionRange(6, 6);
+  // A list line would continue on Enter, which is what makes this visible.
+  await act(async () => {
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }));
+  });
+  expect(changed).not.toHaveBeenCalled();
+  await act(async () => {
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(changed).toHaveBeenCalled();
+});

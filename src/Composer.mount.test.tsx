@@ -280,3 +280,22 @@ describe("the mic", () => {
     act(() => useVoice.setState({ phase: { kind: "idle" } }));
   });
 });
+
+describe("an input method", () => {
+  const ime = (init: KeyboardEventInit & { keyCode?: number }) =>
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...init });
+
+  it.each([
+    ["isComposing", { isComposing: true }],
+    ["keyCode 229, which is all WebKit's confirming Enter has", { keyCode: 229 }],
+  ])("doesn't send on an Enter accepting a candidate: %s", (_, init) => {
+    const { host, sent } = mount({ parked: { text: "こんにちは", images: [] } });
+    const box = host.querySelector("textarea")!;
+    act(() => box.dispatchEvent(ime(init)));
+    expect(sent).toEqual([]);
+    expect(box.value).toBe("こんにちは");
+    // And the next, real, Enter does send.
+    act(() => box.dispatchEvent(ime({})));
+    expect(sent).toHaveLength(1);
+  });
+});

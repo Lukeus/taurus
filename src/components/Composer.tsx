@@ -6,6 +6,7 @@ import { MicButton, SpeakerButton, useMicHint, VoiceStrip } from "./Mic";
 import type { Attachment, CommandSummary, InterruptedTurn, OnScreen } from "../lib/api";
 import { basename } from "../lib/format";
 import { isImage, toAttachments } from "../lib/images";
+import { isComposing } from "../lib/keys";
 import type { Outgoing } from "../state/store";
 import * as api from "../lib/api";
 import { useVoice } from "../state/voice";
@@ -556,6 +557,9 @@ export function Composer({
             void attach(files);
           }}
           onKeyDown={(e) => {
+            // Mid-composition, every key belongs to the input method. Enter
+            // there accepts a candidate, and must not send half a sentence.
+            if (isComposing(e)) return;
             // The menu takes the keys it needs and lets every other one
             // through, so typing never has to wait for it to be dismissed.
             if (shown.length > 0) {

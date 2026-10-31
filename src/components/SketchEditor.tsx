@@ -3,9 +3,9 @@ import "../lib/excalidrawEnv";
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 import { Excalidraw, MainMenu, hashElementsVersion, serializeAsJSON } from "@excalidraw/excalidraw";
 import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { parse } from "../lib/sketch";
+import { openLink } from "../state/openLink";
 import { recall, remember, sameView, type View } from "../lib/sketchView";
 import { useWindowTheme } from "../lib/windowTheme";
 
@@ -321,5 +321,5 @@ function keyOf(
 /** A link, to the system browser — and anything else, nowhere. */
 function openExternally(href: string | null | undefined) {
   if (!href || !/^(https?:|mailto:)/i.test(href)) return;
-  void openUrl(href).catch(() => {});
+  openLink(href);
 }

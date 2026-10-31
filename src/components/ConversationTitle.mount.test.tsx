@@ -130,3 +130,16 @@ describe("the conversation title", () => {
     expect(input.selectionStart).toBe(input.selectionEnd);
   });
 });
+
+describe("an input method", () => {
+  it("keeps Enter when it is accepting a candidate", () => {
+    const input = open(mount("名前"));
+    act(() =>
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }),
+      ),
+    );
+    expect(input.isConnected).toBe(true);
+    expect(onRename).not.toHaveBeenCalled();
+  });
+});

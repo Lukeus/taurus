@@ -153,6 +153,11 @@ export type TranscriptProps = {
    */
   find?: string | null;
   /**
+   * Which conversation this is. Having scrolled up in one says nothing about
+   * the next, so a change takes the view back to following the foot.
+   */
+  conversationId?: string;
+  /**
    * Sends the last message again, for a turn that died before it answered.
    *
    * Offered on the failure itself and nowhere else, and only on the newest
@@ -201,6 +206,7 @@ export function Transcript({
   onRunQuery,
   follow = true,
   find = null,
+  conversationId,
   onRetry,
   onEditPrompt,
   onForkPrompt,
@@ -250,6 +256,14 @@ export function Transcript({
     el.addEventListener("scroll", onScroll);
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
+
+  // Before the effect below, which then scrolls the new conversation to its
+  // foot in the same commit. Nothing else would: the pane isn't remounted, and a
+  // longer transcript swapped in leaves `scrollTop` alone, so no scroll fires.
+  useEffect(() => {
+    pinned.current = true;
+    setAdrift(false);
+  }, [conversationId]);
 
   /*
    * Stay at the foot of the stream.

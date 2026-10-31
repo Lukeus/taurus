@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { isComposing } from "../lib/keys";
 
 /**
  * The conversation's name, in the topbar, editable in place.
@@ -87,6 +88,7 @@ export function ConversationTitle({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
+        if (isComposing(e)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           commit();

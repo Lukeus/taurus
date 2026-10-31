@@ -113,3 +113,14 @@ export function short(tokens: number): string {
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
   return String(tokens);
 }
+
+/**
+ * The first `length` UTF-16 units of `text`, never ending halfway through a
+ * character. An emoji is two units, and a cut between them draws a replacement
+ * glyph where it was.
+ */
+export function clip(text: string, length: number): string {
+  const cut = text.slice(0, length);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}

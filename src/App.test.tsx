@@ -33,6 +33,7 @@ const state = {
   init: vi.fn(),
   startSession: vi.fn(),
   resume: vi.fn(),
+  openConversation: vi.fn(),
   setWorkspace: vi.fn(),
   recheck: vi.fn(),
   reload: vi.fn(),

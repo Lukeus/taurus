@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isComposing } from "../lib/keys";
 
 import type { PlanEdited, Step } from "../lib/api";
 import type { PlanView } from "../state/store";
@@ -306,6 +307,7 @@ function PlanEditor({
           disabled={full}
           onChange={(e) => setAdding(e.target.value)}
           onKeyDown={(e) => {
+            if (isComposing(e)) return;
             if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
               e.preventDefault();
               add();

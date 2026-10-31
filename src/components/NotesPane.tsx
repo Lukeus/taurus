@@ -10,7 +10,7 @@ import {
 } from "react";
 
 import { when } from "../lib/format";
-import { chord, isChord } from "../lib/keys";
+import { chord, isChord, isComposing } from "../lib/keys";
 import { toggleTask } from "../lib/prose";
 import { embedFor, pathOf, same, type Notebook, type NoteMode } from "../state/notebook";
 import type { PageKind, PageRef, Scope } from "../lib/api";
@@ -229,7 +229,7 @@ export function NotesPane({
   useEffect(() => {
     if (!isNote) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing || e.shiftKey) return;
+      if (isComposing(e) || e.shiftKey) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
       const typing = target?.closest("input, textarea, [contenteditable='true']");
       if (typing && !pane.current?.contains(typing)) return;
@@ -362,6 +362,7 @@ export function NotesPane({
                 value={renaming}
                 onChange={(e) => setRenaming(e.target.value)}
                 onKeyDown={(e) => {
+                  if (isComposing(e)) return;
                   if (e.key === "Escape") {
                     setRenaming(null);
                     setRenameRefused(null);
@@ -667,6 +668,7 @@ function Group({
                 placeholder="Name it"
                 onChange={(e) => onChange({ kind: making.kind, name: e.target.value })}
                 onKeyDown={(e) => {
+                  if (isComposing(e)) return;
                   if (e.key === "Escape") onCancel();
                   if (e.key === "Enter" && making.name.trim() !== "") {
                     onStart(making.kind, making.name.trim());

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isComposing } from "../lib/keys";
 
 import { paint } from "../lib/ink";
 import { carry, suggest, type Choice, type Offer } from "../lib/prose";
@@ -258,7 +259,7 @@ export function ProseEditor({
         onPointerDown={() => setMenu(null)}
         onKeyDown={(e) => {
           // Mid-composition, every key belongs to the input method.
-          if (e.nativeEvent.isComposing) return;
+          if (isComposing(e)) return;
           const area = e.currentTarget;
 
           // The list without typing the `/`, the key every editor binds it to.

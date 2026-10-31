@@ -278,3 +278,16 @@ describe("the command palette", () => {
     expect(ui.text()).toContain("Nothing matches that");
   });
 });
+
+describe("an input method", () => {
+  it("keeps Enter when it is accepting a candidate", async () => {
+    const palette = await mount();
+    const input = palette.host.querySelector(".palette-input") as HTMLInputElement;
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }),
+      );
+    });
+    expect(palette.ran).toEqual([]);
+  });
+});

@@ -7,6 +7,7 @@
  * mounting the dock.
  */
 import type { BackgroundJob, JobOutput } from "./api";
+import { clip } from "./format";
 
 /**
  * How much of one command's output the pane keeps.
@@ -36,7 +37,7 @@ const LABEL = 22;
 export function title(command: string): string {
   const flat = command.trim().replace(/\s+/g, " ");
   if (flat.length <= LABEL) return flat;
-  return `${flat.slice(0, LABEL - 1).trimEnd()}…`;
+  return `${clip(flat, LABEL - 1).trimEnd()}…`;
 }
 
 /**

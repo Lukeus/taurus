@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../lib/api";
 import type { SearchResults, SessionMeta } from "../lib/api";
 import { when } from "../lib/format";
+import { isComposing } from "../lib/keys";
 import { marked, rank, type Action, type Scored } from "../lib/palette";
 import { Modal } from "./Modal";
 
@@ -125,6 +126,7 @@ export function CommandPalette({
   };
 
   const key = (e: React.KeyboardEvent) => {
+    if (isComposing(e)) return;
     if (e.key === "ArrowDown" || (e.key === "n" && e.ctrlKey)) {
       e.preventDefault();
       setActive(rows.length ? (index + 1) % rows.length : 0);

@@ -18,7 +18,7 @@ import type { SettingsTab } from "./components/Settings";
 import {} from "./components/Attachments";
 import {} from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
-import { CanvasSlot } from "./components/CanvasSlot";
+import { CanvasSlot, keptIn } from "./components/CanvasSlot";
 import { useAgentsView } from "./state/agentsView";
 import { LeavingDialog } from "./components/LeavingDialog";
 import { PermissionDialog } from "./components/PermissionDialog";
@@ -59,6 +59,7 @@ import type {
   Theme,
 } from "./lib/api";
 import { basename, plural } from "./lib/format";
+import { useProviderModels } from "./lib/useProviderModels";
 import { branchesOf } from "./lib/branches";
 import { withFinding } from "./lib/findings";
 import { extend, sameJobs } from "./lib/jobs";
@@ -226,6 +227,7 @@ export default function App() {
       unqueue: s.unqueue,
       stop: s.stop,
       resume: s.resume,
+      openConversation: s.openConversation,
       remove: s.remove,
       rename: s.rename,
       recheck: s.recheck,
@@ -372,6 +374,8 @@ export default function App() {
    * one bit, for what travels with a message, and it moves only on the edge.
    */
   const [canvasUnsaved, setCanvasUnsaved] = useState(false);
+  /** Writes what the canvas is waiting to write. See `CanvasSlot`. */
+  const canvasFlush = useRef<(() => Promise<void>) | null>(null);
   /** What is highlighted in the canvas right now. Travels with the next
    *  message; see `onScreenFor`. */
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -400,7 +404,6 @@ export default function App() {
   const [focusComposer, setFocusComposer] = useState(0);
   /** Presses of the dictation shortcut, for the composer. See `Composer`'s `dictate`. */
   const [dictate, setDictate] = useState(0);
-  const [models, setModels] = useState<ModelInfo[] | "failed" | null>(null);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
@@ -696,20 +699,7 @@ export default function App() {
     store.status?.settings.last_provider,
   );
 
-  // Which provider the visible model list belongs to. Without it, switching
-  // providers lists twice — once here, and again when starting the session
-  // moves `providerId` on to the new one.
-  const listedFor = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!providerId || listedFor.current === providerId) return;
-    listedFor.current = providerId;
-    setModels(null);
-    api
-      .listModels(providerId)
-      .then(setModels)
-      .catch(() => setModels("failed"));
-  }, [providerId]);
+  const { models, setModels, listedFor } = useProviderModels(providerId);
 
   // The Data tab disappears with the last dataset, so a window still showing
   // that pane would be left on a surface with no way back to the conversation.
@@ -763,13 +753,14 @@ export default function App() {
     const config = providers.find((p) => p.id === id);
     try {
       const list = await api.listModels(id);
-      setModels(list);
+      // Another provider chosen meanwhile has its own list on the way.
+      if (listedFor.current === id) setModels(list);
       // The named default ahead of whatever the backend happened to list
       // first, which is the order `resolve_model` uses for the CLI.
       const first = config?.default_model ?? list[0]?.id;
       if (first) await moveTo(id, first);
     } catch {
-      setModels("failed");
+      if (listedFor.current === id) setModels("failed");
       // A backend with no model listing is still usable when the config names
       // what to talk to — an Azure APIM route often exposes the chat endpoint
       // and nothing else.
@@ -789,7 +780,18 @@ export default function App() {
       // note's autosave would land in the new folder's file of the same name.
       // A version still waiting for a choice is kept for this folder.
       await notebook.flush(true);
+      // The canvas has the same problem. What it can't write is kept for this
+      // folder when the switch reaches it, and said after the switch, because
+      // opening the next folder's conversation clears the banner.
+      await canvasFlush.current?.();
+      const from = workspace;
       await store.setWorkspace(chosen);
+      const left = keptIn(from);
+      if (left > 0 && from && useStore.getState().status?.workspace !== from) {
+        store.noteError(
+          `Your unsaved version of ${left === 1 ? "a file" : `${left} files`} is kept for when ${basename(from)} is open again, until this window closes.`,
+        );
+      }
     }
   };
 
@@ -1042,7 +1044,7 @@ export default function App() {
    */
   const openFound = (id: string, text: string | null) => {
     setFind(text);
-    if (id !== store.session?.id) void store.resume(id);
+    if (id !== store.session?.id) void store.openConversation(id);
   };
 
   const listed = store.sessions.find((s) => s.id === store.session?.id);
@@ -1307,7 +1309,7 @@ export default function App() {
         brand={railBrand}
         onPickWorkspace={railPickWorkspace}
         onNew={railNew}
-        onOpen={store.resume}
+        onOpen={store.openConversation}
         onDelete={store.remove}
         onTheme={railTheme}
         onSkills={railSkills}
@@ -1488,6 +1490,7 @@ export default function App() {
             </Suspense>
           ) : (
             <TranscriptPane
+              conversationId={store.session?.id}
               busy={store.busy}
               stopping={store.stopping}
               pending={store.resuming}
@@ -1594,7 +1597,7 @@ export default function App() {
                     // Read from the rail's listing, which already knows every
                     // conversation's parent.
                     branches={branchesOf(store.sessions, store.session.id)}
-                    onOpenBranch={(id) => void store.resume(id)}
+                    onOpenBranch={(id) => void store.openConversation(id)}
                     onFork={async (turn, finding) => {
                       const forked = await store.fork(store.session!.id, turn);
                       setDraft({
@@ -1639,6 +1642,7 @@ export default function App() {
               onSelect={setSelection}
               onAsk={ask}
               onClose={() => setCanvas(null)}
+              flushRef={canvasFlush}
             />
           )}
         </main>
@@ -1819,7 +1823,7 @@ export default function App() {
                 ? undefined
                 : (id) => {
                     setMemoryOpen(false);
-                    void store.resume(id);
+                    void store.openConversation(id);
                   }
             }
           />

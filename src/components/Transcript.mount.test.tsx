@@ -5,7 +5,7 @@
 // once it stops. Both need a real document and a component that stays mounted.
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
 import type { Answer, TranscriptView } from "../lib/api";
@@ -581,5 +581,52 @@ describe("landing on a search hit", () => {
     expect(ui.found()).toHaveLength(1);
     ui.rerender(entries, null);
     expect(ui.found()).toHaveLength(0);
+  });
+});
+
+describe("moving to another conversation", () => {
+  const say = (id: string): Entry => ({ kind: "user", id, text: id, images: [] }) as Entry;
+
+  it("follows the foot again, having been scrolled up in the last one", () => {
+    const scrolled = vi.fn();
+    const was = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const show = (conversationId: string, entries: Entry[]) =>
+      act(() =>
+        root.render(
+          <Transcript
+            conversationId={conversationId}
+            entries={entries}
+            busy={false}
+            empty={null}
+            onAnswer={() => {}}
+            onOpenDelegate={() => {}}
+          />,
+        ),
+      );
+    show("a", [say("a1")]);
+
+    // Scrolled well away from the foot.
+    const pane = host.querySelector(".transcript") as HTMLElement;
+    Object.defineProperty(pane, "scrollHeight", { value: 5000, configurable: true });
+    Object.defineProperty(pane, "clientHeight", { value: 500, configurable: true });
+    act(() => {
+      pane.scrollTop = 100;
+      pane.dispatchEvent(new Event("scroll"));
+    });
+    scrolled.mockClear();
+
+    // Still following nothing within the same conversation.
+    show("a", [say("a1"), say("a2")]);
+    expect(scrolled).not.toHaveBeenCalled();
+
+    show("b", [say("b1"), say("b2")]);
+    expect(scrolled).toHaveBeenCalled();
+
+    Element.prototype.scrollIntoView = was;
+    act(() => root.unmount());
   });
 });

@@ -60,20 +60,22 @@ describe("what the API key field says about where the key comes from", () => {
 
 describe("context length input", () => {
   it("treats an empty box as unset", () => {
-    expect(parseContextLength("")).toBeNull();
-    expect(parseContextLength("   ")).toBeNull();
+    expect(parseContextLength("", 8192)).toBeNull();
+    expect(parseContextLength("   ", 8192)).toBeNull();
   });
 
   it("reads a number", () => {
-    expect(parseContextLength("8192")).toBe(8192);
-    expect(parseContextLength(" 8192 ")).toBe(8192);
+    expect(parseContextLength("8192", null)).toBe(8192);
+    expect(parseContextLength(" 8192 ", 4096)).toBe(8192);
   });
 
-  it("rejects values that would disable compaction", () => {
-    // Zero or negative would make the compaction budget zero or nonsense.
-    expect(parseContextLength("0")).toBeNull();
-    expect(parseContextLength("-5")).toBeNull();
-    expect(parseContextLength("abc")).toBeNull();
+  it("keeps the value it has for anything that isn't a whole number above zero", () => {
+    // Zero or negative would make the compaction budget zero or nonsense, and
+    // neither a stray letter nor a half-typed value may wipe a configured one.
+    for (const typed of ["0", "-5", "abc", "128k", "1e5"]) {
+      expect(parseContextLength(typed, 128000)).toBe(128000);
+      expect(parseContextLength(typed, null)).toBeNull();
+    }
   });
 });
 

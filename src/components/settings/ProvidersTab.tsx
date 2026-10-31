@@ -480,7 +480,12 @@ export function ProviderForm({
                       : "128000"
                 }
                 onChange={(e) =>
-                  onChange({ context_length: parseContextLength(e.target.value) })
+                  onChange({
+                    context_length: parseContextLength(
+                      e.target.value,
+                      provider.context_length ?? null,
+                    ),
+                  })
                 }
               />
             </Field>
@@ -586,7 +591,12 @@ export function ModelList({
                   value={model.context_length ?? ""}
                   placeholder="from below"
                   onChange={(e) =>
-                    patch(i, { context_length: parseContextLength(e.target.value) })
+                    patch(i, {
+                      context_length: parseContextLength(
+                        e.target.value,
+                        model.context_length ?? null,
+                      ),
+                    })
                   }
                 />
                 <span className="shrink-0">tokens</span>
@@ -630,12 +640,16 @@ export function ModelList({
  *
  * Returning `null` for unparseable input would delete the value the moment
  * someone selected it to retype, so only a genuinely empty box unsets it.
+ * Anything else that isn't a whole number above zero keeps `previous`. Zero or a
+ * negative would make the compaction budget zero or nonsense, and `128k` is not
+ * 128 tokens, so the whole box has to be digits.
  */
-export function parseContextLength(value: string): number | null {
+export function parseContextLength(value: string, previous: number | null): number | null {
   const trimmed = value.trim();
   if (trimmed === "") return null;
+  if (!/^\d+$/.test(trimmed)) return previous;
   const parsed = Number.parseInt(trimmed, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : previous;
 }
 
 export function triState(value: boolean | null): string {
