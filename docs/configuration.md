@@ -215,7 +215,9 @@ ignored.
 **A hook that can't run refuses.** A missing program, a crash, a timeout: on
 `pre_tool_use` and `user_prompt_submit`, all of these deny. That's the
 uncomfortable half, and it's on purpose. A hook exists to decide, and one that
-couldn't hasn't approved anything.
+couldn't hasn't approved anything. That includes a `hooks.json` that's there
+and can't be read, because of its permissions or bytes that aren't UTF-8: both
+events refuse, naming the file, until you fix or remove it.
 
 A typo in `hooks.json` that blocks every call is loud, names the hook and the
 exit code, and takes seconds to fix. A guard that silently stops guarding
@@ -378,8 +380,15 @@ Hosted servers (Linear, Google Drive, and most vendor-run ones) use OAuth, not
 a token you can paste. Add the entry, then press **Sign in** on its card.
 Taurus discovers the authorization server, registers itself, and opens your
 browser. Approving there sends the browser back to a loopback address Taurus
-listens on for exactly one request. The tokens land in the OS keychain, like
-provider API keys, and never in `mcp.json`.
+listens on until the request carrying this sign-in comes in. The tokens land in
+the OS keychain, like provider API keys, and never in `mcp.json`.
+
+A sign-in belongs to the URL it was made for. If you point an entry somewhere
+else under the same name, Taurus stops before contacting the server and asks
+you to press **Sign out**, then **Sign in** again, so a token never follows a
+name to a new address. A
+sign-in saved before Taurus recorded the URL doesn't say where it's from, so
+it gets the same treatment once.
 
 Nothing starts that flow on its own. A browser window opening because a server
 answered 401 would be the app taking over your screen for something you didn't
@@ -647,7 +656,10 @@ part Taurus doesn't run](screenshots/plugins.png)
 **A plugin is checked before it's installed.** One that wouldn't load isn't
 installed, and the reasons are the error. A clone is made at the ref you
 name (the default branch otherwise) and stays at that commit until you run
-`update`. Its `.git` is dropped, so a project's `.taurus/plugins/` holds plain
+`update`, which fetches that same ref again. A plugin added with `--ref v1.2`
+stays on `v1.2`. You can't add a folder that holds the plugins folder itself,
+like `taurus plugin add . --project`, since it would be copied into itself. A clone's `.git` is dropped, so a
+project's `.taurus/plugins/` holds plain
 files rather than a repository inside yours. Links in a plugin folder aren't
 followed when it's copied in, because one could point anywhere on the machine
 it was made on.

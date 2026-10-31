@@ -37,7 +37,9 @@ there — the turn keeps its place, and answering hours later carries on from
 exactly where it stopped — and wrong when you're not. The pill beside Stop
 says which it is. Set it to **unattended** and anything needing a decision is
 refused instead of waiting, and a question card is skipped: the turn spends the
-night working and tells you in the morning what it couldn't do.
+night working and tells you in the morning what it couldn't do. Reloading the
+window answers what's on screen the same way: a permission prompt is refused, a
+question card is skipped, and the turn carries on from there.
 
 It never allows anything extra. Whatever a standing grant already covers
 doesn't reach a prompt at all, so the only calls this changes are the ones
@@ -116,8 +118,9 @@ without putting any of it in the repository.
 
 The file is append-only, one JSON object per line: a header, then each
 message as it's produced. Nothing is rewritten, so a crash costs the turn in
-flight, not the conversation. A half-written last line is dropped on load
-instead of poisoning the file. There's no index. A listing reads each
+flight, not the conversation. A half-written line is dropped on load instead
+of poisoning the file, and the next write starts on a new line, so what comes
+after it is kept. There's no index. A listing reads each
 transcript's opening lines, and an index would be a second copy of the truth
 that could disagree with it.
 
@@ -128,8 +131,8 @@ the end of a long conversation, no screen would ever see it.
 So a rename writes a complete new file beside the old one and moves it into
 place. Until then the original is untouched, and the move either happens or
 doesn't. Every line but the header is copied byte for byte. A record from a
-newer version survives a rename by an older one, and a torn last line stays
-exactly as torn.
+newer version survives a rename by an older one, and a torn line stays exactly
+as torn.
 
 The header records the workspace, the model the conversation *started* on,
 and the checked-out branch. See [Conversations know their branch](safety.md#conversations-know-their-branch).
@@ -1506,7 +1509,8 @@ half-finished constructs streaming produces, like an unclosed `**` or an
 unterminated code fence. Raw HTML is never rendered. Model output isn't
 trusted markup, so `rehype-raw` is deliberately absent and tags arrive escaped
 as visible text. Links open in your browser instead of navigating the webview
-away from the app.
+away from the app. If one can't be opened, such as a relative path, the banner
+says why.
 
 The CLI applies ANSI attributes line by line: headings bold, `•` for bullets,
 colored inline code, dimmed fenced blocks. With color off (piped,
@@ -1696,6 +1700,10 @@ notebooks hold both:
 Nothing merges between the two. Unlike config, where the workspace layer
 overrides the global one, same-named notes in the two notebooks are two notes.
 Merging prose would mean choosing which paragraph wins.
+
+The name in the list is the filename, so a file no note could be called isn't
+listed: `.draft.md`, say, or `a:b.md` committed from another system. It's still
+on disk, for an editor of your own.
 
 These **aren't** Memory in the rail. Memories are written by the model,
 capped, and read into the next conversation's prompt before you say anything.
