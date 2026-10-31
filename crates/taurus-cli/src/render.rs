@@ -104,12 +104,12 @@ impl Renderer {
 
     pub fn handle(&mut self, event: &UiEvent) {
         match self.format {
-            Format::Json => self.emit_json(event),
+            Format::Json => Self::emit_json(event),
             Format::Human => self.emit_human(event),
         }
     }
 
-    fn emit_json(&self, event: &UiEvent) {
+    fn emit_json(event: &UiEvent) {
         if let Ok(line) = serde_json::to_string(event) {
             println!("{line}");
         }

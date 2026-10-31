@@ -329,7 +329,7 @@ impl Jobs {
     /// The child is moved rather than shared: one owner may wait on it, and
     /// stopping goes through [`Job::stop`] so that owner is the only one that
     /// ever reaps it.
-    pub async fn adopt(&self, command: String, mut child: Tree, before: Option<Before>) -> u32 {
+    pub fn adopt(&self, command: String, mut child: Tree, before: Option<Before>) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Arc::new(Job {
             id,
@@ -879,7 +879,7 @@ mod tests {
         let line = leaves_a_grandchild(dir.path(), &started, &alive, orphaned);
 
         let jobs = Jobs::new();
-        let id = jobs.adopt(line.clone(), sh(&line), None).await;
+        let id = jobs.adopt(line.clone(), sh(&line), None);
 
         // Not before the grandchild exists. Stopping first kills the shell
         // before it has spawned anything, and then nothing survives however
@@ -913,7 +913,7 @@ mod tests {
     #[tokio::test]
     async fn a_finished_command_reports_its_output_and_its_code() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None);
         let report = jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
         assert!(report.contains("finished after"), "{report}");
         assert!(report.contains("hi"), "{report}");
@@ -922,7 +922,7 @@ mod tests {
     #[tokio::test]
     async fn output_is_read_once() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None);
         let _ = jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
         let second = jobs.check(Some(id), Duration::ZERO).await.unwrap();
         assert!(second.contains("(no new output)"), "{second}");
@@ -931,7 +931,7 @@ mod tests {
     #[tokio::test]
     async fn a_failing_command_reports_its_code() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("exit 3".into(), sh("exit 3"), None).await;
+        let id = jobs.adopt("exit 3".into(), sh("exit 3"), None);
         let report = jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
         assert!(report.contains("exited with code 3"), "{report}");
     }
@@ -947,9 +947,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_still_running_says_so_and_stops_on_request() {
         let jobs = Jobs::new();
-        let id = jobs
-            .adopt(KEEPS_RUNNING.into(), sh(KEEPS_RUNNING), None)
-            .await;
+        let id = jobs.adopt(KEEPS_RUNNING.into(), sh(KEEPS_RUNNING), None);
         let report = jobs.check(Some(id), Duration::ZERO).await.unwrap();
         assert!(report.contains("still running"), "{report}");
         assert_eq!(jobs.running(), 1);
@@ -998,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn waiting_returns_as_soon_as_it_finishes() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("echo done".into(), sh("echo done"), None).await;
+        let id = jobs.adopt("echo done".into(), sh("echo done"), None);
         let started = Instant::now();
         let report = jobs.check(Some(id), Duration::from_secs(30)).await.unwrap();
         assert!(
@@ -1017,9 +1015,7 @@ mod tests {
     #[tokio::test]
     async fn a_pipe_nobody_will_close_does_not_hold_the_command_open() {
         let jobs = Jobs::new();
-        let id = jobs
-            .adopt("leaves one behind".into(), sh("sleep 30 &"), None)
-            .await;
+        let id = jobs.adopt("leaves one behind".into(), sh("sleep 30 &"), None);
 
         // The shell is gone in an instant; what it started holds the write end
         // of both pipes for half a minute.
@@ -1037,7 +1033,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_number_lists_the_ones_that_exist() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None);
         let err = jobs.check(Some(id + 7), Duration::ZERO).await.unwrap_err();
         assert!(err.contains("no background command"), "{err}");
         assert!(err.contains("echo hi"), "{err}");
@@ -1058,7 +1054,7 @@ mod tests {
         // The whole reason this file has cursors. A pane drawing a build used
         // to be a pane emptying the buffer `check_command` was going to read.
         let jobs = Jobs::new();
-        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        let id = jobs.adopt("echo hi".into(), sh("echo hi"), None);
         let _ = jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
 
         let seen = jobs.read(id, 0).unwrap();
@@ -1074,9 +1070,7 @@ mod tests {
     #[tokio::test]
     async fn a_window_cursor_only_asks_for_what_it_has_not_seen() {
         let jobs = Jobs::new();
-        let id = jobs
-            .adopt("echo one; echo two".into(), sh("echo one; echo two"), None)
-            .await;
+        let id = jobs.adopt("echo one; echo two".into(), sh("echo one; echo two"), None);
         jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
 
         let first = jobs.read(id, 0).unwrap();
@@ -1089,7 +1083,7 @@ mod tests {
     #[tokio::test]
     async fn a_job_lists_itself_as_running_and_then_as_finished() {
         let jobs = Jobs::new();
-        let id = jobs.adopt("exit 3".into(), sh("exit 3"), None).await;
+        let id = jobs.adopt("exit 3".into(), sh("exit 3"), None);
         jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
 
         let listed = jobs.list();
@@ -1108,7 +1102,7 @@ mod tests {
     #[tokio::test]
     async fn reading_a_number_that_is_not_there_says_which_ones_are() {
         let jobs = Jobs::new();
-        jobs.adopt("echo hi".into(), sh("echo hi"), None).await;
+        jobs.adopt("echo hi".into(), sh("echo hi"), None);
         let err = jobs.read(99, 0).unwrap_err();
         assert!(err.contains("no background command"), "{err}");
     }
@@ -1120,7 +1114,7 @@ mod tests {
         // model's copy is untouched.
         let jobs = Jobs::new();
         let coloured = "printf '\\033[32mgreen\\033[0m\\n'";
-        let id = jobs.adopt(coloured.into(), sh(coloured), None).await;
+        let id = jobs.adopt(coloured.into(), sh(coloured), None);
         jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
         let seen = jobs.read(id, 0).unwrap();
         assert_eq!(seen.text.trim(), "green", "{seen:?}");
@@ -1196,7 +1190,7 @@ mod tests {
         let jobs = Jobs::new();
         let mut ids = Vec::new();
         for _ in 0..MAX_FINISHED + 3 {
-            let id = jobs.adopt("true".into(), sh("true"), None).await;
+            let id = jobs.adopt("true".into(), sh("true"), None);
             jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
             ids.push(id);
         }

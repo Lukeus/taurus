@@ -971,7 +971,7 @@ mod tests {
         /// cache that ever handed back a wrong pre-image would break them
         /// rather than only the few written for it below.
         cache: Arc<SweepCache>,
-        _logs: TempDir,
+        logs: TempDir,
         _workspace: TempDir,
     }
 
@@ -990,7 +990,7 @@ mod tests {
                 recorder,
                 root,
                 cache: Arc::new(SweepCache::new()),
-                _logs: logs,
+                logs,
                 _workspace: workspace,
             }
         }
@@ -1043,7 +1043,7 @@ mod tests {
         }
 
         fn log_path(&self) -> PathBuf {
-            self._logs.path().join("s1.jsonl")
+            self.logs.path().join("s1.jsonl")
         }
 
         /// Asserts there was nothing to undo, then proves the file survived it.

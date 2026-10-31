@@ -260,7 +260,7 @@ pub fn copy_skill(skill: &Skill, root: &Path) -> Result<PathBuf, String> {
 
     if skill.origin == SkillOrigin::PluginCommand {
         let draft = SkillProposal::new(
-            folder.clone(),
+            folder,
             skill.frontmatter.description.clone(),
             skill.trigger(),
             skill.body.clone(),

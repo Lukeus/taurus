@@ -8,7 +8,7 @@ impl Host {
     /// Takes the workspace rather than reading it, because the one caller that
     /// matters — the registry rebuild — is already holding it and reading it
     /// again from inside the same lock would deadlock.
-    pub(super) fn data_dir_for(&self, workspace: &Path) -> PathBuf {
+    pub(super) fn data_dir_for(workspace: &Path) -> PathBuf {
         taurus_data::data_dir(
             &config::home_dir(),
             &crate::sessions::workspace_key(workspace),
@@ -18,7 +18,7 @@ impl Host {
     /// Every dataset loaded in this workspace, in the order they were loaded.
     pub async fn datasets(&self) -> Vec<taurus_data::Dataset> {
         let workspace = self.workspace().await;
-        taurus_data::catalog::load(&self.data_dir_for(&workspace))
+        taurus_data::catalog::load(&Self::data_dir_for(&workspace))
     }
 
     /// Reads a dataset in full and reports its shape.
@@ -95,7 +95,7 @@ impl Host {
     /// does.
     pub async fn forget_dataset(&self, name: &str) -> Result<Vec<taurus_data::Dataset>, String> {
         let workspace = self.workspace().await;
-        let dir = self.data_dir_for(&workspace);
+        let dir = Self::data_dir_for(&workspace);
         taurus_data::catalog::forget(&dir, name).map_err(|e| e.to_string())?;
         Ok(taurus_data::catalog::load(&dir))
     }
@@ -108,7 +108,7 @@ impl Host {
     /// down. See [`taurus_data::Engine::query`].
     pub async fn query_data(&self, sql: &str) -> Result<taurus_data::QueryResult, String> {
         let workspace = self.workspace().await;
-        let tables = taurus_data::tables(&self.data_dir_for(&workspace), &workspace);
+        let tables = taurus_data::tables(&Self::data_dir_for(&workspace), &workspace);
         if tables.is_empty() {
             return Err(
                 "No datasets are loaded in this workspace, so there is nothing to query.".into(),
@@ -151,7 +151,7 @@ impl Host {
     pub async fn run_recipe(&self, name: &str) -> Result<taurus_data::Materialized, String> {
         let workspace = self.workspace().await;
         let recipe = taurus_data::recipe::find(&workspace, name).map_err(|e| e.to_string())?;
-        let loaded = taurus_data::tables(&self.data_dir_for(&workspace), &workspace);
+        let loaded = taurus_data::tables(&Self::data_dir_for(&workspace), &workspace);
         let (tables, start) =
             taurus_data::recipe::resolve(&recipe, &workspace, loaded).map_err(|e| e.to_string())?;
         let output = taurus_tools::path_guard::resolve(&workspace, &recipe.output)
@@ -170,7 +170,7 @@ impl Host {
 
         // Loaded on the way out, so the pane can show what came out without a
         // second action. See `list_output`.
-        run.unlisted = list_output(&self.data_dir_for(&workspace), &workspace, &output);
+        run.unlisted = list_output(&Self::data_dir_for(&workspace), &workspace, &output);
         Ok(run)
     }
 
@@ -186,7 +186,7 @@ impl Host {
         name: &str,
     ) -> Result<(taurus_data::Source, taurus_data::Dataset), String> {
         let workspace = self.workspace().await;
-        let dataset = taurus_data::catalog::find(&self.data_dir_for(&workspace), name)
+        let dataset = taurus_data::catalog::find(&Self::data_dir_for(&workspace), name)
             .map_err(|e| e.to_string())?;
         let path = taurus_tools::path_guard::resolve(&workspace, &dataset.path)
             .map_err(|e| e.to_string())?;

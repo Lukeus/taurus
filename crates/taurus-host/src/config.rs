@@ -1240,11 +1240,6 @@ pub struct ModelRoutes {
 }
 
 impl ModelRoutes {
-    /// The route for one sub-agent, by name or else for every delegate.
-    pub fn for_agent(&self, name: &str) -> Option<&ModelRoute> {
-        self.agents.get(name).or(self.delegate.as_ref())
-    }
-
     /// Every route that's set, by the name a problem or an error calls it:
     /// `utility`, `review`, `delegate`, or `agents.<name>`.
     pub fn named(&self) -> Vec<(String, &ModelRoute)> {
@@ -3032,7 +3027,7 @@ mod tests {
 
             let settings = load_settings(Some(ws.path()));
             assert_eq!(settings.max_iterations, 50);
-            let mut fields = settings.from_project.clone();
+            let mut fields = settings.from_project;
             fields.sort();
             assert_eq!(fields, ["context_strategy", "max_iterations"]);
             // Global alone has no project to name.
@@ -3081,11 +3076,8 @@ mod tests {
         .normalized();
 
         assert_eq!(routes.utility, None);
-        assert_eq!(routes.for_agent("coder").unwrap().label(), "anthropic/big");
-        assert_eq!(
-            routes.for_agent("explorer").unwrap().label(),
-            "ollama/small"
-        );
+        assert_eq!(routes.agents["coder"].label(), "anthropic/big");
+        assert_eq!(routes.delegate.unwrap().label(), "ollama/small");
     }
 
     #[test]

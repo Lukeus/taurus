@@ -29,11 +29,6 @@ pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// change that caused it.
 pub const ACCEPTED: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
-/// Whether this is one of the four, however the caller capitalized it.
-pub fn is_accepted(mime_type: &str) -> bool {
-    ACCEPTED.contains(&mime_type.trim().to_ascii_lowercase().as_str())
-}
-
 /// The format the bytes actually are, for the four this accepts.
 ///
 /// Deliberately answers `None` rather than guessing: an unrecognized header is
@@ -134,7 +129,6 @@ mod tests {
     #[test]
     fn the_declared_type_is_read_however_it_was_capitalized() {
         assert!(check("Image/PNG", &encode(&png_bytes())).is_ok());
-        assert!(is_accepted(" image/JPEG "));
     }
 
     #[test]

@@ -212,7 +212,7 @@ pub fn install(filter: EnvFilter, service: &str, configured: Option<&str>) -> Gu
             Guard {
                 provider: None,
                 traces,
-                export: export(&endpoint, Some(e.to_string())),
+                export: export(&endpoint, Some(e)),
             }
         }
     }
