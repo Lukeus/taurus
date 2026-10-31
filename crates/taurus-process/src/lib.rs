@@ -17,6 +17,7 @@
 //! on Windows, and a second copy of code nobody can build locally is a second
 //! place for it to be wrong.
 
+pub mod ansi;
 pub mod command_line;
 mod console;
 pub mod path;

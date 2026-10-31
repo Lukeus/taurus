@@ -563,13 +563,17 @@ pub fn load_global_search() -> taurus_web::SearchFile {
     taurus_web::load(&home_dir()).unwrap_or_default()
 }
 
-pub fn save_search(file: &taurus_web::SearchFile) {
-    let Some(path) = search_file(Scope::Global, None) else {
-        return;
-    };
-    if let Ok(json) = serde_json::to_string_pretty(file) {
-        write_config(&path, &json);
-    }
+/// The same, for a save built on top of it. A file that can't be read or parsed
+/// is refused rather than read as empty, which would save over a hand edit.
+pub fn global_search_to_edit() -> Result<taurus_web::SearchFile, String> {
+    taurus_web::load(&home_dir()).map_err(|e| format!("{e}. Fix it first; nothing was written."))
+}
+
+/// Someone pressing Save, so a failure is reported. See [`write_mcp_text`].
+pub fn save_search(file: &taurus_web::SearchFile) -> Result<(), String> {
+    let path = search_file(Scope::Global, None).ok_or("there's no home folder to save it in")?;
+    let json = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
+    write_mcp_text(&path, &json)
 }
 
 /// Reads both layers of `search.json` and resolves the selected backend.
@@ -2218,11 +2222,22 @@ pub fn merge_mcp(layers: Vec<taurus_mcp::McpConfig>) -> (taurus_mcp::McpConfig, 
 /// One layer's `mcp.json` as text, or empty when there is no file yet.
 ///
 /// Text rather than a parsed config because every edit below is a read-modify-
-/// write that has to preserve what this version does not model.
+/// write that has to preserve what this version does not model. So only a file
+/// that isn't there reads as empty: one that can't be read, read as empty, is
+/// replaced by the next save with that one edit.
 fn read_mcp_text(scope: Scope, workspace: Option<&Path>) -> Result<(PathBuf, String), String> {
     let path = mcp_file(scope, workspace)
         .ok_or_else(|| "no workspace is open, so it has no config directory".to_string())?;
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(format!(
+                "couldn't read {} ({e}). Fix it first; nothing was written.",
+                path.display()
+            ))
+        }
+    };
     Ok((path, text))
 }
 
@@ -3071,6 +3086,41 @@ mod tests {
             routes.for_agent("explorer").unwrap().label(),
             "ollama/small"
         );
+    }
+
+    #[test]
+    fn an_mcp_file_that_cannot_be_read_is_not_saved_over() {
+        with_home(|_| {
+            let path = mcp_file(Scope::Global, None).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // What a PowerShell `>` redirect writes: UTF-16, so not a string.
+            let utf16 = b"\xff\xfe{\x00}\x00".to_vec();
+            std::fs::write(&path, &utf16).unwrap();
+
+            let refused = delete_mcp_server(Scope::Global, None, "any").unwrap_err();
+
+            assert!(refused.contains("nothing was written"), "{refused}");
+            assert_eq!(std::fs::read(&path).unwrap(), utf16);
+        });
+    }
+
+    #[test]
+    fn a_search_file_that_cannot_be_parsed_is_not_edited() {
+        with_home(|_| {
+            let path = search_file(Scope::Global, None).unwrap();
+            write(path, "{ not json");
+            assert!(global_search_to_edit().is_err());
+        });
+    }
+
+    #[test]
+    fn a_search_save_that_fails_says_so() {
+        with_home(|_| {
+            // A folder where the file goes, which no write can replace.
+            let path = search_file(Scope::Global, None).unwrap();
+            std::fs::create_dir_all(&path).unwrap();
+            assert!(save_search(&taurus_web::SearchFile::default()).is_err());
+        });
     }
 
     #[test]

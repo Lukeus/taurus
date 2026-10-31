@@ -633,6 +633,23 @@ pub(crate) enum Answer {
     Denied(String),
 }
 
+/// The JSON object that ends this text: all of it, or from the start of a line.
+fn trailing_object(text: &str) -> Option<serde_json::Map<String, Value>> {
+    let text = text.trim();
+    let starts = std::iter::once(0).chain(text.match_indices('\n').map(|(at, _)| at + 1));
+    let starts: Vec<usize> = starts.collect();
+    starts.into_iter().rev().find_map(|at| {
+        let tail = text[at..].trim_start();
+        if !tail.starts_with('{') {
+            return None;
+        }
+        match serde_json::from_str(tail) {
+            Ok(Value::Object(top)) => Some(top),
+            _ => None,
+        }
+    })
+}
+
 /// Reads a decision from a foreign hook's stdout.
 ///
 /// Any of the three agents' spellings, wherever each puts it: top-level
@@ -640,8 +657,12 @@ pub(crate) enum Answer {
 /// `hookSpecificOutput`. Reading them all rather than only the hook's own
 /// dialect costs nothing, and a hook that says "deny" in a neighbor's
 /// spelling still meant it.
+///
+/// The object may follow other output. A shell profile's banner ahead of a
+/// refusal is still a refusal, and read as plain text it would let the call
+/// through.
 pub(crate) fn answer(event: HookEvent, stdout: &str) -> Answer {
-    let Ok(Value::Object(top)) = serde_json::from_str::<Value>(stdout.trim()) else {
+    let Some(top) = trailing_object(stdout) else {
         return Answer::Passed(stdout.to_string());
     };
     let specific = top.get("hookSpecificOutput").and_then(Value::as_object);
@@ -957,6 +978,12 @@ mod tests {
             Some("lint first")
         );
         assert!(denied(answer(HookEvent::PreToolUse, r#"{"continue":false}"#)).is_some());
+        // Behind a shell profile's banner, flat or pretty-printed.
+        let banner = "Welcome to PowerShell\nUser: me\n{\n  \"decision\": \"block\",\n  \"reason\": \"no\"\n}\n";
+        assert_eq!(
+            denied(answer(HookEvent::PreToolUse, banner)).as_deref(),
+            Some("no")
+        );
     }
 
     #[test]

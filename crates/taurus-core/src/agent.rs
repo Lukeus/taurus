@@ -2048,6 +2048,9 @@ impl Agent {
         spent.add(&asked);
         let summary = match summary {
             Ok(summary) => summary,
+            // Stop is what the person asked for, not a failure to report. The
+            // history is untouched and the turn ends at its next check.
+            Err(_) if self.tools.cancel.is_cancelled() => return Summarizing::Failed,
             Err(reason) => {
                 warn!(%reason, "compaction failed; continuing with full history");
                 // Said out loud, and with the provider's own words in it. This
@@ -2166,6 +2169,11 @@ impl Agent {
             });
         session.add_usage(self.provider.id(), &session.model.clone(), asked);
         spent.add(&asked);
+        // Stop while the notes were being written: a handover swaps the whole
+        // history for a brief, which nobody asked for any more.
+        if self.tools.cancel.is_cancelled() {
+            return;
+        }
         if let Err(reason) = &notes {
             warn!(%reason, "handover notes could not be written; handing over without them");
         }
@@ -2340,6 +2348,22 @@ impl Agent {
                 refused_shape: matches!(e, taurus_provider::ProviderError::Api { status: 400, .. }),
                 reason: e.to_string(),
             }),
+            // Stop, and the partial text must not stand in for an answer: a
+            // caller would replace history with it. The caller reads the token
+            // to tell this from a failure worth reporting.
+            Ok(Ok(StopReason::Canceled)) => Err(Unanswered {
+                reason: "stopped before it finished".into(),
+                refused_shape: false,
+            }),
+            // The same for half a JSON object, and asking again would only
+            // reach the same limit.
+            Ok(Ok(StopReason::MaxTokens)) => Err(Unanswered {
+                reason: "the answer reached the model's token limit and was cut off".into(),
+                refused_shape: false,
+            }),
+            // Not an answer however much it said before the call. Empty is what
+            // `ask_for_json` already reads as "called a tool instead".
+            Ok(Ok(_)) if message.has_tool_use() => Ok(String::new()),
             Ok(Ok(_)) => Ok(message.text()),
         }
     }

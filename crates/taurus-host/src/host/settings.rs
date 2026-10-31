@@ -29,6 +29,11 @@ impl Host {
         config::load_global_search()
     }
 
+    /// The same, to build a save on. See [`config::global_search_to_edit`].
+    pub fn global_search_to_edit(&self) -> Result<taurus_web::SearchFile, String> {
+        config::global_search_to_edit()
+    }
+
     /// Where each configured search backend's key comes from.
     ///
     /// The twin of [`Self::key_statuses`], and for the same reason: both
@@ -60,9 +65,10 @@ impl Host {
     ///
     /// The local half only, here and in the two key setters below: web search
     /// changes nothing an MCP server is running with.
-    pub async fn set_search(&self, file: taurus_web::SearchFile) {
-        config::save_search(&file);
+    pub async fn set_search(&self, file: taurus_web::SearchFile) -> Result<(), String> {
+        config::save_search(&file)?;
         self.reload_local().await;
+        Ok(())
     }
 
     pub async fn set_search_key(&self, backend_id: &str, key: &str) -> Result<(), String> {

@@ -222,8 +222,12 @@ pub fn config_file(dir: &Path) -> PathBuf {
 /// problem.
 pub fn load(dir: &Path) -> Result<SearchFile, String> {
     let path = config_file(dir);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(SearchFile::default());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SearchFile::default());
+        }
+        Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }

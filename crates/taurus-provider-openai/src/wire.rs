@@ -58,6 +58,9 @@ pub struct ModelEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
+    /// A failure after the 200, which gateways send in place of a chunk.
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
     #[serde(default)]
     pub choices: Vec<Choice>,
     #[serde(default)]
