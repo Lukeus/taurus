@@ -82,6 +82,15 @@ impl ScriptedTurn {
         }
     }
 
+    /// A request that dies transiently after `events`, none of them text: a
+    /// tool call cut off partway, which nothing has shown and a retry can redo.
+    pub fn transient_failure_after(events: Vec<StreamEvent>) -> Self {
+        Self {
+            events,
+            ..Self::transient_failure()
+        }
+    }
+
     /// A request that fails before producing anything, with a status the
     /// provider layer classifies as worth retrying.
     pub fn transient_failure() -> Self {

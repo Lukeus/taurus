@@ -1,5 +1,7 @@
 //! Streaming events and the accumulator that turns them back into a `Message`.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -186,6 +188,60 @@ pub enum StreamEvent {
     Usage {
         usage: TokenUsage,
     },
+}
+
+/// Gives every tool call a provider sends an id nothing else in the conversation
+/// has, before anything downstream sees it.
+///
+/// A backend's word that an id is unique isn't one every backend keeps, and
+/// everything after this point goes by the id: which result answers which call,
+/// which card a live event lands on, where a delegate's transcript is filed. An
+/// id already used gets a fresh one from [`crate::new_tool_use_id`], and the
+/// fragments that follow under the provider's id are carried over to it. An id
+/// not used yet is left alone.
+///
+/// Nothing needs the provider's own id back. Every route here takes the id
+/// from the history it's sent, with the call and its result named alike:
+/// nothing is stored server-side, and a signature travels on its block.
+///
+/// One per attempt at a request, so a retry starts clean: an attempt that failed
+/// stored nothing, so nothing it renamed is in use.
+#[derive(Debug, Default)]
+pub struct ToolIds {
+    used: HashSet<String>,
+    /// The provider's id to the one in force for it. Only calls that needed one.
+    renamed: HashMap<String, String>,
+}
+
+impl ToolIds {
+    pub fn new(used: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            used: used.into_iter().collect(),
+            renamed: HashMap::new(),
+        }
+    }
+
+    /// Puts `event` under the id the rest of the harness will know it by.
+    pub fn apply(&mut self, event: &mut StreamEvent) {
+        match event {
+            StreamEvent::ToolUseStart { id, .. } => {
+                if self.used.insert(id.clone()) {
+                    self.renamed.remove(id);
+                } else {
+                    let fresh = crate::new_tool_use_id();
+                    self.used.insert(fresh.clone());
+                    self.renamed.insert(id.clone(), fresh.clone());
+                    *id = fresh;
+                }
+            }
+            StreamEvent::ToolUseInputDelta { id, .. } | StreamEvent::ToolUseEnd { id } => {
+                if let Some(fresh) = self.renamed.get(id) {
+                    id.clone_from(fresh);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Rebuilds an assistant `Message` from a `StreamEvent` sequence.
@@ -462,6 +518,44 @@ mod tests {
         assert!(bad.is_empty());
         let (_, _, input) = msg.tool_uses().next().unwrap();
         assert_eq!(input, &serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_used_id_gets_a_fresh_one_and_its_fragments_follow_it() {
+        let mut ids = ToolIds::new(["old".to_string()]);
+        let mut seen = |id: &str| {
+            let mut start = StreamEvent::ToolUseStart {
+                id: id.into(),
+                name: "x".into(),
+            };
+            ids.apply(&mut start);
+            let mut delta = StreamEvent::ToolUseInputDelta {
+                id: id.into(),
+                json: "{}".into(),
+            };
+            ids.apply(&mut delta);
+            let mut end = StreamEvent::ToolUseEnd { id: id.into() };
+            ids.apply(&mut end);
+            let (
+                StreamEvent::ToolUseStart { id: a, .. },
+                StreamEvent::ToolUseInputDelta { id: b, .. },
+                StreamEvent::ToolUseEnd { id: c },
+            ) = (start, delta, end)
+            else {
+                panic!("the same events back");
+            };
+            assert_eq!(a, b);
+            assert_eq!(b, c);
+            a
+        };
+        // Free: kept as the provider sent it.
+        assert_eq!(seen("new"), "new");
+        // Used earlier in the conversation, and earlier in this response.
+        let from_history = seen("old");
+        assert_ne!(from_history, "old");
+        let from_response = seen("new");
+        assert_ne!(from_response, "new");
+        assert_ne!(from_history, from_response);
     }
 
     #[test]

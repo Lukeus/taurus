@@ -12,7 +12,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
     with_unique_tool_ids, ChatRequest, ContentBlock, Message, Provider, Role, Spend, StopReason,
-    StreamAccumulator, StreamEvent, TokenUsage, ToolDef,
+    StreamAccumulator, StreamEvent, TokenUsage, ToolDef, ToolIds,
 };
 use taurus_tools::{
     Arrival, Effect, OutputBudget, Pending, PlanBoard, ToolContext, ToolError, ToolProgress,
@@ -468,6 +468,11 @@ pub struct Agent {
     /// answering it means rendering every tool schema to a string. See
     /// [`Agent::request_overhead`].
     overhead: std::sync::OnceLock<u32>,
+    /// Every tool id this agent has stored, which can outlive the messages
+    /// holding them: compaction and a relay drop those, and an id they took is
+    /// still in the transcript. Lasts as long as the agent, which in the app is
+    /// a turn. See [`ToolIds`].
+    tool_ids: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// What a completed turn produced.
@@ -493,6 +498,7 @@ impl Agent {
             plan: None,
             recorder: None,
             overhead: std::sync::OnceLock::new(),
+            tool_ids: std::sync::Mutex::default(),
         }
     }
 
@@ -1266,6 +1272,17 @@ impl Agent {
             async move { provider.stream(request, tx, cancel).await }.instrument(span.clone()),
         );
 
+        // The one place a call's id enters the harness. Everything after this
+        // reads it off the stored message: the result, every UI event, the
+        // delegate's report and transcript, a spilled output's file name.
+        let mut ids = ToolIds::new(
+            session
+                .messages
+                .iter()
+                .flat_map(Message::tool_uses)
+                .map(|(id, _, _)| id.to_string())
+                .chain(self.stored_tool_ids().iter().cloned()),
+        );
         let mut acc = StreamAccumulator::new();
         // Tool-use deltas do not count: they are accumulated, not displayed, so
         // a stream that dies part-way through a tool call can still be retried
@@ -1288,7 +1305,8 @@ impl Agent {
                 },
                 None => rx.recv().await,
             };
-            let Some(event) = arrived else { break };
+            let Some(mut event) = arrived else { break };
+            ids.apply(&mut event);
 
             let delta = match &event {
                 StreamEvent::TextDelta { text } => Some((false, text)),
@@ -1346,6 +1364,8 @@ impl Agent {
         if !malformed.is_empty() {
             warn!(?malformed, "model produced unparseable tool input");
         }
+        self.stored_tool_ids()
+            .extend(message.tool_uses().map(|(id, _, _)| id.to_string()));
 
         span.record("gen_ai.response.model", session.model.as_str());
         span.record(
@@ -1360,6 +1380,10 @@ impl Agent {
         }
 
         Ok((message, usage, stop))
+    }
+
+    fn stored_tool_ids(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        self.tool_ids.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The tools every request of this turn advertises.

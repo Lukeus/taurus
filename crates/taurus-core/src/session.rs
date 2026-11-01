@@ -632,11 +632,10 @@ struct Call {
 /// Maps every tool result, by message and block, to the call it answers, and
 /// every call signature to the last message that made it *and got an answer*.
 ///
-/// By position rather than by id alone, because an id isn't unique across every
-/// transcript: the prompted fallback used to start again from `ptc_1` on each
-/// request. A result answers the nearest call before it under that id. Keyed by
-/// the id alone, every result would resolve to the last call of that name, and
-/// the read of one file would be dropped as superseded by the read of another.
+/// Which call a result answers is [`taurus_provider::pair_tool_results`], the
+/// same rule the request is renamed by. An id isn't unique across every
+/// transcript, and keyed by the id alone every result would resolve to the last
+/// call of that name, dropping the read of one file as superseded by another.
 ///
 /// Answered is the load-bearing part: a call with no result behind it cannot
 /// supersede anything, because there is nothing to point the model at. That
@@ -644,39 +643,29 @@ struct Call {
 /// tool's answer never arrived, and the call that failed, where the earlier
 /// result is the only one that ever worked.
 fn index_calls(messages: &[Message]) -> (HashMap<(usize, usize), Call>, HashMap<String, usize>) {
-    let mut latest: HashMap<&str, (Call, usize)> = HashMap::new();
     let mut call_of = HashMap::new();
     let mut last_use: HashMap<String, usize> = HashMap::new();
-    for (index, message) in messages.iter().enumerate() {
-        for (position, block) in message.content.iter().enumerate() {
-            match block {
-                ContentBlock::ToolUse {
-                    id, name, input, ..
-                } => {
-                    let call = Call {
-                        name: name.clone(),
-                        signature: format!("{name}\u{0}{input}"),
-                        target: target_of(input),
-                    };
-                    latest.insert(id.as_str(), (call, index));
-                }
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    is_error,
-                    ..
-                } => {
-                    let Some((call, made_at)) = latest.get(tool_use_id.as_str()) else {
-                        continue;
-                    };
-                    if !is_error {
-                        let last = last_use.entry(call.signature.clone()).or_insert(*made_at);
-                        *last = (*last).max(*made_at);
-                    }
-                    call_of.insert((index, position), call.clone());
-                }
-                _ => {}
+    for ((index, position), (made_at, block)) in taurus_provider::pair_tool_results(messages) {
+        let ContentBlock::ToolUse { name, input, .. } = &messages[made_at].content[block] else {
+            continue;
+        };
+        let call = Call {
+            name: name.clone(),
+            signature: format!("{name}\u{0}{input}"),
+            target: target_of(input),
+        };
+        let answered = matches!(
+            messages[index].content[position],
+            ContentBlock::ToolResult {
+                is_error: false,
+                ..
             }
+        );
+        if answered {
+            let last = last_use.entry(call.signature.clone()).or_insert(made_at);
+            *last = (*last).max(made_at);
         }
+        call_of.insert((index, position), call);
     }
     (call_of, last_use)
 }
@@ -934,6 +923,42 @@ fn starts_with_tool_result(message: &Message) -> bool {
 mod repeated_id_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_index_and_the_request_pair_a_repeated_id_the_same_way() {
+        // An old call left unanswered, its id reused, then a batch under one id
+        // answered in order.
+        let read = |path: &str| ContentBlock::tool_use("x", "read_file", json!({"path": path}));
+        let messages = vec![
+            Message::new(Role::Assistant, vec![read("old")]),
+            Message::user("carry on"),
+            Message::new(Role::Assistant, vec![read("a"), read("b")]),
+            Message::new(
+                Role::User,
+                vec![
+                    ContentBlock::tool_result("x", "of a"),
+                    ContentBlock::tool_result("x", "of b"),
+                ],
+            ),
+        ];
+        let (call_of, _) = index_calls(&messages);
+        let unique = taurus_provider::with_unique_tool_ids(messages.clone());
+        let id_of_path = |path: &str| {
+            unique
+                .iter()
+                .flat_map(Message::tool_uses)
+                .find(|(_, _, input)| input["path"] == path)
+                .map(|(id, _, _)| id.to_string())
+                .unwrap()
+        };
+        for (position, path) in [(0, "a"), (1, "b")] {
+            assert_eq!(call_of[&(3, position)].target.as_deref(), Some(path));
+            let ContentBlock::ToolResult { tool_use_id, .. } = &unique[3].content[position] else {
+                panic!("a result");
+            };
+            assert_eq!(*tool_use_id, id_of_path(path));
+        }
+    }
 
     #[test]
     fn a_result_answers_the_nearest_call_under_its_id() {

@@ -69,17 +69,66 @@ pub fn replay_input(input: &serde_json::Value) -> Cow<'_, serde_json::Value> {
     }
 }
 
+/// Which call each tool result answers, as result position to call position,
+/// each a message index and a block index.
+///
+/// The one rule for a history whose ids repeat, which a transcript written
+/// before [`crate::ToolIds`] can: the prompted fallback used to count from
+/// `ptc_1` on every request, and a server that repeated an id on each fragment
+/// split one call into several.
+///
+/// A result answers the nearest earlier message holding an unanswered call under
+/// its id, because an old call left unanswered must not take the result of a new
+/// one. Within that message it answers the earliest still unanswered, because
+/// results come back in the order the calls went out. A result with nothing left
+/// to answer isn't in the map.
+///
+/// The transcript drawn on screen pairs the same way (`answering` in
+/// `src/state/store.ts`), so what the model is told matches what's shown.
+pub fn pair_tool_results(messages: &[Message]) -> HashMap<(usize, usize), (usize, usize)> {
+    // Per id, the messages with calls still unanswered, oldest first, each with
+    // those calls' blocks in order.
+    let mut waiting: HashMap<&str, Vec<(usize, VecDeque<usize>)>> = HashMap::new();
+    let mut pairs = HashMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        for (position, block) in message.content.iter().enumerate() {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    let batches = waiting.entry(id.as_str()).or_default();
+                    match batches.last_mut() {
+                        Some((at, calls)) if *at == index => calls.push_back(position),
+                        _ => batches.push((index, VecDeque::from([position]))),
+                    }
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    let Some(batches) = waiting.get_mut(tool_use_id.as_str()) else {
+                        continue;
+                    };
+                    let Some((at, calls)) = batches.last_mut() else {
+                        continue;
+                    };
+                    let at = *at;
+                    if let Some(call) = calls.pop_front() {
+                        pairs.insert((index, position), (at, call));
+                    }
+                    if calls.is_empty() {
+                        batches.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    pairs
+}
+
 /// `messages` with every tool call under an id of its own.
 ///
-/// The ids decide pairing across a whole history, and a transcript can hold the
-/// same one twice: the prompted fallback used to count from `ptc_1` on every
-/// request, and a server that repeated an id on each fragment split one call
-/// into several. A later call under a used id gets `{id}_{n}`, and so does the
-/// result that answers it, matched in order. The rename is stable, so a
-/// backend's cached prefix survives it.
+/// A later call under a used id gets `{id}_{n}`, and the result that answers it,
+/// by [`pair_tool_results`], gets the same. The rename is stable, so a backend's
+/// cached prefix survives it.
 pub fn with_unique_tool_ids(mut messages: Vec<Message>) -> Vec<Message> {
     let mut used: HashSet<String> = HashSet::new();
-    let mut waiting: HashMap<String, VecDeque<String>> = HashMap::new();
     // The common case by far: nothing repeats, and nothing is rewritten.
     if messages
         .iter()
@@ -89,26 +138,32 @@ pub fn with_unique_tool_ids(mut messages: Vec<Message>) -> Vec<Message> {
         return messages;
     }
     used.clear();
-    for block in messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
-        match block {
-            ContentBlock::ToolUse { id, .. } => {
+    let pairs = pair_tool_results(&messages);
+    let mut renamed: HashMap<(usize, usize), String> = HashMap::new();
+    for (index, message) in messages.iter_mut().enumerate() {
+        for (position, block) in message.content.iter_mut().enumerate() {
+            if let ContentBlock::ToolUse { id, .. } = block {
                 let mut unique = id.clone();
                 let mut n = 1;
                 while !used.insert(unique.clone()) {
                     n += 1;
                     unique = format!("{id}_{n}");
                 }
-                waiting
-                    .entry(std::mem::replace(id, unique.clone()))
-                    .or_default()
-                    .push_back(unique);
+                renamed.insert((index, position), unique.clone());
+                *id = unique;
             }
-            ContentBlock::ToolResult { tool_use_id, .. } => {
-                if let Some(unique) = waiting.get_mut(tool_use_id).and_then(VecDeque::pop_front) {
-                    *tool_use_id = unique;
+        }
+    }
+    for (index, message) in messages.iter_mut().enumerate() {
+        for (position, block) in message.content.iter_mut().enumerate() {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                if let Some(unique) = pairs
+                    .get(&(index, position))
+                    .and_then(|call| renamed.get(call))
+                {
+                    tool_use_id.clone_from(unique);
                 }
             }
-            _ => {}
         }
     }
     messages
@@ -688,6 +743,52 @@ mod replay_tests {
             })
             .collect();
         assert_eq!(ids, answered);
+    }
+
+    #[test]
+    fn a_new_result_goes_to_the_new_call_not_an_old_unanswered_one() {
+        // The old call was left unanswered, and its id came round again.
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use("ptc_1", "old", json!({}))],
+            ),
+            Message::user("carry on"),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use("ptc_1", "new", json!({}))],
+            ),
+            Message::new(Role::User, vec![ContentBlock::tool_result("ptc_1", "r")]),
+        ];
+        assert_eq!(pair_tool_results(&messages)[&(3, 0)], (2, 0));
+
+        let unique = with_unique_tool_ids(messages);
+        let (new_id, name, _) = unique[2].tool_uses().next().unwrap();
+        assert_eq!(name, "new");
+        let ContentBlock::ToolResult { tool_use_id, .. } = &unique[3].content[0] else {
+            panic!("a result");
+        };
+        assert_eq!(tool_use_id, new_id);
+    }
+
+    #[test]
+    fn a_result_past_the_last_call_answers_nothing() {
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use("x", "a", json!({}))],
+            ),
+            Message::new(
+                Role::User,
+                vec![
+                    ContentBlock::tool_result("x", "first"),
+                    ContentBlock::tool_result("x", "again"),
+                ],
+            ),
+        ];
+        let pairs = pair_tool_results(&messages);
+        assert_eq!(pairs[&(1, 0)], (0, 0));
+        assert!(!pairs.contains_key(&(1, 1)));
     }
 
     #[test]
