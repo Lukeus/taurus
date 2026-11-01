@@ -74,14 +74,35 @@ pub const EVENT_CHANGED: &str = "taurus://changed";
 /// call awaits the answer. `respond_permission` completes it.
 pub struct UiPermissionPrompt {
     app: AppHandle,
-    pending: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
+    pending: Arc<DashMap<String, ParkedPrompt>>,
+}
+
+/// A permission request waiting for its answer, and what it asked.
+///
+/// The request is kept so it can be offered again. An event reaches whoever is
+/// listening when it's sent, and a page that's still starting up isn't, so a
+/// prompt raised in that gap would otherwise wait on a dialog nobody ever drew.
+/// See [`outstanding`].
+pub struct ParkedPrompt {
+    pub request: PermissionRequest,
+    pub answer: oneshot::Sender<PermissionDecision>,
+    /// When it was asked, because the map has no order and the oldest is the
+    /// one to show.
+    pub asked: std::time::Instant,
+}
+
+/// Every prompt still waiting for an answer, oldest first.
+pub fn outstanding(pending: &DashMap<String, ParkedPrompt>) -> Vec<PermissionRequest> {
+    let mut parked: Vec<(std::time::Instant, PermissionRequest)> = pending
+        .iter()
+        .map(|entry| (entry.asked, entry.request.clone()))
+        .collect();
+    parked.sort_by_key(|(asked, _)| *asked);
+    parked.into_iter().map(|(_, request)| request).collect()
 }
 
 impl UiPermissionPrompt {
-    pub fn new(
-        app: AppHandle,
-        pending: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
-    ) -> Self {
+    pub fn new(app: AppHandle, pending: Arc<DashMap<String, ParkedPrompt>>) -> Self {
         Self { app, pending }
     }
 }
@@ -109,7 +130,14 @@ impl PermissionPrompt for UiPermissionPrompt {
     async fn request(&self, request: PermissionRequest) -> PermissionDecision {
         let id = request.id.clone();
         let (tx, rx) = oneshot::channel();
-        self.pending.insert(id.clone(), tx);
+        self.pending.insert(
+            id.clone(),
+            ParkedPrompt {
+                request: request.clone(),
+                answer: tx,
+                asked: std::time::Instant::now(),
+            },
+        );
         let _parked = Parked {
             pending: &self.pending,
             id,
@@ -330,6 +358,43 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(for_the_window(meta).workspace, r"C:\Users\me\repo");
+    }
+
+    #[test]
+    fn prompts_still_waiting_are_offered_again_oldest_first() {
+        let request = |id: &str| -> PermissionRequest {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "tool": "write_file",
+                "effect": "write",
+                "preview": "",
+                "always_scope": "",
+                "offer_always": true,
+                "input": null,
+            }))
+            .unwrap()
+        };
+        let pending = DashMap::new();
+        let start = std::time::Instant::now();
+        for (id, after) in [("second", 2), ("first", 1), ("third", 3)] {
+            pending.insert(
+                id.to_string(),
+                ParkedPrompt {
+                    request: request(id),
+                    answer: oneshot::channel().0,
+                    asked: start + std::time::Duration::from_secs(after),
+                },
+            );
+        }
+
+        let ids = |pending: &DashMap<String, ParkedPrompt>| -> Vec<String> {
+            outstanding(pending).into_iter().map(|r| r.id).collect()
+        };
+        assert_eq!(ids(&pending), ["first", "second", "third"]);
+
+        // An answered one takes itself out, so it's never offered twice.
+        pending.remove("first");
+        assert_eq!(ids(&pending), ["second", "third"]);
     }
 
     #[tokio::test]

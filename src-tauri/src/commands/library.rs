@@ -158,6 +158,8 @@ pub async fn save_agent(
         ));
     }
     let path = save_agent_file(&draft, &root).map_err(|e| format!("could not save agent: {e}"))?;
+    // `root` can be a plugin's, in the set a running command is watched against.
+    taurus_tools::protected::written_by_this_process(&path);
     info!(agent = %draft.name, path = %path.display(), "agent saved from the editor");
 
     state.host.rescan_agents().await;
@@ -612,6 +614,7 @@ pub async fn respond_agent_proposal(
 
             let path = save_agent_file(&proposal, &root)
                 .map_err(|e| format!("could not save agent: {e}"))?;
+            taurus_tools::protected::written_by_this_process(&path);
             info!(agent = %proposal.name, path = %path.display(), "agent approved");
 
             // Narrower than `reload`, which would restart every MCP server to

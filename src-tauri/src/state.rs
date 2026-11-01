@@ -19,9 +19,11 @@ use taurus_core::telemetry::Traces;
 use taurus_core::Session;
 use taurus_host::{Host, PermissionPromptFactory, PlanEditMark, SessionLog, Switch};
 use taurus_skills::proposal::SkillProposal;
-use taurus_tools::{Answer, PermissionDecision, PermissionPrompt};
+use taurus_tools::{Answer, PermissionPrompt};
 
-use crate::bridge::{UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposalSink};
+use crate::bridge::{
+    ParkedPrompt, UiAgentProposalSink, UiAsker, UiPermissionPrompt, UiProposalSink,
+};
 use crate::live::Live;
 use crate::terminal::Terminals;
 
@@ -160,7 +162,7 @@ impl SessionEntry {
 /// Makes UI-backed permission prompts as the host rebuilds its engine.
 struct UiPrompts {
     app: AppHandle,
-    pending: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
+    pending: Arc<DashMap<String, ParkedPrompt>>,
 }
 
 impl PermissionPromptFactory for UiPrompts {
@@ -183,7 +185,7 @@ pub struct AppState {
     pub app: AppHandle,
     pub host: Host,
     pub sessions: DashMap<String, Arc<SessionEntry>>,
-    pub pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>>,
+    pub pending_permissions: Arc<DashMap<String, ParkedPrompt>>,
     /// Tool calls parked on a question card, keyed by call id.
     pub pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>>,
     pub pending_proposals: Arc<DashMap<String, SkillProposal>>,
@@ -320,8 +322,7 @@ const FIRST_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl AppState {
     pub fn new(app: AppHandle, traces: Traces, export: taurus_telemetry::Export) -> Self {
-        let pending_permissions: Arc<DashMap<String, oneshot::Sender<PermissionDecision>>> =
-            Arc::new(DashMap::new());
+        let pending_permissions: Arc<DashMap<String, ParkedPrompt>> = Arc::new(DashMap::new());
         let pending_questions: Arc<DashMap<String, oneshot::Sender<Vec<Answer>>>> =
             Arc::new(DashMap::new());
         let pending_proposals: Arc<DashMap<String, SkillProposal>> = Arc::new(DashMap::new());
@@ -381,12 +382,7 @@ impl AppState {
     /// Tidies up after a page that has been replaced: a reload, a dev server
     /// restarting. See [`let_go_of_page`].
     pub async fn page_replaced(&self) {
-        let_go_of_page(
-            &self.sessions,
-            &self.pending_permissions,
-            &self.pending_questions,
-        )
-        .await;
+        let_go_of_page(&self.sessions).await;
     }
 
     /// Marks the first reload done, releasing anything waiting on it.
@@ -405,20 +401,15 @@ impl AppState {
     }
 }
 
-/// Withdraws what only the old page could answer, and leaves the work running.
+/// Lets go of the old page's views, and leaves everything else as it was.
 ///
 /// A turn belongs to its conversation rather than to a page, so a reload doesn't
 /// stop it: the new page finds it in `running_sessions` and picks it up through
-/// `attach_session`. What can't carry over is a dialog the old page was showing.
-/// Nothing is left to answer it, and a turn parked on one would hold its
-/// conversation. Clearing the maps drops each parked sender, which answers a
-/// permission prompt with a denial and a question with nothing, and the turn
-/// goes on from there.
-async fn let_go_of_page(
-    sessions: &DashMap<String, Arc<SessionEntry>>,
-    permissions: &DashMap<String, oneshot::Sender<PermissionDecision>>,
-    questions: &DashMap<String, oneshot::Sender<Vec<Answer>>>,
-) {
+/// `attach_session`. Nothing it's parked on is answered either. A permission
+/// prompt is offered again by `pending_permissions` once the page is listening,
+/// and a question card comes back in the round's replay when its conversation
+/// is opened, the same as after looking at another conversation.
+async fn let_go_of_page(sessions: &DashMap<String, Arc<SessionEntry>>) {
     // Collected first, so no map guard is held across an await.
     let entries: Vec<Arc<SessionEntry>> = sessions.iter().map(|e| e.value().clone()).collect();
     for entry in entries {
@@ -427,8 +418,6 @@ async fn let_go_of_page(
             live.forget_views().await;
         }
     }
-    permissions.clear();
-    questions.clear();
 }
 
 /// Records that the first load is done, whether or not anyone is waiting yet.
@@ -466,7 +455,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_reload_leaves_the_turn_running_and_releases_what_it_was_parked_on() {
+    async fn a_reload_leaves_the_turn_running_and_lets_go_of_the_old_page() {
         let token = CancellationToken::new();
         let live = Arc::new(Live::new());
         let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -491,20 +480,10 @@ mod tests {
         };
         let sessions = DashMap::new();
         sessions.insert("s1".to_string(), Arc::new(entry));
-        let permissions = DashMap::new();
-        let (allow, prompt) = oneshot::channel::<PermissionDecision>();
-        permissions.insert("p1".to_string(), allow);
-        let questions = DashMap::new();
-        let (answer, card) = oneshot::channel::<Vec<Answer>>();
-        questions.insert("q1".to_string(), answer);
 
-        let_go_of_page(&sessions, &permissions, &questions).await;
+        let_go_of_page(&sessions).await;
 
         assert!(!token.is_cancelled(), "a reload stopped a running turn");
-        // A dropped sender is what `UiPermissionPrompt` reads as a denial, and
-        // `UiAsker` as no answer.
-        assert!(prompt.await.is_err(), "a prompt is still parked");
-        assert!(card.await.is_err(), "a question is still parked");
         live.publish(taurus_core::UiEvent::TextDelta {
             text: "still going".into(),
         })
