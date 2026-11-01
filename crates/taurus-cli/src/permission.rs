@@ -238,6 +238,17 @@ fn label(effect: Effect) -> &'static str {
 
 #[async_trait]
 impl PermissionPrompt for TerminalPrompt {
+    /// `--allow` and `--allow-command` said yes before this call existed, so
+    /// nobody looked at it and the look afterwards still applies.
+    ///
+    /// `--dangerously-allow-all` doesn't count. It's the one flag that says yes
+    /// to what no grant can cover, `write_file` on `.git/hooks` included, and it's
+    /// for an environment that's already throwaway. Undoing a hook a run was told
+    /// it could write would contradict the flag, in the place it's meant for.
+    fn declared_ahead(&self, request: &PermissionRequest) -> bool {
+        !self.policy.allow_all && self.policy.permits(request)
+    }
+
     async fn request(&self, request: PermissionRequest) -> PermissionDecision {
         // The policy is checked first even when interactive, so `--allow` also
         // works as "stop asking me about this" in a live session.

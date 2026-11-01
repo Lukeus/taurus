@@ -901,6 +901,274 @@ fn runs_inline_code(name: &str, rest: &[String]) -> bool {
     false
 }
 
+/// `git` settings whose value is a program to run, a place to load more settings
+/// from, or a repository to trust. All compared lowercase, as git does.
+pub fn git_key_runs_something(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    const EXACT: &[&str] = &[
+        "core.hookspath",
+        "core.fsmonitor",
+        "core.sshcommand",
+        "core.pager",
+        "core.editor",
+        "core.askpass",
+        "core.gitproxy",
+        "core.alternaterefscommand",
+        "core.worktree",
+        "credential.helper",
+        "sequence.editor",
+        "diff.external",
+        "gpg.program",
+        "include.path",
+        "init.templatedir",
+        "web.browser",
+        "uploadpack.packobjectshook",
+    ];
+    const PREFIXES: &[&str] = &[
+        "alias.",
+        "pager.",
+        "filter.",
+        "includeif.",
+        "mergetool.",
+        "difftool.",
+        "browser.",
+        "man.",
+        "url.",
+    ];
+    // `section.anything.name`.
+    const ENDS: &[&str] = &[
+        ".textconv",
+        ".command",
+        ".driver",
+        ".helper",
+        ".program",
+        ".uploadpack",
+        ".receivepack",
+        ".proxy",
+    ];
+    EXACT.contains(&key.as_str())
+        || PREFIXES.iter().any(|p| key.starts_with(p))
+        || ENDS.iter().any(|e| key.ends_with(e))
+        || (key.starts_with("submodule.") && key.ends_with(".update"))
+}
+
+/// The subcommand of a `git` line and the words after it, past git's own flags.
+fn git_subcommand(words: &[String]) -> Option<(&str, &[String])> {
+    let start = words.iter().position(|w| bare_name(w) == "git")? + 1;
+    let mut at = start;
+    while let Some(word) = words.get(at) {
+        if matches!(
+            word.as_str(),
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
+            at += 2;
+        } else if word.starts_with('-') {
+            at += 1;
+        } else {
+            return Some((word.as_str(), &words[at + 1..]));
+        }
+    }
+    None
+}
+
+/// Whether a `git` line runs something the line itself names, or sets a value
+/// that makes a later `git` do so.
+fn git_runs_what_it_is_told(words: &[String]) -> bool {
+    let key_of = |text: &str| text.split('=').next().unwrap_or(text).to_string();
+    let mut all = words.iter().peekable();
+    while let Some(word) = all.next() {
+        // `-c`, on git or on `git clone`. `--config` is `clone`'s long name.
+        let setting = match word.as_str() {
+            "-c" | "--config" => all.peek().map(|w| w.as_str()),
+            w if w.starts_with("--config-env=") => w.strip_prefix("--config-env="),
+            w if w.starts_with("--config=") => w.strip_prefix("--config="),
+            w if w.starts_with("-c") && w.contains('=') && !w.starts_with("--") => {
+                w.strip_prefix("-c")
+            }
+            _ => None,
+        };
+        if setting.is_some_and(|s| git_key_runs_something(&key_of(s))) {
+            return true;
+        }
+        const FLAGS: &[&str] = &[
+            "--exec-path=",
+            "--git-dir",
+            "--upload-pack",
+            "--receive-pack",
+            "--open-files-in-pager",
+            "--extcmd",
+            "--template",
+        ];
+        if FLAGS.iter().any(|f| word.starts_with(f)) || word.starts_with("ext::") {
+            return true;
+        }
+    }
+    let Some((sub, rest)) = git_subcommand(words) else {
+        return false;
+    };
+    let has = |flags: &[&str]| {
+        rest.iter().any(|w| {
+            flags
+                .iter()
+                .any(|f| w == f || w.starts_with(&format!("{f}=")))
+        })
+    };
+    match sub {
+        "config" => {
+            let reads = has(&["--get", "--get-all", "--get-regexp", "--list", "-l"])
+                || matches!(rest.first().map(String::as_str), Some("get" | "list"));
+            let positional: Vec<&String> = rest
+                .iter()
+                .filter(|w| !w.starts_with('-') && *w != "set")
+                .collect();
+            has(&["--edit", "-e"])
+                || (!reads
+                    && positional.len() >= 2
+                    && positional.iter().any(|w| git_key_runs_something(w)))
+        }
+        "filter-branch" => true,
+        "rebase" => has(&["-x", "--exec"]),
+        "difftool" => has(&["-x"]),
+        "grep" => has(&["-O"]) || rest.iter().any(|w| w.starts_with("-O")),
+        "submodule" => rest.iter().any(|w| w == "foreach"),
+        "bisect" => rest.first().is_some_and(|w| w == "run"),
+        _ => false,
+    }
+}
+
+/// The `awk`s.
+const AWKS: &[&str] = &["awk", "gawk", "mawk", "nawk"];
+
+/// Whether an `awk` program runs a command or writes a file.
+///
+/// `system(`, a pipe into or out of a quoted command, `getline`, and a `>` after
+/// `print`. A bare `|` and a bare `>` aren't enough: `/a|b/` and `$1>5` are what
+/// everyday `awk` is made of. So a pipe to a command held in a variable isn't
+/// caught, and neither is a program in a file.
+fn awk_reaches_out(program: &str) -> bool {
+    let squeezed: String = program.chars().filter(|c| !c.is_whitespace()).collect();
+    squeezed.contains("system(")
+        || squeezed.contains("|\"")
+        || squeezed.contains("|&")
+        || squeezed.contains("\"|")
+        || squeezed.contains("getline")
+        || squeezed.contains("@load")
+        || squeezed
+            .find("print")
+            .is_some_and(|at| squeezed[at..].contains('>'))
+}
+
+/// The scripts on a `sed` line: each `-e`, or else its first plain word.
+fn sed_scripts(rest: &[String]) -> Vec<&str> {
+    let mut scripts = Vec::new();
+    let mut plain = None;
+    let mut words = rest.iter().peekable();
+    while let Some(word) = words.next() {
+        if let Some(script) = word.strip_prefix("--expression=") {
+            scripts.push(script);
+        } else if word == "--expression"
+            || (word.starts_with('-') && !word.starts_with("--") && word.ends_with('e'))
+        {
+            if let Some(script) = words.next() {
+                scripts.push(script.as_str());
+            }
+        } else if matches!(word.as_str(), "-i" | "-I") {
+            // BSD's `-i ''` and `-i .bak`.
+            if words
+                .peek()
+                .is_some_and(|w| w.is_empty() || w.starts_with('.'))
+            {
+                words.next();
+            }
+        } else if word == "-f" {
+            words.next();
+        } else if !word.starts_with('-') && plain.is_none() {
+            plain = Some(word.as_str());
+        }
+    }
+    if scripts.is_empty() {
+        scripts.extend(plain);
+    }
+    scripts
+}
+
+/// Whether a `sed` script runs a command (`e`, `s///e`) or writes a file (`w`,
+/// `W`, `s///w`). Read command by command, since `e` and `w` are ordinary
+/// letters inside a pattern. What it can't read counts as yes.
+fn sed_reaches_out(script: &str) -> bool {
+    let c: Vec<char> = script.chars().collect();
+    let mut i = 0;
+    // Past a `/re/` or `s`'s parts: the index after the closing delimiter.
+    let past = |mut i: usize, delimiter: char| -> Option<usize> {
+        while let Some(&ch) = c.get(i) {
+            if ch == '\\' {
+                i += 2;
+            } else if ch == delimiter {
+                return Some(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        None
+    };
+    while i < c.len() {
+        match c[i] {
+            ' ' | '\t' | '\n' | ';' | '{' | '}' | ',' | '!' | '$' | '~' | '+' => i += 1,
+            '0'..='9' => i += 1,
+            '/' => match past(i + 1, '/') {
+                // `I` and `M` after an address.
+                Some(end) => {
+                    i = end;
+                    while matches!(c.get(i), Some('I' | 'M')) {
+                        i += 1;
+                    }
+                }
+                None => return true,
+            },
+            '\\' => {
+                let Some(&delimiter) = c.get(i + 1) else {
+                    return true;
+                };
+                match past(i + 2, delimiter) {
+                    Some(end) => i = end,
+                    None => return true,
+                }
+            }
+            'e' | 'w' | 'W' => return true,
+            's' | 'y' => {
+                let Some(&delimiter) = c.get(i + 1) else {
+                    return true;
+                };
+                let Some(end) = past(i + 2, delimiter).and_then(|at| past(at, delimiter)) else {
+                    return true;
+                };
+                i = end;
+                while let Some(&flag) = c.get(i) {
+                    if matches!(flag, ';' | '\n' | '}' | ' ') {
+                        break;
+                    }
+                    if matches!(flag, 'e' | 'w') {
+                        return true;
+                    }
+                    i += 1;
+                }
+            }
+            // These take the rest of the command as text or a name.
+            'a' | 'i' | 'c' | 'r' | 'R' | 'b' | 't' | 'T' | ':' | 'q' | 'Q' | 'l' | 'L' | '#'
+            | 'v' => {
+                while c.get(i).is_some_and(|ch| *ch != ';' && *ch != '\n') {
+                    i += 1;
+                }
+            }
+            'd' | 'D' | 'g' | 'G' | 'h' | 'H' | 'n' | 'N' | 'p' | 'P' | 'x' | 'z' | '=' | 'F' => {
+                i += 1
+            }
+            _ => return true,
+        }
+    }
+    false
+}
+
 /// `program` without its directory or `.exe`, lowercased, for matching
 /// against the lists above.
 fn bare_name(program: &str) -> String {

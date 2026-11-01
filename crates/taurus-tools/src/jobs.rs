@@ -335,7 +335,19 @@ impl Jobs {
     /// The child is moved rather than shared: one owner may wait on it, and
     /// stopping goes through [`Job::stop`] so that owner is the only one that
     /// ever reaps it.
-    pub fn adopt(&self, command: String, mut child: Tree, before: Option<Before>) -> u32 {
+    pub fn adopt(&self, command: String, child: Tree, before: Option<Before>) -> u32 {
+        self.adopt_watched(command, child, before, None)
+    }
+
+    /// [`Self::adopt`], with the call's place in the look at the protected files,
+    /// which is spent when the command exits.
+    pub(crate) fn adopt_watched(
+        &self,
+        command: String,
+        mut child: Tree,
+        before: Option<Before>,
+        ticket: Option<crate::protected::Ticket>,
+    ) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Arc::new(Job {
             id,
@@ -392,6 +404,15 @@ impl Jobs {
             // it with this command's pre-image. Before the outcome is
             // published, so a reap that sees the command finished also finds
             // what it changed.
+            if let Some(ticket) = ticket {
+                let printed = job.output.lock().unwrap().tail.text.clone();
+                let about = ticket.about_output(&printed);
+                let found = ticket.finish().await;
+                let notes: Vec<String> = about.into_iter().chain(found).collect();
+                if !notes.is_empty() {
+                    *job.repaired.lock().unwrap() = Some(notes.join(" "));
+                }
+            }
             let before = job.sweep.lock().unwrap().take();
             if let Some(Before { sweep, workspace }) = before {
                 let diffed = sweep.diff(&workspace).await;
