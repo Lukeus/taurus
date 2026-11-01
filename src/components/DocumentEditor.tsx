@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 
-import { grammarFor, paint } from "../lib/ink";
+import { enterEdit, indentOf, outdentEdit, replaceText, tabEdit, type Edit } from "../lib/indent";
+import { grammarFor, paint, sliceRuns } from "../lib/ink";
+import { isComposing } from "../lib/keys";
 import { InkLayer } from "./InkLayer";
 
 /**
@@ -57,7 +67,7 @@ import { InkLayer } from "./InkLayer";
  *
  * # What is deliberately not here
  *
- * Folding, multiple cursors, bracket matching, and find-and-replace. Each is a
+ * Folding, multiple cursors, and bracket matching. Each is a
  * feature in its own right rather than a detail of this one, and the honest
  * shape of that decision is a list rather than a half-built version of each.
  * See `docs/known-gaps.md`.
@@ -204,15 +214,22 @@ export function DocumentEditor({
     if (rail.current) rail.current.scrollTop = area.scrollTop;
   }, [window_.from, window_.to]);
 
-  const painted = useMemo(
-    // Joined back with the newlines that `split` removed, so what the scanner
-    // sees is a run of real lines. A fenced block or a block comment that opens
-    // above the window is a known and accepted cost of painting a slice: it
-    // reopens at the top of the window rather than carrying its colour down
-    // from wherever it started.
-    () => paint(lines.slice(window_.from, window_.to).join("\n"), grammar),
-    [lines, window_.from, window_.to, grammar],
+  /*
+   * The whole file, scanned once per edit, so a comment or docstring that opens
+   * above the window still colours what's inside it. Past `SCAN_WHOLE` a scan is a
+   * keystroke's worth of lag, and such a file is painted by the window alone: a
+   * block that opens above it reopens at the top. See `docs/known-gaps.md`.
+   */
+  const whole = useMemo(
+    () => (text.length <= SCAN_WHOLE ? paint(text, grammar) : null),
+    [text, grammar],
   );
+  const painted = useMemo(() => {
+    if (!whole) return paint(lines.slice(window_.from, window_.to).join("\n"), grammar);
+    const from = offsetOf(lines, window_.from);
+    const to = from + lines.slice(window_.from, window_.to).join("\n").length;
+    return sliceRuns(whole, from, to);
+  }, [whole, lines, window_.from, window_.to, grammar]);
 
   /* Scrolls to what the model pointed at, and highlights it. */
   useEffect(() => {
@@ -252,6 +269,35 @@ export function DocumentEditor({
     },
     [onSelect],
   );
+
+  /*
+   * Tab and Enter, for code. Through the browser's own edit so ⌘Z takes each one
+   * back. Not while an input method is composing, since those keys are its own.
+   *
+   * Tab stays in the box, so Escape is the way out for a keyboard: it leaves the
+   * field, and Tab then moves on. See the Escape handling in `CanvasSlot`.
+   */
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!onChange || isComposing(e) || e.altKey || e.ctrlKey || e.metaKey) return;
+    const area = e.currentTarget;
+    const { value, selectionStart: start, selectionEnd: end } = area;
+    let edit: Edit | null = null;
+    if (e.key === "Tab") {
+      const unit = indentOf(value, grammar);
+      edit = e.shiftKey ? outdentEdit(value, start, end, unit) : tabEdit(value, start, end, unit);
+    } else if (e.key === "Enter" && !e.shiftKey) {
+      edit = enterEdit(value, start, end, indentOf(value, grammar), grammar);
+    }
+    if (!edit) return;
+    e.preventDefault();
+    // Nothing to do, as Shift-Tab on a line with no indent is. Inserting the same
+    // text would still be an edit for ⌘Z to walk back through.
+    if (edit.insert !== value.slice(edit.from, edit.to)) {
+      replaceText(area, edit.from, edit.to, edit.insert);
+    }
+    area.setSelectionRange(edit.start, edit.end);
+    report(area);
+  };
 
   const total = lines.length;
 
@@ -313,6 +359,8 @@ export function DocumentEditor({
           value={text}
           spellCheck={false}
           aria-label={path}
+          aria-description="Tab indents. Press Escape, then Tab, to leave the editor."
+          onKeyDown={onKeyDown}
           onChange={(e) => onChange?.(e.target.value)}
           onScroll={view}
           onSelect={(e) => report(e.currentTarget)}
@@ -332,6 +380,14 @@ export function DocumentEditor({
  * this exists for goes away. Forty is roughly one screen either side.
  */
 const OVERSCAN = 40;
+
+/**
+ * Characters past which a file isn't scanned whole on every edit.
+ *
+ * Measured on this repository's own source: about 30ms a scan at 1 MB, which is
+ * as much of a frame budget as a keystroke can give up, and 130ms at 4 MB.
+ */
+const SCAN_WHOLE = 1024 * 1024;
 
 /** Row height before anything has been measured. Only ever briefly true. */
 const DEFAULT_ROW = 20;

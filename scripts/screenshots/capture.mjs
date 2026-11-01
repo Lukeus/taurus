@@ -133,6 +133,8 @@ const SHOTS = [
   // tabs is laid out by the browser, which jsdom doesn't do.
   { name: "canvas-tabs", shot: "canvas-tabs", theme: "dark" },
   { name: "finder", shot: "finder", theme: "dark" },
+  // Colour read from the top of the file, not from the top of the screen.
+  { name: "canvas-code", shot: "canvas-code", theme: "dark" },
   // The notebook: both scopes in the list, one note open in the editor that
   // wraps. The only picture of the pane, and the only check of the prose editor
   // there is — jsdom measures nothing, so a mount test can prove the text is in

@@ -150,7 +150,7 @@ describe("a fence's language", () => {
     // list: one letter more and it is there.
     expect(notes.sql).toBeUndefined();
     expect(offered("```sq|")!.items.map((item) => [item.label, item.note])).toEqual([
-      ["sql", "plain text"],
+      ["sql", "colored"],
     ]);
   });
 

@@ -862,6 +862,11 @@ while you type, because context you can't see is behavior you can't explain.
 
 ### Typing in it
 
+In code, Tab indents and Shift-Tab outdents, using whichever indent the file
+already uses. With lines selected, both work on all of them. Enter keeps the
+current indent, and goes one level deeper after an opening bracket. To leave the
+editor from the keyboard, press Escape and then Tab.
+
 The editor takes edits and saves them itself about a second after you stop
 typing. There's no ⌘S and nothing to remember. That's not a convenience. The
 whole argument for the canvas is that you and Taurus are looking at the same

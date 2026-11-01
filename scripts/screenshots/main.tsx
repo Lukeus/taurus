@@ -42,6 +42,7 @@ import {
   GLOBAL_PROVIDERS,
   DOCUMENT,
   DOCUMENT_EVENTS,
+  CODE_DOCUMENT,
   LONG_DOCUMENT,
   DOCUMENT_PROMPT,
   MCP_ENVIRONMENT,
@@ -336,6 +337,7 @@ window.__TAURI_INTERNALS__ = {
     // The scrolled shot needs a file longer than the panel; every other canvas
     // shot is of the short one.
     if (cmd === "open_document" && shot === "canvas-scrolled") return LONG_DOCUMENT;
+    if (cmd === "open_document" && shot === "canvas-code") return CODE_DOCUMENT;
     // Each tab has to be its own file, or the row folds them into one.
     if (cmd === "open_document" && shot === "canvas-tabs") {
       return { ...DOCUMENT, path: (args as { path: string }).path };
@@ -541,7 +543,11 @@ requestAnimationFrame(() => {
       // the same way, and a week-old transcript flinging a file onto the
       // screen would be the app deciding where you are looking.
       ...(shot.startsWith("canvas")
-        ? { opening: { path: DOCUMENT.path, lines: { from: 15, to: 19 }, at: 1 } as never }
+        ? {
+            opening: (shot === "canvas-code"
+              ? { path: CODE_DOCUMENT.path, lines: null, at: 1 }
+              : { path: DOCUMENT.path, lines: { from: 15, to: 19 }, at: 1 }) as never,
+          }
         : {}),
       // Seeded rather than fetched, for the same reason the entries above are:
       // the list arrives from `refresh`, which the harness never calls, and
@@ -907,6 +913,17 @@ requestAnimationFrame(() => {
         area.scrollTop = 99 * Number.parseFloat(getComputedStyle(area).lineHeight);
         await until(() =>
           [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "100"),
+        );
+      },
+      // Scrolled into the middle of a docstring. The paint starts well below where
+      // it opened, so the colours are right only if the scan began at the top.
+      "canvas-code": async () => {
+        const area = (await until(() =>
+          document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        area.scrollTop = 79 * Number.parseFloat(getComputedStyle(area).lineHeight);
+        await until(() =>
+          [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "80"),
         );
       },
       // The finder, part way through a search. Real keys rather than state,

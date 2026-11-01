@@ -1077,6 +1077,16 @@ the backlog, and they're the minority.
   screen until one of those happens, because the window never lost focus. Saving
   is still safe: it compares fingerprints and refuses instead of overwriting.
   Watching the filesystem properly is a dependency and a lifetime to get right.
+- **Colors can be wrong in a file over 1 MB.** Up to that size the editor reads
+  the whole file for every edit, so a comment or string that opens above the
+  screen colors correctly. A larger file would lag on each keystroke (about 130 ms
+  at 4 MB), so it's colored from the top of the screen. A long comment you've
+  scrolled into can show the wrong way round. The text itself is never affected.
+- **Languages are colored, not understood.** C and C++, C#, Java, Kotlin, Swift,
+  Ruby, PHP, Lua, CSS, HTML and XML, SQL, Dockerfiles, Makefiles and config files
+  join the earlier set, but the coloring is a shared scanner, not a parser. HTML
+  gets comments and attribute values and not its tags, and a Lua `--[[` block
+  comment colors only its first line.
 - **The editor folds nothing, finds nothing, and has one cursor.** No code
   folding, no in-editor find-and-replace, no multiple cursors, no bracket
   matching. Each is a feature in its own right. The canvas shares its
