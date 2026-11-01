@@ -97,7 +97,7 @@ pub async fn run(host: &Host, command: PluginCommand) -> Result<ExitCode, String
                 if i > 0 {
                     println!();
                 }
-                print(&plugin.summary, trusted);
+                print(&plugin.summary, trusted, plugin.refuses());
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -109,7 +109,7 @@ pub async fn run(host: &Host, command: PluginCommand) -> Result<ExitCode, String
         } => {
             let summary = plugins::add(&from, git_ref.as_deref(), scope(project), ws)?;
             println!("Installed {} at {}.\n", summary.name, summary.root);
-            print(&summary, trust::is_trusted(&workspace));
+            print(&summary, trust::is_trusted(&workspace), false);
             println!("\n{}", next_step(&summary, &workspace));
             Ok(ExitCode::SUCCESS)
         }
@@ -138,7 +138,7 @@ pub async fn run(host: &Host, command: PluginCommand) -> Result<ExitCode, String
                 .map(|commit| format!(" at {}", short(commit)))
                 .unwrap_or_default();
             println!("Updated {name}{at}.\n");
-            print(&summary, trust::is_trusted(&workspace));
+            print(&summary, trust::is_trusted(&workspace), false);
             Ok(ExitCode::SUCCESS)
         }
 
@@ -164,7 +164,7 @@ pub async fn run(host: &Host, command: PluginCommand) -> Result<ExitCode, String
                 .canonicalize()
                 .map_err(|e| format!("{path}: {e}"))?;
             let plugin = plugins::load(&root, Scope::Global, None);
-            print(&plugin.summary, true);
+            print(&plugin.summary, true, plugin.refuses());
             if plugin.summary.problems.is_empty() {
                 println!("\nIt loads.");
                 Ok(ExitCode::SUCCESS)
@@ -176,18 +176,11 @@ pub async fn run(host: &Host, command: PluginCommand) -> Result<ExitCode, String
     }
 }
 
-/// One plugin, as a few lines.
-fn print(plugin: &PluginSummary, trusted: bool) {
-    let version = plugin
-        .version
-        .as_deref()
-        .map(|v| format!(" {v}"))
-        .unwrap_or_default();
-    let whose = match plugin.scope {
-        Scope::Global => "yours",
-        Scope::Workspace => "this project's",
-    };
-    let state = if !plugin.problems.is_empty() {
+/// What a listing says about whether a plugin is in force.
+fn state_of(plugin: &PluginSummary, trusted: bool, refuses: bool) -> &'static str {
+    if refuses {
+        "doesn't load, and refuses every prompt and tool call until that's dealt with"
+    } else if !plugin.problems.is_empty() {
         "doesn't load"
     } else if plugin.shadowed {
         "replaced by this project's plugin of the same name"
@@ -197,7 +190,21 @@ fn print(plugin: &PluginSummary, trusted: bool) {
         "on"
     } else {
         "off"
+    }
+}
+
+/// One plugin, as a few lines.
+fn print(plugin: &PluginSummary, trusted: bool, refuses: bool) {
+    let version = plugin
+        .version
+        .as_deref()
+        .map(|v| format!(" {v}"))
+        .unwrap_or_default();
+    let whose = match plugin.scope {
+        Scope::Global => "yours",
+        Scope::Workspace => "this project's",
     };
+    let state = state_of(plugin, trusted, refuses);
     println!("{}{version}  ({whose}, {state})", plugin.name);
     println!("  {}", plugin.root);
     if let Some(description) = &plugin.description {
@@ -253,4 +260,35 @@ fn next_step(plugin: &PluginSummary, workspace: &Path) -> String {
 
 fn short(commit: &str) -> &str {
     &commit[..commit.len().min(12)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plugin_that_refuses_says_so_in_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hooks.json"), "{,").unwrap();
+        let plugin = plugins::load(dir.path(), Scope::Global, None);
+        assert!(plugin.refuses());
+        let said = state_of(&plugin.summary, true, plugin.refuses());
+        assert!(
+            said.contains("refuses every prompt and tool call"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_broken_some_other_way_only_says_it_doesnt_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(dir.path().join(".claude-plugin/plugin.json"), "{,").unwrap();
+        let plugin = plugins::load(dir.path(), Scope::Global, None);
+        assert!(!plugin.refuses());
+        assert_eq!(
+            state_of(&plugin.summary, true, plugin.refuses()),
+            "doesn't load"
+        );
+    }
 }

@@ -47,6 +47,8 @@ export type AgentRun = {
 export type AgentTool = {
   /** The delegate's own call id. */
   call: string;
+  /** Which of its rounds made the call: on this list, what a batch of calls is. */
+  round?: number;
   name: string;
   preview: string;
   /** Absent on a run rebuilt from a transcript, which records no times. */
@@ -130,7 +132,13 @@ function apply(run: AgentRun, step: DelegateStep): AgentRun {
     case "tool_started": {
       const tools = [
         ...run.tools,
-        { call: step.call, name: step.name, preview: step.preview, startedAt: step.at },
+        {
+          call: step.call,
+          round: run.round,
+          name: step.name,
+          preview: step.preview,
+          startedAt: step.at,
+        },
       ];
       return {
         ...run,
@@ -140,9 +148,12 @@ function apply(run: AgentRun, step: DelegateStep): AgentRun {
     case "tool_finished":
       return {
         ...run,
-        tools: run.tools.map((tool) =>
-          tool.call === step.call ? { ...tool, ok: step.ok, endedAt: step.at } : tool,
-        ),
+        tools: (() => {
+          const at = answeringTool(run.tools, step.call);
+          return run.tools.map((tool, i) =>
+            i === at ? { ...tool, ok: step.ok, endedAt: step.at } : tool,
+          );
+        })(),
       };
     case "context":
       return { ...run, context: { used: step.used, window: step.window } };
@@ -189,4 +200,22 @@ export function currentTool(run: AgentRun | undefined): AgentTool | undefined {
     if (run.tools[i].ok === undefined) return run.tools[i];
   }
   return undefined;
+}
+
+/**
+ * The delegate's call a result for `id` answers, or -1: in the nearest round with
+ * a call under that id still unanswered, the earliest of them. The rule
+ * `answering` follows for the conversation's own cards. An id can repeat in a
+ * transcript, and one answer settles one call.
+ */
+export function answeringTool(tools: AgentRun["tools"], id: string): number {
+  const waiting = (i: number) => tools[i].call === id && tools[i].ok === undefined;
+  let at = tools.length - 1;
+  while (at >= 0 && !waiting(at)) at -= 1;
+  if (at < 0) return -1;
+  const round = tools[at].round;
+  for (let i = at - 1; i >= 0 && tools[i].round === round; i -= 1) {
+    if (waiting(i)) at = i;
+  }
+  return at;
 }

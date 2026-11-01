@@ -38,8 +38,8 @@ exactly where it stopped — and wrong when you're not. The pill beside Stop
 says which it is. Set it to **unattended** and anything needing a decision is
 refused instead of waiting, and a question card is skipped: the turn spends the
 night working and tells you in the morning what it couldn't do. Reloading the
-window answers what's on screen the same way: a permission prompt is refused, a
-question card is skipped, and the turn carries on from there.
+window answers nothing: a permission prompt comes back as soon as the page is up,
+and a question card is there when you reopen its conversation.
 
 It never allows anything extra. Whatever a standing grant already covers
 doesn't reach a prompt at all, so the only calls this changes are the ones

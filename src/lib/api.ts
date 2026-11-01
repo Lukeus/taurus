@@ -578,6 +578,9 @@ export const readSubagentTranscript = (sessionId: string, subagentId: string) =>
 export const deleteSession = (sessionId: string) =>
   invoke<void>("delete_session", { sessionId });
 
+/** Every prompt still waiting for an answer, oldest first. */
+export const pendingPermissions = () => invoke<PermissionRequest[]>("pending_permissions");
+
 export const respondPermission = (id: string, decision: PermissionDecision) =>
   invoke<void>("respond_permission", { response: { id, decision } });
 

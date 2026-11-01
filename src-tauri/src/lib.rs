@@ -215,9 +215,8 @@ pub fn run() {
                 // button left to stop it.
                 state.speaker.stop();
                 // The turns the old page started keep running, and the new page
-                // picks them up. What's withdrawn is the dialogs it was showing
-                // for them: nothing is left to answer those, and a turn parked on
-                // one holds its conversation. See `state::let_go_of_page`.
+                // picks them up, along with anything they're waiting to be asked.
+                // See `state::let_go_of_page`.
                 let state = state.inner().clone();
                 tauri::async_runtime::spawn(async move { state.page_replaced().await });
             }
@@ -300,6 +299,7 @@ pub fn run() {
             commands::switch_model,
             commands::edit_plan,
             commands::respond_permission,
+            commands::pending_permissions,
             commands::answer_questions,
             commands::list_permission_rules,
             commands::once_allowed_rules,

@@ -17,14 +17,16 @@ pub mod stream;
 
 pub use error::{brief, ProviderError, Result};
 pub use message::{
-    anthropic_signature, gemini_signature, is_openai_reasoning, relocated_note, replay_input,
-    with_unique_tool_ids, ContentBlock, Message, Role, ToolOutput, ToolResultBlock,
+    anthropic_signature, gemini_signature, is_openai_reasoning, pair_tool_results, relocated_note,
+    replay_input, with_unique_tool_ids, ContentBlock, Message, Role, ToolOutput, ToolResultBlock,
     GEMINI_THOUGHT_PREFIX, OPENAI_REASONING_PREFIX,
 };
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
 pub use request::{ChatRequest, ToolDef};
-pub use stream::{ModelSpend, Spend, StopReason, StreamAccumulator, StreamEvent, TokenUsage};
+pub use stream::{
+    ModelSpend, Spend, StopReason, StreamAccumulator, StreamEvent, TokenUsage, ToolIds,
+};
 
 /// Fresh tool-call id. Used by adapters whose wire format omits one.
 pub fn new_tool_use_id() -> String {

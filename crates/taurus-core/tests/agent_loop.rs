@@ -3653,3 +3653,275 @@ async fn a_transcript_that_reused_a_tool_id_is_sent_with_unique_ones() {
         "the session itself is left as it was"
     );
 }
+
+/// Every call id in a history, with its input, oldest first.
+fn calls_in(session: &Session) -> Vec<(String, serde_json::Value)> {
+    session
+        .messages
+        .iter()
+        .flat_map(Message::tool_uses)
+        .map(|(id, _, input)| (id.to_string(), input.clone()))
+        .collect()
+}
+
+fn results_in(session: &Session) -> Vec<String> {
+    session
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_provider_reusing_an_id_across_rounds_and_in_one_response_gets_distinct_calls() {
+    let read = |path: &str| serde_json::json!({ "path": path });
+    let h = harness(vec![
+        ScriptedTurn::tool_call("x", "read_file", read("a")),
+        ScriptedTurn::tool_calls(vec![
+            ("x", "read_file", read("b")),
+            ("x", "read_file", read("c")),
+        ]),
+        ScriptedTurn::text("done"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "go").await;
+    outcome.unwrap();
+
+    let calls = calls_in(&session);
+    let paths: Vec<&str> = calls
+        .iter()
+        .map(|(_, i)| i["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["a", "b", "c"], "fragments stay with their call");
+    assert_eq!(calls[0].0, "x", "an id not yet used is the provider's own");
+    let ids: std::collections::HashSet<&String> = calls.iter().map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 3, "{calls:?}");
+
+    // The results and the screen go by the same ids.
+    let stored: Vec<String> = calls.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(results_in(&session), stored);
+    let started: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::ToolCallStarted { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started, stored);
+}
+
+#[tokio::test]
+async fn an_id_taken_by_compacted_history_stays_taken() {
+    let h = harness(vec![
+        ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "a" })),
+        ScriptedTurn::text("done"),
+        ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "b" })),
+        ScriptedTurn::text("done"),
+    ]);
+    let mut session = Session::new("fake");
+    run(&h, &mut session, "first").await.0.unwrap();
+    // What a compaction leaves: the call is gone from the list, not the transcript.
+    let count = session.messages.len();
+    session.summarize_front(count, Message::user("Summary."));
+    run(&h, &mut session, "second").await.0.unwrap();
+
+    let calls = calls_in(&session);
+    assert_eq!(calls.len(), 1);
+    assert_ne!(calls[0].0, "x");
+}
+
+#[tokio::test]
+async fn a_retry_after_a_partial_call_keeps_the_arguments_on_one_new_id() {
+    // Cut off inside its arguments, with no close: nothing to keep.
+    let partial = vec![
+        StreamEvent::ToolUseStart {
+            id: "x".into(),
+            name: "read_file".into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            id: "x".into(),
+            json: "{\"pa".into(),
+        },
+    ];
+    let h = harness_with(
+        vec![
+            ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "a" })),
+            ScriptedTurn::transient_failure_after(partial),
+            ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "b" })),
+            ScriptedTurn::text("done"),
+        ],
+        Box::new(AllowAll),
+        AgentConfig {
+            retry_backoff: std::time::Duration::ZERO,
+            ..Default::default()
+        },
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "go").await;
+    outcome.unwrap();
+
+    let calls = calls_in(&session);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[1].1["path"], "b");
+    assert_ne!(calls[1].0, "x");
+    assert_eq!(results_in(&session)[1], calls[1].0);
+}
+
+/// Notes the call each delegate's transcript was opened for.
+#[derive(Default)]
+struct OpenedFor(std::sync::Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl taurus_core::SubagentRecorder for OpenedFor {
+    async fn open(
+        &self,
+        _agent_type: &str,
+        _child: &Session,
+        call: Option<&str>,
+    ) -> Option<Arc<dyn TurnRecorder>> {
+        self.0.lock().unwrap().push(call.unwrap_or_default().into());
+        None
+    }
+}
+
+#[tokio::test]
+async fn two_delegations_at_once_under_one_id_stay_apart_end_to_end() {
+    let task = |n: u32| {
+        serde_json::json!({
+            "agent_type": "explorer",
+            "prompt": format!("Look through the workspace and report finding number {n}."),
+        })
+    };
+    let provider = FakeProvider::new(vec![ScriptedTurn::tool_calls(vec![
+        ("x", taurus_core::SPAWN_TOOL, task(1)),
+        ("x", taurus_core::SPAWN_TOOL, task(2)),
+    ])]);
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let opened = Arc::new(OpenedFor::default());
+    let shared = Arc::new(tokio::sync::RwLock::new(ToolRegistry::with_builtins()));
+    let spawn = taurus_core::SpawnSubagent::new(provider.clone(), shared, "fake", 2)
+        .with_recorder(opened.clone());
+    let mut registry = ToolRegistry::with_builtins();
+    registry.register(Arc::new(spawn));
+    let agent = Agent::new(
+        provider,
+        registry,
+        ToolContext::new(workspace, permissions, cancel),
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(4096);
+    agent
+        .run_turn(&mut session, Message::user("go"), tx)
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+
+    let stored: Vec<String> = calls_in(&session).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(stored.len(), 2);
+    assert_ne!(stored[0], stored[1]);
+    let sorted = |mut ids: Vec<String>| {
+        ids.sort();
+        ids
+    };
+    let want = sorted(stored.clone());
+
+    let of = |pick: &dyn Fn(&UiEvent) -> Option<String>| -> Vec<String> {
+        sorted(events.iter().filter_map(pick).collect())
+    };
+    assert_eq!(
+        of(&|e| match e {
+            UiEvent::ToolCallStarted { id, .. } => Some(id.clone()),
+            _ => None,
+        }),
+        want
+    );
+    assert_eq!(
+        of(&|e| match e {
+            UiEvent::ToolCallFinished { id, .. } => Some(id.clone()),
+            _ => None,
+        }),
+        want
+    );
+    assert_eq!(
+        of(&|e| match e {
+            UiEvent::DelegateReport { id, .. } => Some(id.clone()),
+            _ => None,
+        }),
+        want
+    );
+    assert_eq!(
+        of(&|e| match e {
+            UiEvent::DelegateActivity {
+                id,
+                step: taurus_tools::DelegateStep::Started { .. },
+            } => Some(id.clone()),
+            _ => None,
+        }),
+        want
+    );
+    // At once: both were under way before either reported.
+    let first_report = events
+        .iter()
+        .position(|e| matches!(e, UiEvent::DelegateReport { .. }))
+        .unwrap();
+    let started_before = events[..first_report]
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                UiEvent::DelegateActivity {
+                    step: taurus_tools::DelegateStep::Started { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(started_before, 2);
+
+    assert_eq!(sorted(results_in(&session)), want);
+    assert_eq!(sorted(opened.0.lock().unwrap().clone()), want);
+}
+
+#[tokio::test]
+async fn an_id_in_a_reopened_conversation_is_taken() {
+    // Nothing but the loaded history knows about this call.
+    let h = harness(vec![
+        ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "b" })),
+        ScriptedTurn::text("done"),
+    ]);
+    let mut session = Session::new("fake");
+    session.push(Message::new(
+        Role::Assistant,
+        vec![ContentBlock::tool_use(
+            "x",
+            "read_file",
+            serde_json::json!({ "path": "a" }),
+        )],
+    ));
+    session.push(Message::new(
+        Role::User,
+        vec![ContentBlock::tool_result("x", "of a")],
+    ));
+    run(&h, &mut session, "go").await.0.unwrap();
+
+    let calls = calls_in(&session);
+    assert_eq!(calls[0].0, "x", "old history stays as it is");
+    assert_ne!(calls[1].0, "x");
+}

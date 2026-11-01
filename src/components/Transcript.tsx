@@ -22,6 +22,7 @@ import { duration, plural } from "../lib/format";
 import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
 import { useStore, type Entry } from "../state/store";
+import { hooksFileIn } from "../lib/hooksFile";
 import { turnText, useSpeech } from "../state/speech";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -899,9 +900,18 @@ const EntryView = memo(function EntryView({
           </div>
         );
       }
+      const hooksFile = hooksFileIn(entry.text);
       return (
         <div className={`notice ${entry.tone}`}>
           <span className="notice-text">{entry.text}</span>
+          {/* A broken hooks file refuses the prompt before a turn can start, so
+              this is where the refusal lands. It says to fix the file, and the
+              model can't. */}
+          {hooksFile && onOpenDocument && (
+            <button className="notice-retry" onClick={() => onOpenDocument(hooksFile, null)}>
+              Open hooks.json
+            </button>
+          )}
           {/* In the failure rather than under it. What went wrong and what to
               do about it are one thought, and a provider that stopped
               answering is the commonest way a turn ends here — the alternative
@@ -1232,10 +1242,10 @@ function DelegateLive({ id }: { id: string }) {
       <p className="run-agent-meta">{meta.join(" · ")}</p>
       {run.tools.length > 0 && (
         <ul className="run-substeps run-agent-calls">
-          {run.tools.slice(-MAX_VISIBLE_SUBSTEPS).map((tool) => {
+          {run.tools.slice(-MAX_VISIBLE_SUBSTEPS).map((tool, i) => {
             const mark = tool.ok === undefined ? "running" : tool.ok ? "ok" : "failed";
             return (
-              <li key={tool.call} data-state={mark}>
+              <li key={`${i}-${tool.call}`} data-state={mark}>
                 <span className="run-agent-mark" aria-label={mark}>
                   {CALL_MARK[mark]}
                 </span>{" "}

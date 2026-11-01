@@ -2367,10 +2367,10 @@ async fn a_plugin_switched_off_between_turns_takes_its_hooks_with_it() {
 
 #[tokio::test]
 async fn a_plugin_waiting_on_a_file_it_names_loads_when_the_file_appears() {
-    // A manifest naming a hooks file that is not there is a problem, and a
-    // plugin with a problem does not load. None of the files that load read
-    // changes when the missing one is written, so it is watched where it
-    // would appear.
+    // A manifest naming a hooks file that is not there is a problem, and until
+    // it's sorted the plugin refuses, since the file may hold a guard. None of
+    // the files that load read changes when the missing one is written, so it
+    // is watched where it would appear.
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
@@ -2380,8 +2380,10 @@ async fn a_plugin_waiting_on_a_file_it_names_loads_when_the_file_appears() {
     plugin_with_a_hook(&root, "guard", r#", "hooks": "./more/hooks.json""#);
     host.reload().await;
     assert!(
-        hook_names(&host).await.is_empty(),
-        "it loaded without the file"
+        host.hooks()
+            .await
+            .has(taurus_hooks::HookEvent::UserPromptSubmit),
+        "it has to refuse without the file"
     );
 
     std::fs::create_dir_all(root.join("more")).unwrap();
@@ -2394,6 +2396,10 @@ async fn a_plugin_waiting_on_a_file_it_names_loads_when_the_file_appears() {
 
     let names = hook_names(&host).await;
     assert!(names.contains(&"guard:format".to_string()), "{names:?}");
+    assert!(!host
+        .hooks()
+        .await
+        .has(taurus_hooks::HookEvent::UserPromptSubmit));
 }
 
 #[tokio::test]
@@ -4208,4 +4214,391 @@ async fn an_otlp_endpoint_has_to_be_an_http_address() {
     assert_eq!(host.settings().await.otlp_endpoint, "http://localhost:4318");
     host.set_otlp_endpoint("").await.unwrap();
     assert_eq!(host.settings().await.otlp_endpoint, "");
+}
+
+/// The way out of a `hooks.json` that refuses everything: the canvas opens and
+/// saves it, since a refusal stops the model and not a person, and the next
+/// message reads the fix with no restart.
+async fn a_broken_hooks_file_can_be_fixed_in_the_app(host: &Host, file: &Path) {
+    use taurus_hooks::HookEvent;
+    host.reload_local().await;
+    let runner = host.hooks().await;
+    assert!(runner.has(HookEvent::PreToolUse));
+    assert!(runner.has(HookEvent::UserPromptSubmit));
+    assert!(
+        host.hook_summaries().await.is_empty(),
+        "no hook anybody wrote"
+    );
+    assert!(host.hook_list().await.is_empty(), "nothing to switch");
+    let problems = host.problems_from(&[ProblemSource::Hooks]).await;
+    assert!(
+        problems.iter().any(|p| p.message.contains("hooks.json")),
+        "{problems:?}"
+    );
+
+    let path = file.display().to_string();
+    let document = host.open_document(&path).await.unwrap();
+    let fixed = r#"{"hooks":{"a":{"on":"stop","command":"true"}}}"#;
+    let saved = host
+        .save_document(&path, fixed, &document.fingerprint)
+        .await
+        .unwrap();
+    assert!(matches!(saved, Saved::Written { .. }), "{saved:?}");
+
+    assert!(host.refresh_config().await, "the fix is noticed");
+    let runner = host.hooks().await;
+    assert!(!runner.has(HookEvent::PreToolUse));
+    assert!(!runner.has(HookEvent::UserPromptSubmit));
+    assert_eq!(host.hook_summaries().await.len(), 1);
+    assert!(host.problems_from(&[ProblemSource::Hooks]).await.is_empty());
+}
+
+const BROKEN_HOOKS: &str = "{\"hooks\":{\"a\":{\"on\":\"stop\",\"command\":\"true\"},}}";
+
+#[tokio::test]
+async fn your_broken_hooks_file_refuses_and_can_be_fixed_without_a_restart() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+    let file = taurus_hooks::config_file(&config::home_dir());
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, BROKEN_HOOKS).unwrap();
+    a_broken_hooks_file_can_be_fixed_in_the_app(&host, &file).await;
+}
+
+#[tokio::test]
+async fn a_projects_broken_hooks_file_refuses_and_can_be_fixed_without_a_restart() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let (host, _home) = host(&root);
+    host.trust_workspace().await.unwrap();
+    let file = taurus_hooks::config_file(&config::workspace_dir(&root));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, BROKEN_HOOKS).unwrap();
+    a_broken_hooks_file_can_be_fixed_in_the_app(&host, &file).await;
+}
+
+/// A plugin of your own whose hooks file has a syntax error, loaded, refusing.
+async fn refused_by_a_broken_plugin(host: &Host) -> PathBuf {
+    use taurus_hooks::HookEvent;
+    let root = crate::plugins::dir(Scope::Global, None)
+        .unwrap()
+        .join("kit");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("hooks.json"), "{\"hooks\":{,}}").unwrap();
+    host.reload_local().await;
+    let runner = host.hooks().await;
+    assert!(runner.has(HookEvent::PreToolUse));
+    assert!(runner.has(HookEvent::UserPromptSubmit));
+    assert!(
+        host.hook_summaries().await.is_empty(),
+        "nothing anybody wrote"
+    );
+    assert!(host.hook_list().await.is_empty(), "nothing to switch");
+    let problems = host.problems_from(&[ProblemSource::Hooks]).await;
+    assert!(
+        problems.iter().any(|p| p.message.contains("\"kit\"")),
+        "{problems:?}"
+    );
+    root
+}
+
+/// No refusal left, and no problem saying so, after a refresh with no restart.
+async fn no_longer_refused(host: &Host) {
+    use taurus_hooks::HookEvent;
+    assert!(host.refresh_config().await, "the change is noticed");
+    let runner = host.hooks().await;
+    assert!(!runner.has(HookEvent::PreToolUse));
+    assert!(!runner.has(HookEvent::UserPromptSubmit));
+    assert!(host.problems_from(&[ProblemSource::Hooks]).await.is_empty());
+}
+
+#[tokio::test]
+async fn switching_a_broken_plugin_off_lifts_the_refusal_without_a_restart() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+    refused_by_a_broken_plugin(&host).await;
+    crate::plugins::set_enabled("kit", Scope::Global, Some(workspace.path()), false).unwrap();
+    no_longer_refused(&host).await;
+}
+
+#[tokio::test]
+async fn removing_a_broken_plugin_lifts_the_refusal_without_a_restart() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+    refused_by_a_broken_plugin(&host).await;
+    crate::plugins::remove("kit", Scope::Global, Some(workspace.path())).unwrap();
+    no_longer_refused(&host).await;
+}
+
+#[tokio::test]
+async fn fixing_a_broken_plugin_in_the_canvas_lifts_the_refusal_without_a_restart() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+    let root = refused_by_a_broken_plugin(&host).await;
+
+    let path = root.join("hooks.json").display().to_string();
+    let document = host.open_document(&path).await.unwrap();
+    let saved = host
+        .save_document(&path, r#"{"hooks":{}}"#, &document.fingerprint)
+        .await
+        .unwrap();
+    assert!(matches!(saved, Saved::Written { .. }), "{saved:?}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("hooks.json")).unwrap(),
+        r#"{"hooks":{}}"#
+    );
+    no_longer_refused(&host).await;
+}
+
+#[tokio::test]
+async fn a_fetched_plugins_broken_hooks_file_wont_open_in_the_canvas() {
+    let workspace = TempDir::new().unwrap();
+    let (host, _home) = host(workspace.path());
+    let root = refused_by_a_broken_plugin(&host).await;
+    std::fs::write(
+        root.join(crate::plugins::SOURCE_FILE),
+        r#"{"from": "somewhere"}"#,
+    )
+    .unwrap();
+    let path = root.join("hooks.json").display().to_string();
+    assert!(host.open_document(&path).await.is_err());
+}
+
+/* ---------------------------------- what Taurus writes under a running command */
+
+/// A workspace with a grant for `./x.sh`, a script that waits for a file named
+/// `go`. So [`command_running`] has a grant-covered command in progress for as
+/// long as a test wants, watched the way any such command is.
+#[cfg(unix)]
+fn granted_workspace() -> (TempDir, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join(".taurus")).unwrap();
+    std::fs::write(
+        root.join(".taurus/permissions.json"),
+        r#"{"allowed": ["run_command:./x.sh"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("x.sh"),
+        "#!/bin/sh\ntouch started\nwhile [ ! -e go ]; do sleep 0.02; done\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(root.join("x.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    (dir, root)
+}
+
+#[cfg(unix)]
+async fn command_running(host: &Host, root: &Path) -> tokio::task::JoinHandle<String> {
+    let registry = host.registry.read().await.clone();
+    let ctx = host.tool_context(CancellationToken::new()).await;
+    let running = tokio::spawn(async move {
+        registry
+            .execute(
+                "run_command",
+                serde_json::json!({"command": "./x.sh"}),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_string()
+    });
+    for _ in 0..1000 {
+        if root.join("started").exists() {
+            return running;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the command never started");
+}
+
+/// Lets the command end, and answers with what it reported.
+#[cfg(unix)]
+async fn command_ended(root: &Path, running: tokio::task::JoinHandle<String>) -> String {
+    std::fs::write(root.join("go"), "").unwrap();
+    running.await.unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_edit_from_another_program_under_a_running_command_is_undone() {
+    // The other half of the tests below, and what makes them mean something:
+    // the watch is live, and only Taurus's own writes get past it.
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    let running = command_running(&host, &root).await;
+    let file = root.join(".taurus/hooks.json");
+    std::fs::write(&file, r#"{"hooks":{}}"#).unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert!(!file.exists(), "{said}");
+    assert!(said.contains("hooks.json"), "{said}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_settings_edit_under_a_running_command_stands() {
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    let hooks = root.join(".taurus/hooks.json");
+    std::fs::write(&hooks, r#"{"hooks":{"h":{"on":"stop","command":"true"}}}"#).unwrap();
+    let running = command_running(&host, &root).await;
+
+    host.set_hook("h", Scope::Workspace, false).await.unwrap();
+    host.set_hook("h", Scope::Global, false).await.unwrap();
+    let server: taurus_mcp::ServerConfig =
+        serde_json::from_value(serde_json::json!({"command": "true"})).unwrap();
+    config::save_mcp_server(Scope::Workspace, Some(&root), "one", &server).unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert!(
+        std::fs::read_to_string(&hooks)
+            .unwrap()
+            .contains("\"disabled\": true"),
+        "{said}"
+    );
+    assert!(
+        std::fs::read_to_string(taurus_hooks::config_file(&config::home_dir()))
+            .unwrap()
+            .contains("\"disabled\": true"),
+        "{said}"
+    );
+    assert!(root.join(".taurus/mcp.json").exists(), "{said}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_canvas_save_under_a_running_command_stands() {
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    let file = root.join(".taurus/mcp.json");
+    std::fs::write(&file, "{\"mcpServers\":{}}\n").unwrap();
+    let running = command_running(&host, &root).await;
+
+    let path = ".taurus/mcp.json";
+    let document = host.open_document(path).await.unwrap();
+    let saved = "{\"mcpServers\":{ }}\n";
+    host.save_document(path, saved, &document.fingerprint)
+        .await
+        .unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "{said}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plugin_added_under_a_running_command_stands() {
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    let source = TempDir::new().unwrap();
+    let running = command_running(&host, &root).await;
+
+    let manifest = source.path().join(".claude-plugin");
+    std::fs::create_dir_all(&manifest).unwrap();
+    std::fs::write(manifest.join("plugin.json"), r#"{"name": "kit"}"#).unwrap();
+    crate::plugins::add(
+        source.path().to_str().unwrap(),
+        None,
+        Scope::Workspace,
+        Some(&root),
+    )
+    .unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert!(
+        root.join(".taurus/plugins/kit/.claude-plugin/plugin.json")
+            .exists(),
+        "{said}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plugin_removed_under_a_running_command_stays_removed() {
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    crate::plugins::scaffold("kit", "", Scope::Workspace, Some(&root)).unwrap();
+    let running = command_running(&host, &root).await;
+
+    crate::plugins::remove("kit", Scope::Workspace, Some(&root)).unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert!(!root.join(".taurus/plugins/kit").exists(), "{said}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plugin_made_under_a_running_command_stands() {
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    let running = command_running(&host, &root).await;
+
+    crate::plugins::scaffold("kit", "", Scope::Workspace, Some(&root)).unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert!(root.join(".taurus/plugins/kit/skills").exists(), "{said}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plugin_updated_under_a_running_command_stands() {
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    let source = TempDir::new().unwrap();
+    let manifest = source.path().join(".claude-plugin");
+    std::fs::create_dir_all(&manifest).unwrap();
+    let version = |v: &str| {
+        std::fs::write(
+            manifest.join("plugin.json"),
+            format!(r#"{{"name": "kit", "version": "{v}"}}"#),
+        )
+        .unwrap();
+    };
+    version("1.0.0");
+    crate::plugins::add(
+        source.path().to_str().unwrap(),
+        None,
+        Scope::Workspace,
+        Some(&root),
+    )
+    .unwrap();
+    let running = command_running(&host, &root).await;
+
+    version("2.0.0");
+    crate::plugins::update("kit", Scope::Workspace, Some(&root)).unwrap();
+
+    let said = command_ended(&root, running).await;
+    let text = std::fs::read_to_string(root.join(".taurus/plugins/kit/.claude-plugin/plugin.json"))
+        .unwrap();
+    assert!(text.contains("2.0.0"), "{said}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_skill_saved_into_a_project_plugin_under_a_running_command_stands() {
+    use taurus_skills::proposal::{SaveTarget, SkillProposal};
+    let (_dir, root) = granted_workspace();
+    let (host, _home) = host(&root);
+    crate::plugins::scaffold("kit", "", Scope::Workspace, Some(&root)).unwrap();
+    host.reload_local().await;
+    let running = command_running(&host, &root).await;
+
+    let draft = SkillProposal::new(
+        "cut-release",
+        "Cuts a release",
+        "When a release is asked for",
+        "Run the release script, then tag the commit it printed and push the tag.",
+    );
+    host.create_skill(&draft, SaveTarget::Project, Some("kit"))
+        .await
+        .unwrap();
+
+    let said = command_ended(&root, running).await;
+    assert!(
+        root.join(".taurus/plugins/kit/skills/cut-release/SKILL.md")
+            .exists(),
+        "{said}"
+    );
 }

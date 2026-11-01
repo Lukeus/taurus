@@ -45,7 +45,20 @@ pub async fn rewind_to(
     let store = state.host.checkpoints_for(&workspace);
     let rewind = {
         let session_id = session_id.clone();
-        off_runtime(move || store.rewind(&session_id, &workspace, turn, dry_run)).await?
+        off_runtime(move || {
+            let rewind = store.rewind(&session_id, &workspace, turn, dry_run)?;
+            // A file put back can be one a running command is watched against,
+            // and this isn't that command.
+            if !dry_run {
+                for restored in &rewind.restored {
+                    taurus_tools::protected::written_by_this_process(
+                        &workspace.join(restored.path()),
+                    );
+                }
+            }
+            Ok(rewind)
+        })
+        .await?
     };
 
     // The checklist is working state, and rewinding is undoing the work it

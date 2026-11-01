@@ -200,6 +200,11 @@ struct Job {
     diffed: Mutex<Option<Diffed>>,
     /// Files something else recorded while this ran. See [`Jobs::claim`].
     claimed: Mutex<HashSet<String>>,
+    /// What the look at the protected files found when this exited. See
+    /// [`crate::protected`].
+    repaired: Mutex<Option<String>>,
+    /// Whether the model has been told, by a check or by the next tool call.
+    repair_told: std::sync::atomic::AtomicBool,
 }
 
 /// What makes a background command undoable: the workspace as it stood when
@@ -330,7 +335,19 @@ impl Jobs {
     /// The child is moved rather than shared: one owner may wait on it, and
     /// stopping goes through [`Job::stop`] so that owner is the only one that
     /// ever reaps it.
-    pub fn adopt(&self, command: String, mut child: Tree, before: Option<Before>) -> u32 {
+    pub fn adopt(&self, command: String, child: Tree, before: Option<Before>) -> u32 {
+        self.adopt_watched(command, child, before, None)
+    }
+
+    /// [`Self::adopt`], with the call's place in the look at the protected files,
+    /// which is spent when the command exits.
+    pub(crate) fn adopt_watched(
+        &self,
+        command: String,
+        mut child: Tree,
+        before: Option<Before>,
+        ticket: Option<crate::protected::Ticket>,
+    ) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Arc::new(Job {
             id,
@@ -343,6 +360,8 @@ impl Jobs {
             sweep: Mutex::new(before),
             diffed: Mutex::new(None),
             claimed: Mutex::new(HashSet::new()),
+            repaired: Mutex::new(None),
+            repair_told: std::sync::atomic::AtomicBool::new(false),
         });
         self.jobs.lock().unwrap().insert(id, job.clone());
         self.forget_finished();
@@ -385,6 +404,15 @@ impl Jobs {
             // it with this command's pre-image. Before the outcome is
             // published, so a reap that sees the command finished also finds
             // what it changed.
+            if let Some(ticket) = ticket {
+                let printed = job.output.lock().unwrap().tail.text.clone();
+                let about = ticket.about_output(&printed);
+                let found = ticket.finish().await;
+                let notes: Vec<String> = about.into_iter().chain(found).collect();
+                if !notes.is_empty() {
+                    *job.repaired.lock().unwrap() = Some(notes.join(" "));
+                }
+            }
             let before = job.sweep.lock().unwrap().take();
             if let Some(Before { sweep, workspace }) = before {
                 let diffed = sweep.diff(&workspace).await;
@@ -434,6 +462,10 @@ impl Jobs {
             report.push_str(&format!(
                 "\n[{missed} bytes of earlier output dropped; check more often to keep up]"
             ));
+        }
+        if let Some(note) = job.repaired.lock().unwrap().as_ref() {
+            job.repair_told.store(true, Ordering::Relaxed);
+            report.push_str(&format!("\n[taurus] {note}"));
         }
         report.push('\n');
         if text.trim().is_empty() {
@@ -504,6 +536,18 @@ impl Jobs {
             }
         }
         warnings
+    }
+
+    /// What finished commands' looks found that the model hasn't been told yet.
+    pub(crate) fn repairs(&self) -> Vec<String> {
+        self.all()
+            .iter()
+            .filter(|job| job.outcome.lock().unwrap().is_some())
+            .filter_map(|job| {
+                let note = job.repaired.lock().unwrap().clone()?;
+                (!job.repair_told.swap(true, Ordering::Relaxed)).then_some(note)
+            })
+            .collect()
     }
 
     /// Tells every command still running that `files` have been recorded by
@@ -669,7 +713,11 @@ impl Job {
                 .map_or_else(|| self.started.elapsed(), |o| o.ran_for)
                 .as_secs()
                 .min(u32::MAX as u64) as u32,
-            status: say(&outcome, self.started),
+            // Said in the sentence the dock draws, for as long as the row is there.
+            status: match self.repaired.lock().unwrap().as_ref() {
+                Some(note) => format!("{} — {note}", say(&outcome, self.started)),
+                None => say(&outcome, self.started),
+            },
         }
     }
 }
@@ -981,6 +1029,8 @@ mod tests {
             sweep: Mutex::new(None),
             diffed: Mutex::new(None),
             claimed: Mutex::new(HashSet::new()),
+            repaired: Mutex::new(None),
+            repair_told: std::sync::atomic::AtomicBool::new(false),
         });
         jobs.jobs.lock().unwrap().insert(id, job);
         id
@@ -1226,6 +1276,8 @@ mod tests {
             sweep: Mutex::new(None),
             diffed: Mutex::new(None),
             claimed: Mutex::new(HashSet::new()),
+            repaired: Mutex::new(None),
+            repair_told: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

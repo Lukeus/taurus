@@ -178,10 +178,30 @@ fn global_offerable(effect: Effect) -> bool {
     effect != Effect::Execute
 }
 
+/// How a call got past the gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cleared {
+    /// It only reads, and nothing asks about those.
+    Reads,
+    /// A standing grant or something declared ahead of time covered it, so
+    /// nobody looked at this call.
+    Standing,
+    /// Somebody answered yes to this call.
+    Approved,
+}
+
 /// Implemented by the UI layer. The agent loop blocks on this.
 #[async_trait]
 pub trait PermissionPrompt: Send + Sync {
     async fn request(&self, request: PermissionRequest) -> PermissionDecision;
+
+    /// Whether a yes to this call would come from something decided ahead of
+    /// time rather than from somebody looking at it, like a flag on the command
+    /// line. A call let through this way is treated as a standing grant is: see
+    /// [`Cleared`].
+    fn declared_ahead(&self, _request: &PermissionRequest) -> bool {
+        false
+    }
 }
 
 /// Denies everything without asking. Used for headless runs and in tests where
@@ -273,6 +293,10 @@ pub struct PermissionEngine {
     ///
     /// [`check`]: Self::check
     once: Mutex<HashMap<String, BTreeSet<String>>>,
+    /// Command lines a standing grant won't cover the next time they run,
+    /// because the last time they changed something that had to be undone.
+    /// That's what makes "run it again and approve it" possible at all.
+    ask_next: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl PermissionEngine {
@@ -294,6 +318,7 @@ impl PermissionEngine {
             allowlists: Mutex::new(allowlists),
             workspace_rules: true,
             once: Mutex::new(HashMap::new()),
+            ask_next: std::sync::Mutex::default(),
         }
     }
 
@@ -322,7 +347,7 @@ impl PermissionEngine {
         tool: &dyn Tool,
         input: &serde_json::Value,
         asking: &Asking,
-    ) -> Result<(), ToolError> {
+    ) -> Result<Cleared, ToolError> {
         let touched: Vec<PathBuf> = if tool.effect() == Effect::Write {
             tool.touches(input)
                 .iter()
@@ -345,12 +370,24 @@ impl PermissionEngine {
         input: &serde_json::Value,
         touched: &[PathBuf],
         asking: &Asking,
-    ) -> Result<(), ToolError> {
+    ) -> Result<Cleared, ToolError> {
         if tool.effect() == Effect::Read {
-            return Ok(());
+            return Ok(Cleared::Reads);
         }
 
-        let keys = keys_for(tool, input, touched, &self.workspace);
+        let mut keys = keys_for(tool, input, touched, &self.workspace);
+        if tool.effect() == Effect::Execute {
+            if let Some(line) = input.get("command").and_then(|c| c.as_str()) {
+                let again = self
+                    .ask_next
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(line);
+                if again {
+                    keys.beyond = keys.beyond.or(Some(UNDONE_LAST_TIME));
+                }
+            }
+        }
         // A chained command is covered when every program it runs is, and the
         // prompt offers only the ones that are not. A command that does
         // something no program name can stand for — substitutes a command
@@ -366,7 +403,7 @@ impl PermissionEngine {
                 .collect()
         };
         if keys.beyond.is_none() && missing.is_empty() {
-            return Ok(());
+            return Ok(Cleared::Standing);
         }
 
         // Neither grant in an untrusted workspace, not just the one with no
@@ -422,6 +459,7 @@ impl PermissionEngine {
             )));
         }
 
+        let declared = self.prompt.declared_ahead(&request);
         let scope = match self.prompt.request(request).await {
             PermissionDecision::AllowOnce => {
                 // Remembered only where "always" was on offer: what could not
@@ -434,26 +472,43 @@ impl PermissionEngine {
                         .or_default()
                         .extend(missing);
                 }
-                return Ok(());
+                return Ok(if declared {
+                    Cleared::Standing
+                } else {
+                    Cleared::Approved
+                });
             }
             PermissionDecision::Deny => return Err(ToolError::Denied),
             // A workspace grant with no workspace layer to keep it in is
             // honored for this call and not written down. Narrowing rather than
             // refusing: the user said yes to the call in front of them, and
             // only the standing part of it has nowhere to go.
-            PermissionDecision::AllowAlways if !offer_workspace => return Ok(()),
+            PermissionDecision::AllowAlways if !offer_workspace => return Ok(Cleared::Approved),
             PermissionDecision::AllowAlways => Scope::Workspace,
             PermissionDecision::AllowAlwaysGlobal if offer_global => Scope::Global,
             // A frontend that offered a global grant where one was not on
             // offer gets the narrower decision honored, never the wider one.
             PermissionDecision::AllowAlwaysGlobal if offer_workspace => Scope::Workspace,
-            PermissionDecision::AllowAlwaysGlobal => return Ok(()),
+            PermissionDecision::AllowAlwaysGlobal => return Ok(Cleared::Approved),
         };
 
         let mut lists = self.allowlists.lock().await;
         lists.layer(scope).allowed.extend(missing);
         self.save(scope, lists.layer(scope));
-        Ok(())
+        Ok(Cleared::Approved)
+    }
+
+    /// Asks about `line` the next time it runs, whatever grants cover it.
+    pub(crate) fn ask_next_time(&self, line: &str) {
+        self.ask_next
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(line.to_string());
+    }
+
+    /// The config home, which holds the global `permissions.json`.
+    pub(crate) fn config_home(&self) -> &Path {
+        &self.global
     }
 
     /// What `session` has allowed once and could make standing: every rule it
@@ -534,6 +589,7 @@ impl PermissionEngine {
             return;
         }
         write_allowlist(&path, list);
+        crate::protected::written_by_this_process(&path);
     }
 }
 
@@ -543,6 +599,14 @@ const FED_STDIN: &str = "feeds a program text from the call, which no program na
 /// Finishes "this one …" for a write to a file like `.git/hooks/pre-commit`.
 const DECIDES_WHAT_RUNS: &str =
     "writes a file that decides what runs on this machine without asking";
+
+/// Finishes "this one …" for a line a repair said would be asked about.
+const UNDONE_LAST_TIME: &str =
+    "changed a file that decides what runs last time, and that was undone";
+
+/// Finishes "this one …" for `cp x .git/hooks/y`.
+const NAMES_WHAT_RUNS: &str =
+    "names a file that decides what runs on this machine, in a command that could write it";
 
 /// The units an "always" decision grants, for one call.
 struct Keys {
@@ -592,7 +656,11 @@ fn keys_for(
                     .iter()
                     .map(|program| format!("{}:{program}", tool.name()))
                     .collect(),
-                beyond: programs.beyond.or(fed.then_some(FED_STDIN)),
+                beyond: programs
+                    .beyond
+                    .or(fed.then_some(FED_STDIN))
+                    .or(names_what_decides_what_runs(&programs, input, workspace)
+                        .then_some(NAMES_WHAT_RUNS)),
             };
         }
     }
@@ -615,6 +683,35 @@ fn keys_for(
         rules: vec![tool.name().to_string()],
         beyond,
     }
+}
+
+/// Whether a command other than a reading one names a file that decides what
+/// runs, so that `cp x .git/hooks/y` isn't whatever a grant for `cp` is.
+///
+/// Each relative word lands where the command would be standing: the call's
+/// `cwd`, moved along by any plain `cd` before it. See
+/// [`crate::path_guard::word_names_what_runs`] for what this can't know.
+fn names_what_decides_what_runs(
+    programs: &Programs,
+    input: &serde_json::Value,
+    workspace: &Path,
+) -> bool {
+    let Ok(root) = workspace.canonicalize() else {
+        return false;
+    };
+    let cwd = input.get("cwd").and_then(|c| c.as_str()).unwrap_or(".");
+    let mut at = root.join(cwd);
+    programs.commands.iter().any(|command| {
+        if let Some(to) = command.moves_to() {
+            at = at.join(to);
+            return false;
+        }
+        !command.only_reads()
+            && command
+                .words
+                .iter()
+                .any(|word| crate::path_guard::word_names_what_runs(&root, &at, word))
+    })
 }
 
 /// What granting `rules` would mean, in a sentence the prompt shows.
@@ -1974,6 +2071,70 @@ mod tests {
         for input in [
             serde_json::json!({"command": "python3 x.py"}),
             serde_json::json!({"command": "python3 x.py", "stdin": ""}),
+        ] {
+            engine
+                .check(&run, &input, &Asking::default())
+                .await
+                .unwrap();
+            assert!(seen.lock().await.is_none(), "{input}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_program_grant_does_not_reach_a_file_that_decides_what_runs() {
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            r#"{"allowed": ["run_command:cp", "run_command:tee", "run_command:mv",
+                "run_command:ln", "run_command:cat", "run_command:ls",
+                "run_command:git", "run_command:cd"]}"#,
+        )
+        .unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Asked { seen: seen.clone() }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+
+        for input in [
+            serde_json::json!({"command": "cp x .git/hooks/y"}),
+            serde_json::json!({"command": "tee .taurus/hooks.json"}),
+            serde_json::json!({"command": "mv x .GIT/HOOKS/y"}),
+            serde_json::json!({"command": "ln -s x .git/hooks/y"}),
+            serde_json::json!({"command": "cp --target-directory=.git/hooks x"}),
+            serde_json::json!({"command": "cd .git/hooks && cp ../x y"}),
+            serde_json::json!({"command": "cd .taurus; tee hooks.json"}),
+            serde_json::json!({"command": "cp x y", "cwd": ".git/hooks"}),
+            serde_json::json!({"command": "cat x | tee .taurus/permissions.json"}),
+            serde_json::json!({"command": "git checkout -- .taurus/hooks.json"}),
+        ] {
+            engine
+                .check(&run, &input, &Asking::default())
+                .await
+                .unwrap();
+            let request = seen
+                .lock()
+                .await
+                .take()
+                .unwrap_or_else(|| panic!("{input} was let through on its programs"));
+            assert_eq!(
+                request.beyond_grant.as_deref(),
+                Some(NAMES_WHAT_RUNS),
+                "{input}"
+            );
+            assert!(!request.offer_always, "{input}");
+        }
+
+        for input in [
+            serde_json::json!({"command": "cat .git/hooks/pre-commit"}),
+            serde_json::json!({"command": "ls .git/hooks"}),
+            serde_json::json!({"command": "git status"}),
+            serde_json::json!({"command": "git diff .taurus/hooks.json"}),
+            serde_json::json!({"command": "cp src/a.rs src/b.rs"}),
+            serde_json::json!({"command": "cd .git/hooks && ls"}),
         ] {
             engine
                 .check(&run, &input, &Asking::default())

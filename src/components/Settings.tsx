@@ -88,9 +88,12 @@ function lastTab(): Tab {
  */
 export function Settings({
   onClose,
+  onOpenFile,
   initialTab,
 }: {
   onClose: () => void;
+  /** Opens a file in the canvas, which this drawer sits over. */
+  onOpenFile?: (path: string) => void;
   /**
    * The tab to open on, for a panel that sends someone here to change one
    * thing. Otherwise it's the last one looked at.
@@ -424,7 +427,19 @@ export function Settings({
           {tab === "routing" && <RoutingTab />}
           {tab === "tracing" && <TracingTab />}
 
-          {tab === "hooks" && <HooksTab />}
+          {tab === "hooks" && (
+            <HooksTab
+              // Then closed the usual way, so unsaved providers still get asked
+              // about, with the file already open behind the question.
+              onOpenFile={
+                onOpenFile &&
+                ((path) => {
+                  onOpenFile(path);
+                  close();
+                })
+              }
+            />
+          )}
 
           {tab === "terminal" && <TerminalTab />}
 

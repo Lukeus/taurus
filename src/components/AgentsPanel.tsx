@@ -323,10 +323,10 @@ function AgentNode({
           {run?.error && <p className="agents-doing error">{run.error}</p>}
           {run && run.tools.length > 0 && (
             <ol className="agents-calls" aria-label="Its tool calls">
-              {run.tools.map((tool) => {
+              {run.tools.map((tool, i) => {
                 const mark = tool.ok === undefined ? "running" : tool.ok ? "ok" : "failed";
                 return (
-                  <li key={tool.call} data-state={mark}>
+                  <li key={`${i}-${tool.call}`} data-state={mark}>
                     <span className="agents-mark" aria-label={mark}>
                       {mark === "running" ? "…" : mark === "ok" ? "✓" : "✕"}
                     </span>

@@ -104,6 +104,13 @@ pub enum HookEntry {
     Toggle(Toggle),
 }
 
+impl HookEntry {
+    /// See [`Hook::is_refusal`].
+    pub fn is_refusal(&self) -> bool {
+        matches!(self, Self::Hook(hook) if hook.is_refusal())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Toggle {
     pub disabled: bool,
@@ -187,6 +194,13 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl Hook {
+    /// Whether this stands for a hooks file that can't be used, rather than being
+    /// a hook anybody wrote. A listing leaves these out, and the file is reported
+    /// as a problem instead. See [`UNREADABLE`].
+    pub fn is_refusal(&self) -> bool {
+        self.command == UNREADABLE
+    }
+
     /// How long this hook may run before it is killed.
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.timeout_seconds.min(MAX_TIMEOUT_SECONDS))
@@ -212,33 +226,61 @@ impl Hook {
 /// Reads one layer, keeping unparseable entries as diagnostics.
 ///
 /// A missing file is an empty config, not an error: neither layer is required,
-/// and most people will never write one. A file that's there and can't be read
-/// is the opposite case, see [`refusing`].
+/// and most people will never write one. A file that's there and can't be read,
+/// doesn't parse, or holds an entry that can't be used is the opposite case, see
+/// [`refusing`]. So this no longer answers `Err`; the `Result` is the shape its
+/// callers already handle.
 pub fn load(dir: &Path) -> Result<HookConfig, String> {
     load_file(&config_file(dir))
 }
 
 /// [`load`], for a hooks file wherever it is. A plugin names its own.
 pub fn load_file(path: &Path) -> Result<HookConfig, String> {
+    load_file_with(path, &|what| refusal(path, what))
+}
+
+/// [`load_file`], with what a refusal says left to `word`, which is handed what's
+/// wrong with the file. A plugin's way out isn't a `hooks.json`'s, since you can
+/// also switch the plugin off.
+pub fn load_file_with(path: &Path, word: &dyn Fn(&str) -> String) -> Result<HookConfig, String> {
     let path = path.to_path_buf();
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HookConfig::default()),
-        Err(e) => return Ok(refusing(&path, &e)),
+        Err(e) => return Ok(refusing(word, &format!("could not be read: {e}"))),
     };
 
-    // Parsed loosely first, so one bad entry costs itself rather than the file.
-    // The same shape `taurus_mcp::load` uses, for the same reason: a hooks file
-    // people hand-edit will have a typo in it, and losing every other hook to
-    // it is the wrong response.
+    // Parsed loosely first, so one bad entry doesn't cost the hooks beside it:
+    // they go on running while the refusal below says what to fix. The same
+    // shape `taurus_mcp::load` uses.
     #[derive(Deserialize)]
     struct Raw {
         #[serde(default)]
         hooks: BTreeMap<String, serde_json::Value>,
     }
 
-    let raw: Raw = serde_json::from_str(&text)
-        .map_err(|e| format!("{} could not be read: {e}", path.display()))?;
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(e) => return Ok(refusing(word, &format!("doesn't parse: {e}"))),
+    };
+    // By hand, because serde reads a list into a struct, and ignores a misspelled
+    // `hooks` key. Either would be a file full of guards read as no guards.
+    match value.as_object() {
+        None => {
+            return Ok(refusing(
+                word,
+                "isn't a JSON object with a `hooks` key in it",
+            ))
+        }
+        Some(top) if !top.is_empty() && !top.contains_key("hooks") => {
+            return Ok(refusing(word, "has no `hooks` key at its top level"))
+        }
+        Some(_) => {}
+    }
+    let raw: Raw = match serde_json::from_value(value) {
+        Ok(raw) => raw,
+        Err(e) => return Ok(refusing(word, &format!("isn't the right shape: {e}"))),
+    };
 
     let mut config = HookConfig::default();
     for (name, value) in raw.hooks {
@@ -281,36 +323,78 @@ pub fn load_file(path: &Path) -> Result<HookConfig, String> {
             }
         }
     }
+    if !config.invalid.is_empty() {
+        let what: Vec<String> = config
+            .invalid
+            .iter()
+            .map(|(name, reason)| format!("\"{name}\" {reason}"))
+            .collect();
+        add_refusals(
+            &mut config,
+            &word(&format!("has hooks it can't use: {}", what.join("; "))),
+        );
+        for reason in config.invalid.values_mut() {
+            *reason = format!("{reason} (in {})", path.display());
+        }
+    }
     Ok(config)
 }
 
 /// What stands in for a `command` when the hooks that should have run are in a
-/// file that can't be read.
+/// file that can't be read, or can't be understood.
 ///
 /// Parenthesized so it reads as what it is in a listing. The runner refuses on
 /// it without starting anything, giving `args[0]` as the reason.
 pub const UNREADABLE: &str = "(unreadable hooks file)";
 
-/// The layer a hooks file that exists and can't be read amounts to.
+/// The layer a hooks file that exists and can't be used amounts to.
 ///
-/// Permissions, a directory in its place, bytes that aren't UTF-8. Whatever
-/// guards that file holds aren't known, so this can't say which calls they'd
-/// cover, and treating it as empty would turn every one of them off with nothing
-/// said. So it refuses on both events that can still stop something, in line
-/// with a hook that can't run, and it's reported as a problem as well.
-fn refusing(path: &Path, error: &std::io::Error) -> HookConfig {
-    let reason = format!(
-        "{} could not be read, so the hooks in it can't run: {error}. Fix or remove the file.",
-        path.display()
-    );
+/// Permissions, a directory in its place, bytes that aren't UTF-8, a syntax
+/// error, the wrong shape. Whatever guards that file holds aren't known, so this
+/// can't say which calls they'd cover, and treating it as empty would turn every
+/// one of them off with nothing said. So it refuses on both events that can
+/// still stop something, in line with a hook that can't run, and it's reported
+/// as a problem as well.
+///
+/// An invalid entry gets the same refusal, on top of the hooks that did parse.
+/// That entry may be the guard somebody relies on, and from here there's no
+/// telling what it would have covered.
+fn refusing(word: &dyn Fn(&str) -> String, what: &str) -> HookConfig {
+    let reason = word(what);
     let mut config = HookConfig::default();
+    add_refusals(&mut config, &reason);
+    config.invalid.insert(FILE_NAME.to_string(), reason);
+    config
+}
+
+/// What a refused prompt or call says. A trailing comma blocks every prompt
+/// until it's fixed, so this names the file, what's wrong, and the way out.
+fn refusal(path: &Path, what: &str) -> String {
+    format!(
+        "{} {what}. Its hooks can't run, so prompts and tool calls are refused until it's \
+         fixed. Fix or remove the file; that takes effect on your next message.",
+        path.display()
+    )
+}
+
+/// A layer holding nothing but the two hooks that refuse, each giving `reason`.
+/// For a caller that found the problem itself, like a plugin whose manifest names
+/// a hooks file that isn't there.
+pub fn refusing_layer(reason: &str) -> HookConfig {
+    let mut config = HookConfig::default();
+    add_refusals(&mut config, reason);
+    config
+}
+
+/// The two hooks that do the refusing.
+fn add_refusals(config: &mut HookConfig, reason: &str) {
     for on in [HookEvent::PreToolUse, HookEvent::UserPromptSubmit] {
         config.hooks.insert(
-            format!("{FILE_NAME} unreadable ({})", on.label()),
+            format!("broken {FILE_NAME} ({})", on.label()),
             HookEntry::Hook(Box::new(Hook {
                 on,
                 command: UNREADABLE.to_string(),
-                args: vec![reason.clone()],
+                args: vec![reason.to_string()],
                 matches: None,
                 timeout_seconds: default_timeout(),
                 disabled: false,
@@ -318,8 +402,6 @@ fn refusing(path: &Path, error: &std::io::Error) -> HookConfig {
             })),
         );
     }
-    config.invalid.insert(FILE_NAME.to_string(), reason);
-    config
 }
 
 /// Whether an entry is a bare `{"disabled": ...}` rather than a hook.
@@ -594,5 +676,136 @@ mod tests {
         // The call already ran. A "block" here would be a claim about the past.
         assert!(!HookEvent::PostToolUse.can_deny());
         assert!(!HookEvent::Stop.can_deny());
+    }
+
+    /// Whether both events that can still stop something would refuse, and the
+    /// reason each would give.
+    fn refusals(config: &HookConfig) -> Vec<String> {
+        let (hooks, _) = merge(vec![config.clone()]);
+        let found: Vec<(HookEvent, String)> = hooks
+            .into_iter()
+            .filter(|(_, hook)| hook.is_refusal())
+            .map(|(_, hook)| (hook.on, hook.args[0].clone()))
+            .collect();
+        let events: Vec<HookEvent> = found.iter().map(|(on, _)| *on).collect();
+        assert!(events.contains(&HookEvent::PreToolUse), "{events:?}");
+        assert!(events.contains(&HookEvent::UserPromptSubmit), "{events:?}");
+        found.into_iter().map(|(_, reason)| reason).collect()
+    }
+
+    #[test]
+    fn a_file_with_a_syntax_error_refuses_and_says_where() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "{\"hooks\":{\"a\":{\"on\":\"stop\",\"command\":\"true\"},}}",
+        );
+        let config = load(dir.path()).unwrap();
+        for reason in refusals(&config) {
+            assert!(reason.contains(FILE_NAME), "{reason}");
+            assert!(reason.contains("line 1"), "{reason}");
+            assert!(reason.contains("Fix or remove"), "{reason}");
+        }
+        let (_, problems) = merge(vec![config]);
+        assert!(
+            problems.iter().any(|p| p.contains("doesn't parse")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_of_the_wrong_shape_refuses() {
+        for body in [
+            "[]",
+            "3",
+            r#"{"hooks":[]}"#,
+            r#"{"hoks":{"guard":{"on":"pre_tool_use","command":"true"}}}"#,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write(dir.path(), body);
+            refusals(&load(dir.path()).unwrap());
+        }
+    }
+
+    #[test]
+    fn an_empty_object_is_no_hooks_and_nothing_to_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "{}");
+        let config = load(dir.path()).unwrap();
+        assert!(config.hooks.is_empty() && config.invalid.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_entry_refuses_by_name_and_the_good_hook_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            r#"{"hooks":{
+                "good": {"on":"post_tool_use","command":"true"},
+                "bad": {"on":"pre_tool_use"}
+            }}"#,
+        );
+        let config = load(dir.path()).unwrap();
+        assert!(config.hooks.contains_key("good"));
+        for reason in refusals(&config) {
+            assert!(reason.contains("\"bad\""), "{reason}");
+            assert!(reason.contains("command"), "{reason}");
+            assert!(reason.contains(FILE_NAME), "{reason}");
+        }
+    }
+
+    /// The path as `hooksFileIn` in `src/lib/hooksFile.ts` reads it: absolute,
+    /// after a space or `(in `, and followed by a space, a `)` or the end.
+    fn named_for_the_button(message: &str, path: &Path) -> bool {
+        let path = path.display().to_string();
+        message.match_indices(&path).any(|(at, _)| {
+            let before = message[..at].chars().last();
+            let after = message[at + path.len()..].chars().next();
+            matches!(before, None | Some(' ' | '('))
+                && matches!(after, None | Some(' ' | ')' | '\n'))
+        })
+    }
+
+    /// The "Open hooks.json" button in Settings and on a refused message finds
+    /// the file by parsing it out of these sentences: see `hooksFileIn` in
+    /// `src/lib/hooksFile.ts`. Rewording them so this fails takes the button away
+    /// with nothing else to say so, so change that file with them.
+    #[tokio::test]
+    async fn the_refusal_and_the_problem_name_the_file_the_way_the_button_reads_it() {
+        for body in [
+            &b"{\"hooks\":{,}}"[..],
+            b"[]",
+            b"{\"hoks\":{}}",
+            b"{\"hooks\":[]}",
+            br#"{"hooks":{"bad":{"on":"pre_tool_use"}}}"#,
+            &[0xFF, 0xFE],
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let dir = parent.path().join("my project").join(".taurus");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = config_file(&dir);
+            assert!(path.ends_with(".taurus/hooks.json"));
+            std::fs::write(&path, body).unwrap();
+
+            let (hooks, problems) = merge(vec![load(&dir).unwrap()]);
+            assert!(!problems.is_empty());
+            for problem in &problems {
+                assert!(named_for_the_button(problem, &path), "{problem}");
+            }
+
+            let refused = crate::HookRunner::new(hooks)
+                .run(
+                    &crate::HookPayload::new(HookEvent::UserPromptSubmit, parent.path()),
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .denied
+                .expect("it refuses");
+            assert!(
+                refused.starts_with("Refused by hook 'broken hooks.json ("),
+                "{refused}"
+            );
+            assert!(named_for_the_button(&refused, &path), "{refused}");
+        }
     }
 }

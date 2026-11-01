@@ -164,10 +164,13 @@ the backlog, and they're the minority.
 - **A hook that can't run blocks the call.** A missing program, a crash, or a
   timeout denies the call on the two events where there's still something to
   deny. So a typo in `hooks.json` stops every call it matches until you fix
-  it. That's intended, not an oversight: a guard that treats its own breakage
+  it, and a syntax error or a bad entry in that file, or in a plugin's hooks
+  file, stops every call and prompt. That's intended, not an oversight: a guard that treats its own breakage
   as approval stops guarding at the one moment it matters. But it does mean a
   hook can break a working setup, which a purely observational one couldn't.
-  `taurus hooks check` names the entry and the field.
+  `taurus hooks check` names the entry and the field. Settings › Hooks has a
+  button beside the problem that opens the file in the canvas, and so does the
+  refused message, unless the file belongs to a plugin.
 - **Hooks aren't told about a delegate's turn boundaries.** A sub-agent's tool
   calls go through the same `pre_tool_use` and `post_tool_use` hooks as the
   parent's. The context is shared, which stops a delegate routing around a
@@ -1147,11 +1150,12 @@ the backlog, and they're the minority.
   the harness classifying tools by something other than effect. Effect is
   what the categories exist to capture, and it's what the run header counts.
   The shape is a useful hint about the kind of work, not a readout.
-- **A permission prompt raised during a reload can be lost.** A turn keeps
-  running through a reload, and a prompt it raises before the new page is
-  listening never reaches the screen. The turn waits on it, still marked as
-  running, until you press Stop. Closing this means re-offering outstanding
-  prompts when a page starts.
+- **An id compaction dropped can come back in a later turn.** A tool call whose
+  id is already used gets a fresh one, but the list of used ids is what's in the
+  conversation plus what this turn has stored. If compaction dropped a call and a
+  provider reuses its id in a later turn, the id counts as free. Delegations can't
+  collide this way, since background work stops when a turn ends, but a spill file
+  with the same id and label can be overwritten.
 - **A turn dies with the process.** It survives everything inside the window —
   a reload, a switch to another conversation, the conversation being closed —
   because the turn belongs to the conversation rather than to the call that
@@ -1203,8 +1207,20 @@ the backlog, and they're the minority.
   the rest. `make`, `npm run`, `cargo run` and a `git` alias all run what the
   project says, and a grant for one of them is a grant for that. A heredoc is
   never covered either, because the body of `python3 <<EOF` is a script, and
-  neither is a line it can't fully read. An argument can still run something
-  (`awk`'s `system()`, `sed`'s `e`, `git -c alias.x='!…'`). The
+  neither is a line it can't fully read. It reads what's on the line, and a grant
+  still reaches what the line doesn't show: a script or a Makefile writing
+  `.git/hooks/x`, a path held in a variable or built at run time, a patch given
+  to `git apply`, `awk` piping to a command in a variable, an `awk` or `sed`
+  program in a file, and programs whose arguments run things that it doesn't
+  know about (`tar --to-command`, `rsync -e`, `vim -c`, `rg --pre`). `git -C x`
+  still reads the settings in `x`. See
+  [Permissions](safety.md#permissions) for what it does catch. A command under
+  a grant is also looked at afterwards, which repairs a small set of files after
+  the fact, and what ran before the look has run. It also runs under a write
+  deny-list on macOS and on Linux with `bwrap`, which isn't a full sandbox: reads
+  and the network are open, anything off the list is writable, and on Linux a
+  listed path that doesn't exist yet isn't protected. There's nothing on Windows.
+  The Linux half has its tests in place and hasn't been run on Linux by us. The
   alternative is a shell parser, and a parser that is wrong lets something
   through, where a tokenizer that gives up asks. See
   [Permissions](safety.md#permissions).

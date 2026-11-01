@@ -179,6 +179,12 @@ impl Tool for RunCommand {
         );
 
         let (program, args) = shell_invocation(&input.command);
+        // Under the write deny-list, for a call a standing grant let through.
+        let fenced = ctx.fence();
+        let (program, args) = match &fenced {
+            Some(fence) => fence.wrap(program, args),
+            None => (program, args),
+        };
 
         if input.background {
             return start_in_background(&input, program, args, cwd, ctx).await;
@@ -240,7 +246,10 @@ impl Tool for RunCommand {
 
         let mut child = piped(program, args, &cwd, input.stdin.is_some())
             .spawn()
-            .map_err(cannot_start)?;
+            .map_err(|e| match &fenced {
+                Some(_) => cannot_start_fenced(e),
+                None => cannot_start(e),
+            })?;
 
         // Drain the pipes concurrently with the wait. A child that fills its
         // stdout buffer blocks forever if nobody is reading, which would turn
@@ -497,6 +506,15 @@ fn cannot_start(e: std::io::Error) -> ToolError {
     ToolError::Failed(format!("cannot start shell: {e}"))
 }
 
+/// The sandbox didn't start, which isn't the command failing, and nothing ran.
+fn cannot_start_fenced(e: std::io::Error) -> ToolError {
+    ToolError::Failed(format!(
+        "cannot start the write protection this command runs under, so it did not run: {e}. \
+         Setting {}=1 for Taurus turns the protection off.",
+        crate::sandbox::OFF_ENV
+    ))
+}
+
 /// Written and then closed. A program waiting on input needs the end-of-file as
 /// much as the bytes. Always alongside something reading its output, never
 /// before it: see where each path calls this.
@@ -566,9 +584,18 @@ async fn start_in_background(
     };
 
     let mut child = taurus_process::Tree::spawn(piped(program, args, &cwd, input.stdin.is_some()))
-        .map_err(cannot_start)?;
+        .map_err(|e| match ctx.fence() {
+            Some(_) => cannot_start_fenced(e),
+            None => cannot_start(e),
+        })?;
     let pipe = child.take_stdin();
-    let id = jobs.adopt(input.command.clone(), child, before);
+    // The look at the protected files waits for the command, not the call.
+    let ticket = ctx.protected.as_ref().and_then(|slot| {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    });
+    let id = jobs.adopt_watched(input.command.clone(), child, before, ticket);
     // On its own, after the output has somewhere to go. Waited for here, a
     // child that doesn't read more than a pipe holds would hold this call for
     // as long as it runs, which is the one thing a background command is for

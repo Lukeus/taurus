@@ -1035,15 +1035,27 @@ pub async fn respond_permission(
     response: PermissionResponse,
 ) -> CmdResult<()> {
     match state.pending_permissions.remove(&response.id) {
-        Some((_, sender)) => {
+        Some((_, parked)) => {
             // Send failure means the waiting call already gave up; nothing to do.
-            let _ = sender.send(response.decision);
+            let _ = parked.answer.send(response.decision);
             Ok(())
         }
         // Not an error: a turn that was canceled removes its own pending
         // requests, and the UI may answer a moment later.
         None => Ok(()),
     }
+}
+
+/// Every permission prompt still waiting for an answer, oldest first.
+///
+/// What a page asks once it's listening, and again when the one on screen is
+/// dealt with. A prompt raised while a page was loading has nobody to hear its
+/// event, and the window only shows one at a time.
+#[tauri::command]
+pub async fn pending_permissions(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<taurus_tools::PermissionRequest>> {
+    Ok(crate::bridge::outstanding(&state.pending_permissions))
 }
 
 /// Answers a question card, releasing the tool call parked behind it.

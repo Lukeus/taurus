@@ -12,6 +12,7 @@ import { clip } from "../lib/format";
 import * as api from "../lib/api";
 import { reportFromText, takeBackgroundReports } from "../lib/delegate";
 import {
+  answeringTool,
   MAX_AGENT_TEXT,
   MAX_AGENT_TOOLS,
   mergeAgents,
@@ -77,7 +78,10 @@ export type Entry =
   | { kind: "assistant"; id: string; text: string; thinking: string; open: boolean }
   | {
       kind: "tool";
+      /** This card's own, unique among the entries. See `wireId`. */
       id: string;
+      /** The id the backend knows the call by, when `id` had to differ from it. */
+      call?: string;
       name: string;
       preview: string;
       status: "running" | "ok" | "error";
@@ -486,6 +490,14 @@ interface Store {
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
   /**
+   * Brings the dialog in line with what's actually waiting: keeps the prompt on
+   * screen if it still is, and otherwise shows the oldest one that is. An event
+   * only reaches a page that's listening, and only one prompt shows at a time,
+   * so this is how a prompt raised during a reload, or behind another one, gets
+   * seen. The slot takes one prompt by id, so arriving both ways shows it once.
+   */
+  syncPermission: () => Promise<void>;
+  /**
    * Releases the tool call parked behind a question card. One answer per
    * question, in order; an empty one is a skip, which every question allows.
    *
@@ -663,6 +675,9 @@ let watching: ReturnType<typeof batchEvents> | null = null;
  * running and still being recorded, and coming back re-reads the transcript
  * and attaches afresh.
  */
+/** The prompt whose answer is on its way, which a read may still list. */
+let promptInFlight: string | null = null;
+
 function turnStream(
   sessionId: string,
   get: () => Store,
@@ -679,10 +694,9 @@ function turnStream(
     // stops feeding the rest. What's already queued is the Stop button's.
     if (speak && get().status?.settings.speech?.read_aloud) speech.hear(events);
     set((s) => ({
-      entries: foldEvents(events, s.entries),
+      ...foldTurn(events, s.entries, s.agents),
       changed: events.reduce(mergeChanged, s.changed),
       context: events.reduce(mergeContext, s.context),
-      agents: events.reduce(mergeAgents, s.agents),
     }));
     // Conditional, and deliberately so: a turn re-reads nothing on principle
     // (see the note at the end of `send`). This is not that — it fires only on
@@ -830,7 +844,12 @@ export const useStore = create<Store>((set, get) => ({
       });
     }
 
-    api.onPermissionRequest((permission) => set({ permission }));
+    // Never over a prompt already up: that one's turn is still waiting on it.
+    // A prompt held back here is picked up by `syncPermission`, and so is one
+    // raised before this listener existed, which is why that waits for it.
+    void api
+      .onPermissionRequest((permission) => set((s) => (s.permission ? {} : { permission })))
+      .then(() => get().syncPermission());
     api.onSkillProposal((proposal) =>
       set((s) => ({ proposals: [...s.proposals, proposal] })),
     );
@@ -874,6 +893,9 @@ export const useStore = create<Store>((set, get) => ({
         // window watching a turn end is not always the one that started it.
         return { running, busy: false, turn: null, entries: closeOpen(s.entries) };
       });
+      // Stop withdraws what the turn was waiting on, and no call is there to take
+      // the dialog down in a window that only attached to it.
+      if (!turn) void get().syncPermission();
     });
 
     // What was already running when this window opened. Everything after it is
@@ -1308,8 +1330,9 @@ export const useStore = create<Store>((set, get) => ({
         stopping: false,
         // A turn that has ended has nothing waiting on a permission prompt:
         // Stop withdraws the question, and an answer to a dialog left up would
-        // go nowhere.
-        permission: null,
+        // go nowhere. Another conversation's prompt is still waiting, though.
+        permission:
+          s.permission?.session && s.permission.session !== session.id ? s.permission : null,
         // Close the open assistant entry so the next turn starts a new bubble.
         entries: closeOpen(s.entries),
       }));
@@ -1379,7 +1402,12 @@ export const useStore = create<Store>((set, get) => ({
     // In turn rather than all at once: a conversation that delegated thirty
     // times is thirty files, and the panel fills as they arrive.
     for (const meta of get().delegates) {
-      const call = meta.call;
+      // The card `linkDelegates` gave this delegate to, whose own id is what the
+      // panel looks a run up by. Two delegations can share a call id.
+      const call =
+        get().entries.find(
+          (e) => e.kind === "tool" && e.transcript?.session === meta.id,
+        )?.id ?? meta.call;
       if (!call || get().agents[call] || get().session?.id !== session.id) continue;
       let run: AgentRun;
       try {
@@ -1430,7 +1458,9 @@ export const useStore = create<Store>((set, get) => ({
     // A question already on screen is the thing that would hold the turn for
     // as long as somebody is away, so leaving answers it. Refused, because
     // that is the only answer this switch ever gives — see `set_unattended`.
-    if (unattended && permission) await get().answerPermission("deny");
+    // The switch belongs to this conversation, so another's question stays up.
+    const ours = permission && (!permission.session || permission.session === session.id);
+    if (unattended && ours) await get().answerPermission("deny");
     if (!unattended) return set({ leaving: null });
 
     // What was allowed once is what the run is about to be refused, so this
@@ -1464,9 +1494,13 @@ export const useStore = create<Store>((set, get) => ({
     // Cleared first, so the dialog goes the moment a button is pressed rather
     // than a round trip later.
     set({ permission: null });
+    promptInFlight = permission.id;
     try {
       await api.respondPermission(permission.id, decision);
+      promptInFlight = null;
+      await get().syncPermission();
     } catch (e) {
+      promptInFlight = null;
       // Put back exactly what was taken away. The turn is still parked on this
       // decision — the call that would have released it is the one that just
       // failed — so a dialog that stayed dismissed would leave the conversation
@@ -1474,6 +1508,22 @@ export const useStore = create<Store>((set, get) => ({
       // sign that anything had gone wrong.
       set({ permission, error: String(e) });
     }
+  },
+
+  syncPermission: async () => {
+    const before = get().permission;
+    let waiting: PermissionRequest[];
+    try {
+      waiting = (await api.pendingPermissions()) ?? [];
+    } catch (e) {
+      console.warn("could not read which permission prompts are waiting", e);
+      return;
+    }
+    // Something else moved the slot while this was being read, and what it put
+    // there is newer than this answer.
+    if (get().permission !== before) return;
+    if (before && waiting.some((request) => request.id === before.id)) return;
+    set({ permission: waiting.find((request) => request.id !== promptInFlight) ?? null });
   },
 
   answerQuestions: async (id, answers) => {
@@ -1725,16 +1775,154 @@ function continuingText(interrupted: InterruptedTurn | null): string {
  * messages says where a child was written; the child's header does.
  */
 export function linkDelegates(entries: Entry[], delegates: SessionMeta[]): Entry[] {
-  const byCall = new Map(
-    delegates.flatMap((d) => (d.call ? [[d.call, d] as const] : [])),
-  );
+  // Only a delegation's card, and each delegate once, newest to the latest card.
+  // A repeated id can name a delegation and a file read in the same transcript.
+  const byCall = new Map<string, SessionMeta[]>();
+  for (const delegate of [...delegates].sort((a, b) => a.started - b.started)) {
+    if (delegate.call) byCall.set(delegate.call, [...(byCall.get(delegate.call) ?? []), delegate]);
+  }
   if (byCall.size === 0) return entries;
-  return entries.map((e) => {
-    const delegate = e.kind === "tool" ? byCall.get(e.id) : undefined;
-    return delegate && e.kind === "tool"
-      ? { ...e, transcript: { session: delegate.id, agent: delegate.agent ?? "" } }
-      : e;
-  });
+  const out = [...entries];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const e = out[i];
+    if (e.kind !== "tool" || e.name !== "spawn_subagent") continue;
+    const delegate = byCall.get(wireId(e))?.pop();
+    if (delegate) {
+      out[i] = { ...e, transcript: { session: delegate.id, agent: delegate.agent ?? "" } };
+    }
+  }
+  return out;
+}
+
+type ToolEntry = Extract<Entry, { kind: "tool" }>;
+
+/**
+ * The id a call goes by on the wire, as opposed to its card's own.
+ *
+ * Those can differ because an id isn't unique across a transcript: the prompted
+ * fallback used to count from `ptc_1` on every request, and a server can reuse
+ * one. Most things that name a call name it by this. A later card under a used
+ * id gets `{id}_{n}`, the spelling `with_unique_tool_ids` sends to the model.
+ */
+export const wireId = (entry: ToolEntry): string => entry.call ?? entry.id;
+
+/** `id` as a card's own, and what it goes by on the wire if that had to change. */
+function cardId(id: string, taken: (id: string) => boolean): { id: string; call?: string } {
+  if (!taken(id)) return { id };
+  let n = 2;
+  while (taken(`${id}_${n}`)) n += 1;
+  return { id: `${id}_${n}`, call: id };
+}
+
+/**
+ * The card a result for `id` answers, or -1.
+ *
+ * The nearest earlier call under that id with no answer yet. Not the first: an
+ * old call left unanswered must not take the result of a new one. And within one
+ * batch of calls, the earliest of them, because results come back in the order
+ * the calls went out. `pair_tool_results` in `taurus_provider` is the same rule.
+ *
+ * `inBatch(i, at)` says whether the scan back from the card at `at` goes on past
+ * entry `i`. Live, a batch is a run of cards with nothing between them, which is
+ * the default. A rebuild knows which message made each card, and says so.
+ */
+export function answering(
+  entries: Entry[],
+  id: string,
+  inBatch: (i: number, at: number) => boolean = (i) => entries[i].kind === "tool",
+  name?: string,
+): number {
+  const waiting = (e: Entry) =>
+    e.kind === "tool" &&
+    e.status === "running" &&
+    wireId(e) === id &&
+    (name === undefined || e.name === name);
+  let at = entries.length - 1;
+  while (at >= 0 && !waiting(entries[at])) at -= 1;
+  if (at < 0) return -1;
+  const nearest = at;
+  for (let i = nearest - 1; i >= 0 && inBatch(i, nearest); i -= 1) {
+    if (waiting(entries[i])) at = i;
+  }
+  return at;
+}
+
+/** The latest card under `id`, or the latest that also passes `prefer`, or -1. */
+function latestCall(entries: Entry[], id: string, prefer?: (e: ToolEntry) => boolean): number {
+  let latest = -1;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const e = entries[i];
+    if (e.kind !== "tool" || wireId(e) !== id) continue;
+    if (!prefer || prefer(e)) return i;
+    if (latest < 0) latest = i;
+  }
+  return latest;
+}
+
+/**
+ * The card something said about the delegation under `id` belongs to.
+ *
+ * `answering`'s rule, for delegations: the one still running. Then, because a
+ * background delegation's result only said it started, the one still owed a
+ * report. Then the latest. New calls get unique ids before they reach here, so
+ * a repeat is an old transcript's, and nothing of those is still running. A report looks first
+ * for a background delegation, which is the one that reports long after its call.
+ */
+function delegateCard(entries: Entry[], id: string, report = false): number {
+  const spawned = (e: ToolEntry) => e.name === "spawn_subagent";
+  const latest = (wanted: (e: ToolEntry) => boolean) => {
+    const at = latestCall(entries, id, wanted);
+    const card = entries[at];
+    return card?.kind === "tool" && wanted(card) ? at : -1;
+  };
+  const background = report ? latest((e) => spawned(e) && !!e.detached && !e.report) : -1;
+  if (background >= 0) return background;
+  const running = answering(entries, id, undefined, "spawn_subagent");
+  if (running >= 0) return running;
+  const owed = latest((e) => spawned(e) && !e.report);
+  return owed >= 0 ? owed : latest(spawned);
+}
+
+/** `delegateCard`, or the latest card under `id` when no delegation has it. */
+function delegateOrLatest(entries: Entry[], id: string, report = false): number {
+  const at = delegateCard(entries, id, report);
+  return at >= 0 ? at : latestCall(entries, id);
+}
+
+/**
+ * A batch of a turn's events, folded into the entries and the agents together.
+ *
+ * Together because the agents are keyed by card, and which card an event means
+ * depends on the cards as they stood when it arrived, which a batch can change
+ * halfway through. An event with no card yet stays under its own id, which is the
+ * id the card takes unless that one is already used.
+ */
+export function foldTurn(
+  events: UiEvent[],
+  entries: Entry[],
+  agents: Agents,
+): { entries: Entry[]; agents: Agents } {
+  let cards = entries;
+  let runs = agents;
+  let from = 0;
+  for (const [i, event] of events.entries()) {
+    const nextAgents = mergeAgents(runs, event);
+    if (nextAgents === runs) continue;
+    if (i > from) cards = foldEvents(events.slice(from, i), cards);
+    from = i;
+    const id = (event as { id: string }).id;
+    const at = delegateCard(cards, id, event.type === "delegate_report");
+    runs = at < 0 ? nextAgents : mergeAgents(runs, { ...event, id: cards[at].id } as UiEvent);
+  }
+  return { entries: from < events.length ? foldEvents(events.slice(from), cards) : cards, agents: runs };
+}
+
+/** `entries` with the tool card at `at` changed, or as they were if there is none. */
+function onCard(entries: Entry[], at: number, change: (e: ToolEntry) => ToolEntry): Entry[] {
+  if (at < 0) return entries;
+  const out = [...entries];
+  out[at] = change(out[at] as ToolEntry);
+  return out;
 }
 
 /**
@@ -1763,6 +1951,10 @@ export function entriesFromMessages(
   planEdits: PlanEditMark[] = [],
 ): Entry[] {
   const entries: Entry[] = [];
+  /** Card ids in use, so a repeated id gets one of its own. */
+  const used = new Set<string>();
+  /** Which message made each card. On disk, that is what a batch of calls is. */
+  const batchOf = new Map<number, number>();
 
   for (const [index, message] of messages.entries()) {
     // The turn this message is the question of, if it's one.
@@ -1793,8 +1985,11 @@ export function entriesFromMessages(
           // It was never something the user said.
           const { reports, rest } = takeBackgroundReports(block.text);
           for (const report of reports) {
-            const index = entries.findIndex(
-              (e) => e.kind === "tool" && e.id === report.call,
+            // The delegation still owed one, since other calls may share its id.
+            const index = latestCall(
+              entries,
+              report.call,
+              (e) => e.name === "spawn_subagent" && !e.report,
             );
             if (index < 0) continue;
             const call = entries[index] as Extract<Entry, { kind: "tool" }>;
@@ -1830,8 +2025,11 @@ export function entriesFromMessages(
           // On the first text block only, like the images.
           started = undefined;
         } else if (block.type === "tool_result") {
-          const index = entries.findIndex(
-            (e) => e.kind === "tool" && e.id === block.tool_use_id,
+          const index = answering(
+            entries,
+            block.tool_use_id,
+            // An entry that isn't a card has no message here, and doesn't end one.
+            (i, at) => !batchOf.has(i) || batchOf.get(i) === batchOf.get(at),
           );
           if (index >= 0) {
             const call = entries[index] as Extract<Entry, { kind: "tool" }>;
@@ -1882,9 +2080,12 @@ export function entriesFromMessages(
 
     for (const block of message.content) {
       if (block.type !== "tool_use") continue;
+      const card = cardId(block.id, (id) => used.has(id));
+      used.add(card.id);
+      batchOf.set(entries.length, index);
       entries.push({
         kind: "tool",
-        id: block.id,
+        ...card,
         name: block.name,
         // The live preview is composed by the tool itself and is not part of
         // the transcript, so the arguments stand in for it.
@@ -2204,7 +2405,7 @@ function loadedADataset(events: UiEvent[], entries: Entry[]): boolean {
       entries.some(
         (entry) =>
           entry.kind === "tool" &&
-          entry.id === event.id &&
+          wireId(entry) === event.id &&
           entry.name === "load_dataset",
       ),
   );
@@ -2519,14 +2720,14 @@ export function runFromMessages(call: string, meta: SessionMeta, messages: Messa
       for (const block of message.content) {
         if (block.type === "text" && block.text.trim()) said.push(block.text.trim());
         if (block.type === "tool_use") {
-          tools.push({ call: block.id, name: block.name, preview: preview(block.input) });
+          tools.push({ call: block.id, name: block.name, preview: preview(block.input), round });
         }
       }
     } else {
       for (const block of message.content) {
         if (block.type !== "tool_result") continue;
-        const tool = tools.find((t) => t.call === block.tool_use_id);
-        if (tool) tool.ok = !block.is_error;
+        const at = answeringTool(tools, block.tool_use_id);
+        if (at >= 0) tools[at].ok = !block.is_error;
       }
     }
   }
@@ -2694,13 +2895,36 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
         thinking: e.thinking + event.text,
       }));
 
-    case "tool_call_started":
+    case "tool_call_started": {
+      // Calls go on disk before they run, so a conversation reopened mid-round
+      // has this one from its transcript as well as from the replay. It's one
+      // call, and a question card drawn twice would be two places to answer it.
+      // Only a running card read from disk, which has no start time because
+      // nothing there records one. A finished call can share an id with a later
+      // one, and so can a live one, on a model that reuses its ids.
+      const held = entries.findIndex(
+        (e) =>
+          e.kind === "tool" &&
+          e.status === "running" &&
+          e.startedAt === undefined &&
+          wireId(e) === event.id,
+      );
+      if (held >= 0) {
+        return supersedePlans(
+          onCard(closeOpen(entries), held, (e) => ({
+            ...e,
+            preview: event.preview,
+            view: event.view ?? e.view,
+            startedAt: Date.now(),
+          })),
+        );
+      }
       return supersedePlans([
         // Any streaming text before a tool call is finished text.
         ...closeOpen(entries),
         {
           kind: "tool",
-          id: event.id,
+          ...cardId(event.id, (id) => entries.some((e) => e.kind === "tool" && e.id === id)),
           name: event.name,
           preview: event.preview,
           status: "running",
@@ -2709,32 +2933,31 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
           startedAt: Date.now(),
         },
       ]);
+    }
 
     case "tool_transcript":
-      return entries.map((e) =>
-        e.kind === "tool" && e.id === event.id
-          ? { ...e, transcript: { session: event.session, agent: event.agent } }
-          : e,
-      );
+      return onCard(entries, delegateOrLatest(entries, event.id), (e) => ({
+        ...e,
+        transcript: { session: event.session, agent: event.agent },
+      }));
 
     case "tool_detached":
-      return entries.map((e) =>
-        e.kind === "tool" && e.id === event.id ? { ...e, detached: true } : e,
-      );
+      return onCard(entries, delegateOrLatest(entries, event.id), (e) => ({ ...e, detached: true }));
 
     case "delegate_report":
-      return entries.map((e) =>
-        e.kind === "tool" && e.id === event.id
-          ? {
-              ...e,
-              report: event.report,
-              // A background delegation's result only said it started. What
-              // it found is this, and it's what opening the row should show.
-              output: e.detached
-                ? `Status: ${event.report.disposition}.\n\n${event.report.summary}`
-                : e.output,
-            }
-          : e,
+      // Possibly long after the call, so to the delegation still owed one.
+      return onCard(
+        entries,
+        delegateOrLatest(entries, event.id, true),
+        (e) => ({
+          ...e,
+          report: event.report,
+          // A background delegation's result only said it started. What
+          // it found is this, and it's what opening the row should show.
+          output: e.detached
+            ? `Status: ${event.report.disposition}.\n\n${event.report.summary}`
+            : e.output,
+        }),
       );
 
     case "tool_progress":
@@ -2746,22 +2969,18 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
       return entries;
 
     case "tool_call_finished":
-      return entries.map((e) =>
-        e.kind === "tool" && e.id === event.id
-          ? {
-              ...e,
-              status: event.ok ? "ok" : "error",
-              output: event.output,
-              images: event.images?.length ? event.images : undefined,
-              // A refused call leaves nothing behind. The view went out before
-              // the call ran, so a chart whose series did not line up is on
-              // screen by the time the harness says so — and a wrong chart
-              // beside the word "failed" is still a wrong chart.
-              view: event.ok ? e.view : undefined,
-              endedAt: Date.now(),
-            }
-          : e,
-      );
+      return onCard(entries, answering(entries, event.id), (e) => ({
+        ...e,
+        status: event.ok ? "ok" : "error",
+        output: event.output,
+        images: event.images?.length ? event.images : undefined,
+        // A refused call leaves nothing behind. The view went out before
+        // the call ran, so a chart whose series did not line up is on
+        // screen by the time the harness says so — and a wrong chart
+        // beside the word "failed" is still a wrong chart.
+        view: event.ok ? e.view : undefined,
+        endedAt: Date.now(),
+      }));
 
     case "context_trimmed":
       return [
@@ -2906,11 +3125,10 @@ export function closeOpen(entries: Entry[]): Entry[] {
 
 /** A call's new progress lines, on its card and nowhere else. */
 function addProgress(entries: Entry[], id: string, labels: string[]): Entry[] {
-  return entries.map((e) =>
-    e.kind === "tool" && e.id === id
-      ? { ...e, steps: trimScrollback([...e.steps, ...labels]) }
-      : e,
-  );
+  return onCard(entries, latestCall(entries, id), (e) => ({
+    ...e,
+    steps: trimScrollback([...e.steps, ...labels]),
+  }));
 }
 
 /**

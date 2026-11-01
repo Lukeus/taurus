@@ -251,7 +251,7 @@ jobs:
       - name: Install the signing tool
         if: steps.winsecrets.outputs.signing == 'true'
         shell: bash
-        run: cargo install trusted-signing-cli --locked --version 0.11.0
+        run: cargo install artifact-signing-cli --locked --version 0.12.0
 
       - name: Set up Windows signing
         id: winsign
@@ -274,7 +274,7 @@ jobs:
           node -e '
             const { ENDPOINT, ACCOUNT, PROFILE } = process.env;
             const signCommand =
-              "trusted-signing-cli -e " + ENDPOINT + " -a " + ACCOUNT + " -c " + PROFILE + " -d Taurus %1";
+              "artifact-signing-cli -e " + ENDPOINT + " -a " + ACCOUNT + " -c " + PROFILE + " -d Taurus %1";
             require("node:fs").writeFileSync(
               "windows-signing.json",
               JSON.stringify({ bundle: { windows: { signCommand } } }),

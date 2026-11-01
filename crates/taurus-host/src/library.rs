@@ -78,6 +78,9 @@ pub fn editable_roots() -> Vec<PathBuf> {
     // The folder Copilot's scoped files are listed from, so a file added there
     // after the list above was made is reachable too.
     roots.extend(instructions::scoped_dirs(None));
+    // Your `hooks.json`. One that's broken refuses every prompt, so the model
+    // can't fix it for you, and this keeps the fix inside the app.
+    roots.push(taurus_hooks::config_file(&config::home_dir()));
     for plugin in plugins::installed(None) {
         if plugin.scope() == Scope::Global && plugin.summary.source.is_none() {
             roots.push(plugin.root().to_path_buf());
@@ -166,7 +169,11 @@ pub fn create_skill(draft: &SkillProposal, root: &Path) -> Result<PathBuf, Strin
             dir.display()
         ));
     }
-    proposal::save(draft, root).map_err(|e| format!("could not save the skill: {e}"))
+    let saved =
+        proposal::save(draft, root).map_err(|e| format!("could not save the skill: {e}"))?;
+    // A plugin's folder is in the set a running command is watched against.
+    taurus_tools::protected::written_by_this_process(&saved);
+    Ok(saved)
 }
 
 /// Deletes a skill Taurus wrote, and answers with the folder that went.
@@ -206,8 +213,9 @@ pub fn delete_skill(skill: &Skill, owned: &[PathBuf]) -> Result<PathBuf, String>
             ),
         });
     }
-    std::fs::remove_dir_all(&skill.dir)
-        .map_err(|e| format!("could not delete {}: {e}", skill.dir.display()))?;
+    let removed = std::fs::remove_dir_all(&skill.dir);
+    taurus_tools::protected::written_by_this_process(&skill.dir);
+    removed.map_err(|e| format!("could not delete {}: {e}", skill.dir.display()))?;
     Ok(skill.dir.clone())
 }
 
@@ -348,6 +356,7 @@ pub fn fork_agent(agent: &AgentDefinition, target: &Path) -> Result<PathBuf, Str
     copy.frontmatter.name = own_name(agent).to_string();
     copy.write_to(target)
         .map_err(|e| format!("could not write {}: {e}", target.display()))?;
+    taurus_tools::protected::written_by_this_process(target);
     Ok(target.to_path_buf())
 }
 
@@ -386,6 +395,7 @@ pub fn delete_agent(agent: &AgentDefinition, owned: &[PathBuf]) -> Result<PathBu
         });
     }
     std::fs::remove_file(path).map_err(|e| format!("could not delete {}: {e}", path.display()))?;
+    taurus_tools::protected::written_by_this_process(path);
     Ok(path.clone())
 }
 

@@ -12,6 +12,7 @@
 //   node scripts/version.mjs check           # the files agree with each other
 //   node scripts/version.mjs check v0.2.0    # …and with this tag
 //   node scripts/version.mjs set 0.2.0       # write all of them, refresh the lock
+//   node scripts/version.mjs valid 1.0.0-1   # whether this could be set; writes nothing
 //
 // `check` is what the release workflow runs before it builds anything, so a
 // mismatch costs twenty seconds rather than three platforms' worth of compile.
@@ -51,11 +52,21 @@ const files = [
   },
 ];
 
-// Cargo and Tauri both want semver, and the Windows MSI bundler wants the
-// numeric part in particular. Rejecting `v0.2.0` here is the point: the tag
-// carries the `v`, the files do not, and pasting one into the other is the
-// obvious mistake to make.
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+// Cargo and Tauri both want semver, and the Windows MSI bundler is narrower: a
+// pre-release has to be one number no bigger than 65535, because WiX writes it as
+// the fourth part of its version. `1.0.0-rc.1` is fine everywhere else and fails
+// only on the Windows leg, hours into a release. Rejecting `v0.2.0` here is the
+// point too: the tag carries the `v`, the files do not, and pasting one into the
+// other is the obvious mistake to make.
+const SEMVER = /^\d+\.\d+\.\d+(?:-(0|[1-9]\d*))?$/;
+const accepted = (version) => {
+  const m = SEMVER.exec(version);
+  return m !== null && (m[1] === undefined || Number(m[1]) <= 65535);
+};
+const REFUSED = (version) =>
+  `"${version}" is not a version Cargo, Tauri and the Windows installer will all accept\n` +
+  `expected major.minor.patch, with no leading "v" and at most a numeric pre-release ` +
+  `up to 65535: for example 0.2.0, or 1.0.0-1`;
 
 function read(file) {
   const text = readFileSync(join(root, file.path), "utf8");
@@ -91,6 +102,13 @@ function check(tag) {
     process.exit(1);
   }
 
+  // A file edited by hand, or a version from before this rule, fails here rather
+  // than on the Windows leg of the build this is about to start.
+  if (!accepted(first.version)) {
+    console.error(REFUSED(first.version));
+    process.exit(1);
+  }
+
   if (tag) {
     // The tag is the only copy with a `v`, by convention and by the workflow's
     // `tags: ['v*']` filter. Strip exactly that one leading character.
@@ -113,11 +131,8 @@ function check(tag) {
 }
 
 function set(version) {
-  if (!SEMVER.test(version)) {
-    console.error(
-      `"${version}" is not a version Cargo and Tauri will both accept\n` +
-        `expected major.minor.patch, with no leading "v" — for example 0.2.0, or 1.0.0-rc.1`,
-    );
+  if (!accepted(version)) {
+    console.error(REFUSED(version));
     process.exit(1);
   }
 
@@ -169,11 +184,19 @@ switch (command) {
     }
     set(argument);
     break;
+  case "valid":
+    if (!accepted(argument ?? "")) {
+      console.error(REFUSED(argument ?? ""));
+      process.exit(1);
+    }
+    console.log(`${argument} can be set`);
+    break;
   default:
     console.error(
       "usage:\n" +
         "  node scripts/version.mjs check [tag]   verify the version is consistent\n" +
-        "  node scripts/version.mjs set <version> write a new version everywhere",
+        "  node scripts/version.mjs set <version> write a new version everywhere\n" +
+        "  node scripts/version.mjs valid <version> say whether it could be set, writing nothing",
     );
     process.exit(1);
 }

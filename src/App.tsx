@@ -375,7 +375,7 @@ export default function App() {
    */
   const [canvasUnsaved, setCanvasUnsaved] = useState(false);
   /** Writes what the canvas is waiting to write. See `CanvasSlot`. */
-  const canvasFlush = useRef<(() => Promise<void>) | null>(null);
+  const canvasFlush = useRef<(() => Promise<boolean>) | null>(null);
   /** What is highlighted in the canvas right now. Travels with the next
    *  message; see `onScreenFor`. */
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -1501,7 +1501,10 @@ export default function App() {
               onOpenNote={showNote}
               onRunQuery={showQuery}
               find={find}
-              onRetry={store.retry}
+              onRetry={async () => {
+                await canvasFlush.current?.();
+                await store.retry();
+              }}
               // Not an edit in place — see the prop. It arrives in the box the
               // way every other offered sentence does, added to whatever is
               // already there rather than replacing it.
@@ -1722,9 +1725,19 @@ export default function App() {
           draft={draft}
           // Also the moment the mark stops being what you are looking at:
           // asking something is the end of having been sent here.
-          onSend={(...args) => {
+          onSend={async (text, images, onScreen) => {
             setFind(null);
-            return store.send(...args);
+            // What was typed in the canvas a moment ago, on disk before the turn
+            // starts. A fixed hooks file has to be there for this message to get
+            // past it. Written, it's no longer unsaved, whatever the chip said.
+            const written = (await canvasFlush.current?.()) ?? false;
+            return store.send(
+              text,
+              images,
+              written && onScreen?.document?.unsaved
+                ? { ...onScreen, document: { ...onScreen.document, unsaved: false } }
+                : onScreen,
+            );
           }}
           onStop={store.stop}
           onUsage={() => setUsageOpen(true)}
@@ -1855,6 +1868,7 @@ export default function App() {
         {settingsOpen && (
           <Settings
             initialTab={settingsTab}
+            onOpenFile={openLibraryFile}
             onClose={() => {
               setSettingsOpen(false);
               setSettingsTab(undefined);

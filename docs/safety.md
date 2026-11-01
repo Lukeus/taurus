@@ -157,9 +157,150 @@ nobody can list every variable some program runs something from. The list is in
 Otherwise a grant to edit source could give itself every other grant. Any tool
 that names the file it writes is held to this, `run_recipe`'s output included.
 The path is checked after it's resolved and without regard to case, so a symlink
-to `.git/hooks` and `.GIT/Hooks` both count. It covers those tools only:
-`cp x .git/hooks/y` is whatever a grant for `cp` is, and `core.hooksPath` can
-point git at a tracked folder.
+to `.git/hooks` and `.GIT/Hooks` both count. `~/.gitconfig` is on the list too.
+
+A command line naming one of those files is asked about as well, unless the
+program only reads. `cp x .git/hooks/y`, `tee .taurus/hooks.json`, and
+`cd .git/hooks && mv ../x y` are asked about. `cat .git/hooks/pre-commit`,
+`ls .git/hooks` and `git status` aren't. The programs that count as only reading
+are a short list: `cat`, `head`, `tail`, `ls`, `wc`, `grep`, `rg`, `stat`, `file`,
+`du`, `diff`, `echo`, `printf`, `test`, and on Windows `type`, `dir` and
+`findstr`, plus `git`'s `status`, `log`, `diff`, `show`, `blame`, `ls-files`,
+`rev-parse`, `grep`, `add` and `commit`. Reading with anything else, `sed -n` or
+`awk` say, gets asked about.
+
+So are the settings that have git run something, whether through `git config` or
+`git -c`: `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.pager`,
+`alias.*`, `filter.*`, `credential.helper`, `include.path` and the like. Same for
+`git rebase -x`, `git submodule foreach`, `git bisect run`, `git filter-branch`
+and `--upload-pack`. Reading a setting isn't asked about, and neither is
+`git config user.name me`.
+
+`awk` with `system(`, `getline`, a pipe to a quoted command or a `>` after `print`
+counts as running code written into the line, and so does `sed` with `e`, `s///e`,
+`w` or `s///w`. `awk '{print $2}'` and `sed -i 's/a/b/'` still pass.
+
+**This is looking at words, so it's a best effort.** It reads what's written on
+the line, and it can't see a path a program builds when it runs, one a variable
+holds, what a script or a Makefile does, or what `git apply` finds in a patch. A
+grant for `python3` can still write `.git/hooks/x`. It catches the slip and the
+easy route, and it isn't a sandbox.
+
+**So a command a standing grant let through gets looked at afterwards.** Taurus
+reads the files that decide what runs before such a command starts, and again
+when it ends, whether it finished, failed, timed out or was stopped. A background
+command is looked at when it exits. Anything changed is put back, a file that was
+added is removed, and the result says which files, in the transcript and on the
+background command's row:
+
+```
+[taurus] A command running under a standing grant changed files that decide what
+runs on this machine, without anybody being asked. It may be this command or
+another one running beside it. Taurus undid this: .git/hooks/pre-commit (added,
+removed again). What it wrote is kept in ~/.taurus/output/…/restored/…. To let the
+change stand, run the same line again and approve it when asked, or make the
+change yourself. Anything these files ran before this point has already run.
+```
+
+That line gets asked about the next time it runs, once, grant or no grant, so
+there's a way to say yes. A call you approved isn't looked at, because you said
+yes. Neither is a line you allowed once.
+
+On the CLI, `--allow` and `--allow-command` count as a standing grant, because
+nobody looked at that call. So a piped `taurus run --allow-command python3` gets
+looked at. `--dangerously-allow-all` doesn't: it says yes to what no grant can
+cover, including a write to `.git/hooks`, and it's for an environment that's
+already throwaway.
+
+What's in the set:
+
+- in the workspace: `.git/hooks/*` (and a submodule's, and a linked worktree's),
+  the `.taurus` files listed above, and `.taurus/plugins/*`. `*.sample` isn't.
+- global: `permissions.json` and `hooks.json` in the config home, and
+  `~/.gitconfig` and `~/.config/git/config` when the config home is `~/.taurus`
+- `.git/config` and those git config files count only when a setting that runs
+  something changed, so `git remote add` and `git branch -u` under a `git` grant
+  stand. When one did change, the whole file goes back, along with anything
+  ordinary the same command wrote to it. That's in the kept copy.
+
+**This is detection and repair after the fact.** The write deny-list below
+stops some of it from happening at all. Be clear about what the look can't do:
+
+- The command has already run. A hook it wrote can run before the look, and so
+  can anything else it started.
+- Only that set is covered. Writes to `~/.ssh`, `~/.zshrc`, global
+  `~/.taurus/mcp.json`, or anywhere else aren't noticed.
+- A consequence worth knowing: `npm install` with husky under an `npm` grant has
+  its hooks and its `core.hooksPath` undone and reported. Approve that line and it
+  stands.
+- A repository that arrives during the command (`git init`) isn't looked at,
+  including any hook put in it. If `.git` is removed, nothing's put back into it.
+- A file over 2 MB can't be held, so a change to it is reported as not put back.
+  Past 4,096 entries or 32 MB, what's further into the set isn't covered or held.
+- If the app quits while a background command runs, there's no look.
+
+Commands that overlap share one reading, taken by the first and dropped when the
+last ends, so one can't put back what another's look removed. Whichever ends first
+repairs everything found so far, which is why the report says "or another one".
+While a call you approved is running nothing gets repaired, and the reading is
+taken again when it ends, so what you approved stands. A grant-covered write made
+during that time stands too. So does anything Taurus itself writes to these
+files: pressing **Always here** during a long command is kept, and so is a
+Settings edit, a save in the canvas, a rewind, or a plugin added, updated or
+removed in the app.
+
+**A command a grant let through also runs under a write deny-list.** Skill
+scripts under the same rule do too. `--dangerously-allow-all` and a call you
+approved don't. The system itself refuses a write to:
+
+- in the workspace: `.git/hooks` (a submodule's too), the `.taurus` files above,
+  and `.taurus/plugins`
+- in your home: `~/.taurus` in full, `~/.ssh`, `~/.gnupg`, `~/.aws`, `.zshrc`,
+  `.zshenv`, `.zprofile`, `.zlogin`, `.bashrc`, `.bash_profile`, `.bash_login`,
+  `.profile`, fish's config, `~/Library/LaunchAgents`, `~/.config/autostart`, and
+  `~/.config/systemd/user`
+
+`.git/config`, `~/.gitconfig` and `~/.config/git/config` aren't on the list.
+`git config user.name` and `git remote add` write them, and the system can't tell
+which setting changed, so they stay with the look afterwards, which can.
+
+The command sees a plain permission error. When the error names something on the
+list, the result says what happened and how to get it approved, and that line gets
+asked about next time, since approved it runs without the list.
+
+| | Enforced |
+| --- | --- |
+| macOS | `sandbox-exec`. It follows the path the system resolves, so a symlink, a hard link and `.GIT/HOOKS` are refused, and so is creating a listed path that isn't there yet. Renaming or removing a folder above a listed path is refused too. |
+| Linux | `bwrap`, if it's installed and user namespaces are on. A read-only bind needs something to bind over, so **a listed path that doesn't exist yet isn't protected**, and a folder above one can be renamed. Not run yet on a real Linux machine by us: see [Known gaps](known-gaps.md). |
+| Windows | Nothing. |
+
+Without a sandbox, the first covered command in a conversation says so, and the
+look afterwards carries on. If the sandbox itself fails to start, the result says
+that and the command doesn't run. It isn't quietly run without one. See
+[configuration](configuration.md#turning-off-the-write-protection) to turn it off.
+
+**This is a write deny-list and not a full sandbox.** Reads and the network are
+open, because `git push` needs `~/.ssh`. Anything not on the list can be written,
+and code still runs with your rights: a build can read your keys and post them
+somewhere. A repository that didn't exist when the command started isn't on the
+list, so `git init` and `git clone` work.
+
+A few things you may run into under it:
+
+- On macOS a program with the setuid bit, like `ps`, fails to start, and
+  `sandbox-exec` can't nest, so `swift build` needs `--disable-sandbox`.
+- `ssh` can't add to `~/.ssh/known_hosts`, and it warns about that and carries on.
+  Commit signing and AWS SSO want to write under `~/.gnupg` and `~/.aws`, and we
+  haven't tried either. Approve the line, or turn this off.
+- husky's `npm install` gets a refused write to `.git/hooks` rather than a repair,
+  if it writes there. Approve the line and it stands.
+
+An edit you make in another program to one of these files while a grant-covered
+command is running looks the same as the command making it. It's undone, reported
+and kept in the copy. A dev server left running in the background makes that
+window long, and it also means a hook it wrote stays live until it exits. Reading
+the set again partway through would shorten the window, and it would also absorb
+whatever that command had written so far, so it isn't done.
 
 PowerShell is a wrapper unless all it does is run one script file:
 `powershell -NoProfile -File build.ps1` can be granted, the way
@@ -261,7 +402,9 @@ A workspace's own `.taurus` isn't passive data:
 - `hooks.json` runs a program on every matching tool call or prompt.
 - A skill can carry a script.
 - A plugin in `.taurus/plugins/` can bring skills, agents, servers and hooks
-  at once. See [Plugins](configuration.md#plugins).
+  at once. If its hooks file can't be used, trusting the project means every
+  prompt and tool call is refused until you fix or disable the plugin. See
+  [Plugins](configuration.md#plugins).
 - `permissions.json` is a standing grant. It's the one file in a repository
   that hands over capability with no prompt at all:
   `{"allowed": ["run_command:rm"]}` in a clone is an "always allow" nobody ever
@@ -278,7 +421,8 @@ won't take instructions from it.
 Trusting a workspace doesn't let it read the rest of your machine, either. A
 `@path` import in a project's `AGENTS.md` has to stay inside the workspace after
 symlinks resolve. `@../../.ssh/config` is reported and not read, so it can't
-land in the prompt that goes to your provider.
+land in the prompt that goes to your provider. So is a project's `CLAUDE.md` or
+other brief that's a symlink pointing outside the workspace.
 
 Because the rule is that blunt, it's easy to check. Every project-tier read in
 the harness resolves the workspace through a single function. A read that

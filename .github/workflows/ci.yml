@@ -47,13 +47,15 @@ jobs:
       # microphone in taurus-voice, and libclang-dev is what bindgen reads
       # whisper.cpp's headers with. Neither is a WebView package, but both
       # have to be there before anything that links the app compiles. The
-      # Windows runner ships LLVM, and macOS has libclang with Xcode.
+      # Windows runner ships LLVM, and macOS has libclang with Xcode. bubblewrap
+      # is what the write deny-list runs under on Linux; without it those tests
+      # skip and still read as passing.
       - name: Install Linux WebView dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
             libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev libclang-dev
+            libasound2-dev libclang-dev bubblewrap
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -168,7 +170,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
             libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev libclang-dev
+            libasound2-dev libclang-dev bubblewrap
 
       - uses: dtolnay/rust-toolchain@stable
       # Saved even when the job fails. The default is to save only on success,
