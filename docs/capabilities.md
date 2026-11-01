@@ -832,6 +832,18 @@ The row holds 12 files. Past that, the least recently used one closes, as long a
 everything in it is saved. Each workspace has its own set of tabs, and they come
 back when you return to it in the same window.
 
+### Going to a file
+
+Press **Go to file** in the toolbar, or ⌘P (Ctrl+P on Windows and Linux), and type
+part of a name. Letters only have to appear in order, so `cnvslt` finds
+`CanvasSlot.tsx`. A match in the filename beats one in a folder, and typing a `/`
+lets you match across folders, like `src/comp/can`. With nothing typed, the files
+you already have open come first.
+
+Enter opens the file in a tab. If Changes or Agent activity has the column, it
+gives way. The list follows the same rules as the `grep` and `glob` tools: hidden
+files are in, `.git` and anything in `.gitignore` are out.
+
 ### Asking about a passage
 
 Select some text and **Ask about this** appears. It puts the start of a

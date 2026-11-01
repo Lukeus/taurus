@@ -132,6 +132,7 @@ const SHOTS = [
   // Several files open, with a clash of names and a save pending: the row of
   // tabs is laid out by the browser, which jsdom doesn't do.
   { name: "canvas-tabs", shot: "canvas-tabs", theme: "dark" },
+  { name: "finder", shot: "finder", theme: "dark" },
   // The notebook: both scopes in the list, one note open in the editor that
   // wraps. The only picture of the pane, and the only check of the prose editor
   // there is — jsdom measures nothing, so a mount test can prove the text is in

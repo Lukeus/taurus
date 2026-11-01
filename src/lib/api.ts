@@ -43,6 +43,7 @@ import type { DataValueCount } from "../bindings/DataValueCount";
 import type { Dataset } from "../bindings/Dataset";
 import type { Document } from "../bindings/Document";
 import type { Saved } from "../bindings/Saved";
+import type { WorkspaceFiles } from "../bindings/WorkspaceFiles";
 import type { LineRange } from "../bindings/LineRange";
 import type { Recipe } from "../bindings/Recipe";
 import type { RecipeStep } from "../bindings/RecipeStep";
@@ -1375,6 +1376,8 @@ export const rescanLibrary = () => invoke<void>("rescan_library");
  * read does, because it arrives from a transcript that may have been reopened
  * or hand-edited.
  */
+export const workspaceFiles = () => invoke<WorkspaceFiles>("workspace_files");
+
 export const openDocument = (path: string) =>
   invoke<Document>("open_document", { path });
 

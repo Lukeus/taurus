@@ -3711,6 +3711,16 @@ body.resizing-y * {
   color: var(--text);
   border-radius: 2px;
 }
+/* The folder after the filename, first to give way when the row runs out. */
+.finder-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 .palette-why,
 .palette-when,
 .palette-key {

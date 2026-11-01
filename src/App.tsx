@@ -107,6 +107,7 @@ const PANELS = {
   usage: () => import("./components/UsagePanel"),
   traces: () => import("./components/TracePanel"),
   palette: () => import("./components/CommandPalette"),
+  finder: () => import("./components/FileFinder"),
   changes: () => import("./components/ChangesDrawer"),
   delegate: () => import("./components/DelegateTranscript"),
   activity: () => import("./components/AgentsPanel"),
@@ -128,6 +129,7 @@ const PluginsDrawer = lazy(() =>
 );
 const UsagePanel = lazy(() => PANELS.usage().then((m) => ({ default: m.UsagePanel })));
 const TracePanel = lazy(() => PANELS.traces().then((m) => ({ default: m.TracePanel })));
+const FileFinder = lazy(() => PANELS.finder().then((m) => ({ default: m.FileFinder })));
 const CommandPalette = lazy(() =>
   PANELS.palette().then((m) => ({ default: m.CommandPalette })),
 );
@@ -420,6 +422,7 @@ export default function App() {
   const [usageOpen, setUsageOpen] = useState(false);
   const [tracesOpen, setTracesOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [finderOpen, setFinderOpen] = useState(false);
   /**
    * Text a search jump is looking for in the open conversation.
    *
@@ -539,6 +542,9 @@ export default function App() {
       if (isChord(e, "k") || (isChord(e, "p") && e.shiftKey)) {
         e.preventDefault();
         setPaletteOpen(true);
+      } else if (isChord(e, "p")) {
+        e.preventDefault();
+        setFinderOpen(true);
       } else if (isChord(e, "n") && !e.shiftKey) {
         e.preventDefault();
         // Through the ref, not the closure. This effect is registered once,
@@ -932,6 +938,14 @@ export default function App() {
         shortcut: "esc",
         unavailable: speaking ? undefined : "Nothing is being read",
         run: () => useSpeech.getState().stop(),
+      },
+      {
+        id: "find-file",
+        label: "Go to file",
+        group: "Do",
+        keywords: "open find search file canvas editor",
+        shortcut: chord("P"),
+        run: () => setFinderOpen(true),
       },
       {
         id: "workspace",
@@ -1410,6 +1424,14 @@ export default function App() {
 
           <div className="spacer" />
 
+          <button
+            className="chip"
+            data-tip={`Find a file in this workspace (${chord("P")})`}
+            onClick={() => setFinderOpen(true)}
+          >
+            Go to file
+          </button>
+
           {/* Only while there's something to watch. Delegates working in the
               background, or two side by side, are otherwise one line each
               inside a folded run of tool calls. */}
@@ -1866,6 +1888,19 @@ export default function App() {
           see `warmPanels` — and a flash of skeleton for a frame that usually
           does not happen reads worse than the drawer simply appearing. */}
       <Suspense fallback={null}>
+        {finderOpen && (
+          <FileFinder
+            open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
+            onOpen={(path) => {
+              setSkillsOpen(false);
+              setAgentsOpen(false);
+              setChangesOpen(false);
+              useAgentsView.getState().close();
+              showDocument(path, null);
+            }}
+            onClose={() => setFinderOpen(false)}
+          />
+        )}
         {paletteOpen && (
           <CommandPalette
             actions={actions}

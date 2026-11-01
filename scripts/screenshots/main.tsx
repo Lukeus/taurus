@@ -214,6 +214,22 @@ const ANSWERS: Record<string, unknown> = {
   // — see `taurus_host::document` — so the shot needs this as well as the
   // event that opened it.
   open_document: DOCUMENT,
+  workspace_files: {
+    cut: false,
+    paths: [
+      "crates/taurus-host/src/document.rs",
+      "crates/taurus-host/src/lib.rs",
+      "crates/taurus-tools/src/builtin/search.rs",
+      "crates/taurus-tools/src/lib.rs",
+      "docs/capabilities.md",
+      "docs/retries.md",
+      "README.md",
+      "src/components/Canvas.tsx",
+      "src/components/CanvasDeck.tsx",
+      "src/components/CanvasSlot.tsx",
+      "src/lib/canvasTabs.ts",
+    ],
+  },
   // The notes pane reads its list on mount and the note itself when one is
   // chosen, for the reason the canvas reads its file: the list carries no text,
   // so a remembered copy can never be shown in place of what is on disk.
@@ -892,6 +908,23 @@ requestAnimationFrame(() => {
         await until(() =>
           [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "100"),
         );
+      },
+      // The finder, part way through a search. Real keys rather than state,
+      // because the shortcut and the ranking are what the picture is of.
+      finder: async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "p",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            bubbles: true,
+          }),
+        );
+        const box = (await until(() =>
+          document.querySelector(".palette-input"),
+        )) as HTMLInputElement;
+        await until(() => document.querySelector(".palette-row"));
+        typeInto(box, "canv");
+        await until(() => document.querySelector(".palette-row mark"));
       },
       // Four files, two with one name, the way the model opens them. The row's
       // overflow and its labels are the browser's layout, which jsdom doesn't do.

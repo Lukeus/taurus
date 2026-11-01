@@ -1057,6 +1057,10 @@ the backlog, and they're the minority.
   split inside the canvas, so comparing two side by side is still the terminal
   dock's job. Open tabs last as long as the window, and aren't restored when
   it reopens.
+- **The file finder lists at most 50,000 files.** The list crosses to the
+  frontend as one message, so the walk stops at that count or after 5 seconds,
+  and the finder says when it did. It matches names, not contents, and it only
+  looks in the workspace. Personal skills and agents open from their drawers.
 - **A canvas edit is invisible to the Changes panel and to rewind.** The
   drawer shows what this *conversation* changed and the way back from it.
   Your own typing is neither, so git is the undo that covers it. The cost is

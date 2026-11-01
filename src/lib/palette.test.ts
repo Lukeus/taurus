@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { marked, rank, score, type Action } from "./palette";
+import { marked, rank, score, type Action, rankPaths } from "./palette";
 
 const action = (label: string, patch: Partial<Action> = {}): Action => ({
   id: label,
@@ -123,5 +123,48 @@ describe("marking what matched", () => {
       { text: "c", on: true },
       { text: "de", on: false },
     ]);
+  });
+});
+
+describe("rankPaths", () => {
+  const PATHS = [
+    "crates/taurus-voice/src/models.rs",
+    "crates/taurus-host/src/host/mod.rs",
+    "src/mod/deep/other.ts",
+    "mod.rs",
+    "src/components/CanvasSlot.tsx",
+  ];
+  const best = (query: string) => rankPaths(PATHS, query, 10).map((hit) => hit.item);
+
+  it("puts a file named for the query above one filed under it", () => {
+    const found = best("mod");
+    expect(found.indexOf("crates/taurus-host/src/host/mod.rs")).toBeLessThan(
+      found.indexOf("src/mod/deep/other.ts"),
+    );
+  });
+
+  it("puts the closer name first, then the one nearer the root", () => {
+    expect(best("mod").slice(0, 3)).toEqual([
+      "mod.rs",
+      "crates/taurus-host/src/host/mod.rs",
+      "crates/taurus-voice/src/models.rs",
+    ]);
+  });
+
+  it("matches across folders when the query names them", () => {
+    expect(best("src/comp/can")[0]).toBe("src/components/CanvasSlot.tsx");
+  });
+
+  it("marks the characters where they are in the whole path", () => {
+    const [hit] = rankPaths(["src/App.tsx"], "app", 1);
+    expect(hit.spans).toEqual([4, 5, 6]);
+  });
+
+  it("keeps the given order for no query, up to the limit", () => {
+    expect(rankPaths(PATHS, " ", 2).map((hit) => hit.item)).toEqual(PATHS.slice(0, 2));
+  });
+
+  it("finds nothing for what isn't there", () => {
+    expect(best("zzz")).toEqual([]);
   });
 });

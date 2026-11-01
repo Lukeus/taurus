@@ -44,6 +44,7 @@ use taurus_host::{
     McpServerDraft, McpServerRef, McpServerView, ModelRoutes, Note, Page, PageKind, PageRef,
     PageSaved, PlanEditMark, Problem, ProviderConfig, Repo, RepoStatus, Rewind, RouteJob, Saved,
     SessionLog, SessionMeta, Settings, Switch, Theme, ThemeFile, TurnChange, TurnRef,
+    WorkspaceFiles,
 };
 
 use crate::live::Live;
