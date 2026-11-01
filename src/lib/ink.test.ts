@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { grammarFor, mark, paint, type Ink } from "./ink";
+import { grammarFor, mark, paint, sliceRuns, type Ink } from "./ink";
 
 /** The text back out of the runs, which is what every property here is about. */
 const text = (runs: Ink[]) => runs.map((run) => run.text).join("");
@@ -127,12 +127,19 @@ describe("what a hint means", () => {
     expect(grammarFor("C:\\work\\main.py")).toBe("python");
   });
 
+  it("reads a file named for what it is", () => {
+    expect(grammarFor("Makefile")).toBe("makefile");
+    expect(grammarFor("a.b/Dockerfile")).toBe("dockerfile");
+    expect(grammarFor("Dockerfile.dev")).toBe("dockerfile");
+    expect(grammarFor(".gitignore")).toBe("conf");
+    expect(grammarFor("config/.env.local")).toBe("conf");
+  });
+
   it("names no language for a file that names none", () => {
     // A dotfile is not an extension, and neither is a directory that has a dot
     // in it. Both would otherwise be looked up and, occasionally, found.
-    expect(grammarFor(".gitignore")).toBe(null);
-    expect(grammarFor("Makefile")).toBe(null);
-    expect(grammarFor("a.b/Dockerfile")).toBe(null);
+    expect(grammarFor("a.b/LICENSE")).toBe(null);
+    expect(grammarFor(".somerc")).toBe(null);
     expect(grammarFor("notes.txt")).toBe(null);
     expect(grammarFor(null)).toBe(null);
     expect(grammarFor("")).toBe(null);
@@ -227,5 +234,69 @@ describe("markdown", () => {
       text: "[the docs](docs/x.md)",
       kind: "fn",
     });
+  });
+});
+
+describe("the languages a file can be", () => {
+  // A sample of each, with one keyword and one comment it must find.
+  const SAMPLES: [string, string, string, string][] = [
+    ["a.cpp", "class A {}; // note\n", "class", "// note"],
+    ["a.h", "/* note */ return 0;", "return", "/* note */"],
+    ["a.cs", "namespace A; // note", "namespace", "// note"],
+    ["A.java", "public class A {} // note", "public", "// note"],
+    ["a.kt", "fun a() {} // note", "fun", "// note"],
+    ["a.swift", "guard let a else {} // note", "guard", "// note"],
+    ["a.rb", "def a\nend # note", "def", "# note"],
+    ["a.php", "function a() {} # note", "function", "# note"],
+    ["a.lua", "local a = 1 -- note", "local", "-- note"],
+    ["a.css", "a { color: red !important; } /* note */", "important", "/* note */"],
+    ["a.sql", "SELECT 1 -- note", "SELECT", "-- note"],
+    ["Dockerfile", "FROM alpine # note", "FROM", "# note"],
+    ["Makefile", "ifeq (a,b) # note", "ifeq", "# note"],
+    ["a.ini", "enabled = true ; note", "true", "; note"],
+  ];
+
+  it.each(SAMPLES)("paints %s", (path, source, keyword, comment) => {
+    const runs = paint(source, grammarFor(path));
+    expect(runs.map((run) => run.text).join("")).toBe(source);
+    expect(runs.find((run) => run.kind === "keyword")?.text).toContain(keyword);
+    expect(runs.find((run) => run.kind === "comment")?.text).toContain(comment);
+  });
+
+  it("paints an HTML comment and an attribute", () => {
+    const source = '<a href="x"><!-- note --></a>';
+    const runs = paint(source, grammarFor("a.html"));
+    expect(runs.map((run) => run.text).join("")).toBe(source);
+    expect(runs.find((run) => run.kind === "string")?.text).toBe('"x"');
+    expect(runs.find((run) => run.kind === "comment")?.text).toBe("<!-- note -->");
+  });
+});
+
+describe("sliceRuns", () => {
+  const RUNS: Ink[] = [
+    { text: "abc", kind: "keyword" },
+    { text: "def", kind: "plain" },
+    { text: "ghi", kind: "string" },
+  ];
+  const text = (from: number, to: number) => sliceRuns(RUNS, from, to).map((r) => r.text).join("");
+
+  it("returns exactly the characters asked for", () => {
+    for (let from = 0; from <= 9; from += 1) {
+      for (let to = from; to <= 9; to += 1) expect(text(from, to)).toBe("abcdefghi".slice(from, to));
+    }
+  });
+
+  it("keeps each piece's colour", () => {
+    expect(sliceRuns(RUNS, 2, 7).map((r) => r.kind)).toEqual(["keyword", "plain", "string"]);
+  });
+
+  it("knows a window opened inside a docstring is a string", () => {
+    const source = `"""\n${"line\n".repeat(50)}"""\nreturn 1\n`;
+    const whole = paint(source, "python");
+    const start = source.indexOf("line");
+    const inside = sliceRuns(whole, start, start + 4);
+    expect(inside).toEqual([{ text: "line", kind: "string" }]);
+    const after = source.indexOf("return");
+    expect(sliceRuns(whole, after, after + 6)[0].kind).toBe("keyword");
   });
 });

@@ -42,6 +42,7 @@ import {
   GLOBAL_PROVIDERS,
   DOCUMENT,
   DOCUMENT_EVENTS,
+  CODE_DOCUMENT,
   LONG_DOCUMENT,
   DOCUMENT_PROMPT,
   MCP_ENVIRONMENT,
@@ -214,6 +215,22 @@ const ANSWERS: Record<string, unknown> = {
   // — see `taurus_host::document` — so the shot needs this as well as the
   // event that opened it.
   open_document: DOCUMENT,
+  workspace_files: {
+    cut: false,
+    paths: [
+      "crates/taurus-host/src/document.rs",
+      "crates/taurus-host/src/lib.rs",
+      "crates/taurus-tools/src/builtin/search.rs",
+      "crates/taurus-tools/src/lib.rs",
+      "docs/capabilities.md",
+      "docs/retries.md",
+      "README.md",
+      "src/components/Canvas.tsx",
+      "src/components/CanvasDeck.tsx",
+      "src/components/CanvasSlot.tsx",
+      "src/lib/canvasTabs.ts",
+    ],
+  },
   // The notes pane reads its list on mount and the note itself when one is
   // chosen, for the reason the canvas reads its file: the list carries no text,
   // so a remembered copy can never be shown in place of what is on disk.
@@ -320,6 +337,7 @@ window.__TAURI_INTERNALS__ = {
     // The scrolled shot needs a file longer than the panel; every other canvas
     // shot is of the short one.
     if (cmd === "open_document" && shot === "canvas-scrolled") return LONG_DOCUMENT;
+    if (cmd === "open_document" && shot === "canvas-code") return CODE_DOCUMENT;
     // Each tab has to be its own file, or the row folds them into one.
     if (cmd === "open_document" && shot === "canvas-tabs") {
       return { ...DOCUMENT, path: (args as { path: string }).path };
@@ -525,7 +543,11 @@ requestAnimationFrame(() => {
       // the same way, and a week-old transcript flinging a file onto the
       // screen would be the app deciding where you are looking.
       ...(shot.startsWith("canvas")
-        ? { opening: { path: DOCUMENT.path, lines: { from: 15, to: 19 }, at: 1 } as never }
+        ? {
+            opening: (shot === "canvas-code"
+              ? { path: CODE_DOCUMENT.path, lines: null, at: 1 }
+              : { path: DOCUMENT.path, lines: { from: 15, to: 19 }, at: 1 }) as never,
+          }
         : {}),
       // Seeded rather than fetched, for the same reason the entries above are:
       // the list arrives from `refresh`, which the harness never calls, and
@@ -892,6 +914,55 @@ requestAnimationFrame(() => {
         await until(() =>
           [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "100"),
         );
+      },
+      // Scrolled into the middle of a docstring. The paint starts well below where
+      // it opened, so the colours are right only if the scan began at the top.
+      "canvas-code": async () => {
+        const area = (await until(() =>
+          document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        area.scrollTop = 79 * Number.parseFloat(getComputedStyle(area).lineHeight);
+        await until(() =>
+          [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "80"),
+        );
+      },
+      // Find in a file, with matches on screen. Highlights lie under the textarea's
+      // text and have to line up with it, which only a real layout can show.
+      "canvas-find": async () => {
+        const area = (await until(() =>
+          document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        area.focus();
+        area.setSelectionRange(0, 0);
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "f",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            bubbles: true,
+          }),
+        );
+        const box = (await until(() =>
+          document.querySelector(".doc-find-input"),
+        )) as HTMLInputElement;
+        typeInto(box, "attempt");
+        await until(() => document.querySelector(".ink-hit.current"));
+      },
+      // The finder, part way through a search. Real keys rather than state,
+      // because the shortcut and the ranking are what the picture is of.
+      finder: async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "p",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            bubbles: true,
+          }),
+        );
+        const box = (await until(() =>
+          document.querySelector(".palette-input"),
+        )) as HTMLInputElement;
+        await until(() => document.querySelector(".palette-row"));
+        typeInto(box, "canv");
+        await until(() => document.querySelector(".palette-row mark"));
       },
       // Four files, two with one name, the way the model opens them. The row's
       // overflow and its labels are the browser's layout, which jsdom doesn't do.

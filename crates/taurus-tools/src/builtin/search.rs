@@ -88,6 +88,34 @@ fn walk_builder(root: &std::path::Path, skip: &'static [&'static str]) -> WalkBu
     builder
 }
 
+/// Every file in a workspace, for a person looking for one by name.
+///
+/// The same traversal the search tools use, so the file finder and `grep` agree
+/// about what's in the workspace. Workspace-relative with forward slashes, sorted.
+/// `cut` says the walk stopped at `limit` or `deadline`, so what came back isn't
+/// every file.
+pub fn list_files(
+    root: &std::path::Path,
+    limit: usize,
+    deadline: std::time::Duration,
+) -> std::io::Result<(Vec<String>, bool)> {
+    let root = root.canonicalize()?;
+    let started = std::time::Instant::now();
+    let mut paths = Vec::new();
+    let mut cut = false;
+    for entry in walker(&root).flatten() {
+        if paths.len() >= limit || started.elapsed() > deadline {
+            cut = true;
+            break;
+        }
+        if entry.file_type().is_some_and(|kind| kind.is_file()) {
+            paths.push(crate::path_guard::display_under(&root, entry.path()));
+        }
+    }
+    paths.sort_unstable();
+    Ok((paths, cut))
+}
+
 /// How long a search may walk before it answers with what it has.
 ///
 /// A walk of a large tree, or a pattern that reads most of it, can run for
@@ -1098,5 +1126,65 @@ mod tests {
             }
             eprintln!("{label}  best of 5 {best:>10.1?}  ({lines} lines out)");
         }
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::list_files;
+    use std::time::Duration;
+
+    const AGES: Duration = Duration::from_secs(60);
+
+    fn workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".github")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        for file in [
+            "src/deep/a.rs",
+            "b.md",
+            ".git/config",
+            ".github/ci.yml",
+            "target/out.bin",
+            ".gitignore",
+        ] {
+            std::fs::write(root.join(file), "target/\n").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn it_lists_what_the_search_tools_can_see() {
+        let dir = workspace();
+        let (paths, cut) = list_files(dir.path(), 100, AGES).unwrap();
+        assert_eq!(
+            paths,
+            [".github/ci.yml", ".gitignore", "b.md", "src/deep/a.rs"]
+        );
+        assert!(!cut);
+    }
+
+    #[test]
+    fn a_long_list_stops_and_says_so() {
+        let dir = workspace();
+        let (paths, cut) = list_files(dir.path(), 2, AGES).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(cut);
+    }
+
+    #[test]
+    fn a_slow_walk_stops_and_says_so() {
+        let dir = workspace();
+        let (_, cut) = list_files(dir.path(), 100, Duration::ZERO).unwrap();
+        assert!(cut);
+    }
+
+    #[test]
+    fn a_folder_that_is_gone_is_an_error_rather_than_no_files() {
+        let dir = workspace();
+        assert!(list_files(&dir.path().join("nothing"), 100, AGES).is_err());
     }
 }

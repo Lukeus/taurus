@@ -58,7 +58,7 @@ const TYPES = words(`int integer bigint smallint tinyint float double decimal nu
  * ending at the newline, because in a box someone is typing in, an unfinished
  * string is the normal state of an unfinished query.
  */
-const SQL: Grammar = {
+export const SQL: Grammar = {
   line: ["--"],
   block: [["/*", "*/"]],
   quotes: [

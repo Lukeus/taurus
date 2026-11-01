@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { replaceText } from "../lib/indent";
 import { isComposing } from "../lib/keys";
 
 import { paint } from "../lib/ink";
@@ -213,7 +214,7 @@ export function ProseEditor({
   const write = (area: HTMLTextAreaElement, from: number, to: number, insert: string, select: [number, number]) => {
     placing.current = true;
     try {
-      replace(area, from, to, insert);
+      replaceText(area, from, to, insert);
     } finally {
       placing.current = false;
     }
@@ -435,29 +436,4 @@ function scrollerOf(el: HTMLElement): HTMLElement | null {
     if (overflowY === "auto" || overflowY === "scroll") return up;
   }
   return null;
-}
-
-/**
- * Replaces a stretch of the textarea the way typing would.
- *
- * `insertText` is the one route into the browser's own undo history, so it is
- * tried first; a ⌘Z after a list carried on takes the new item back rather
- * than the whole history with it. Where it is missing — jsdom, and in principle
- * any engine that finally drops a deprecated command — the text goes in
- * directly and an `input` is sent, which is what the component listens to
- * either way.
- */
-function replace(area: HTMLTextAreaElement, from: number, to: number, insert: string) {
-  area.focus();
-  area.setSelectionRange(from, to);
-  const exec = typeof document.execCommand === "function" ? document.execCommand.bind(document) : null;
-  // An empty insert is a deletion, which `insertText` does not reliably do.
-  const done = exec
-    ? insert === ""
-      ? from === to || exec("delete", false)
-      : exec("insertText", false, insert)
-    : false;
-  if (done) return;
-  area.setRangeText(insert, from, to, "end");
-  area.dispatchEvent(new Event("input", { bubbles: true }));
 }

@@ -1,6 +1,7 @@
 //! Memory notes, the notebook, and documents open on the canvas.
 
 use super::*;
+use crate::WorkspaceFiles;
 
 impl Host {
     /// What earlier conversations in this workspace left for the next one.
@@ -139,6 +140,23 @@ impl Host {
     }
 
     /* ------------------------------------------------------------- canvas */
+
+    /// Every file in the workspace, for the file finder.
+    ///
+    /// Capped, because the list crosses the IPC channel as one message. Only ever
+    /// the workspace: the library's personal folders have their own drawers.
+    pub async fn workspace_files(&self) -> Result<WorkspaceFiles, String> {
+        const MOST: usize = 50_000;
+        const LONGEST: std::time::Duration = std::time::Duration::from_secs(5);
+        let workspace = self.workspace().await;
+        tokio::task::spawn_blocking(move || {
+            let (paths, cut) = taurus_tools::builtin::search::list_files(&workspace, MOST, LONGEST)
+                .map_err(|e| format!("Could not list the files in this workspace: {e}"))?;
+            Ok(WorkspaceFiles { paths, cut })
+        })
+        .await
+        .map_err(|e| format!("listing the files failed: {e}"))?
+    }
 
     /// One text file, read for the editor.
     ///

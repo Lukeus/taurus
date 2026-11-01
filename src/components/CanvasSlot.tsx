@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react";
 
 import * as api from "../lib/api";
 import type { Document, Selection } from "../lib/api";
+import { findKey, type FindKey } from "../lib/find";
 import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "../lib/document";
 import { useStore } from "../state/store";
 import { Canvas } from "./Canvas";
@@ -123,6 +124,8 @@ export function CanvasSlot({
   const [conflict, setConflict] = useState<Document | null>(null);
   /** Lines somebody else just changed, to tint for a moment. */
   const [flash, setFlash] = useState<{ from: number; to: number } | null>(null);
+  /** The last find key pressed here, for the editor's find bar. */
+  const [findAsk, setFindAsk] = useState<{ key: FindKey } | null>(null);
 
   // Nearly always false — the canvas saves a moment after typing stops. What
   // it catches is the conflict, where the screen and the disk hold different
@@ -488,11 +491,18 @@ export function CanvasSlot({
   useEffect(() => {
     if (!showing) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       const inCanvas = !!target?.closest?.(".canvas");
       const nowhere = !target || target === document.body || target === document.documentElement;
       if (!inCanvas && !nowhere) return;
+      const asked = findKey(e);
+      if (asked) {
+        e.preventDefault();
+        setFindAsk({ key: asked });
+        return;
+      }
+      if (e.key !== "Escape") return;
       if (inCanvas && target?.closest?.("input, textarea, select, [contenteditable='true']")) {
         target.blur();
         return;
@@ -518,6 +528,7 @@ export function CanvasSlot({
         flash={flash}
         conflict={conflict}
         error={docError}
+        findAsk={findAsk}
         onEdit={setTyped}
         onKeepMine={() => {
           // Adopt the *fingerprint* the refusal handed back while keeping

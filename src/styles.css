@@ -3711,6 +3711,16 @@ body.resizing-y * {
   color: var(--text);
   border-radius: 2px;
 }
+/* The folder after the filename, first to give way when the row runs out. */
+.finder-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 .palette-why,
 .palette-when,
 .palette-key {
@@ -7212,6 +7222,60 @@ button.link:where(:not(.excalidraw *)):hover {
   min-height: 0;
   display: flex;
   overflow: hidden;
+  position: relative;
+}
+/* Over the file's top corner, and outside `.doc-scroll`, whose right edge fades. */
+.doc-find {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  max-width: calc(100% - 32px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+}
+.doc-find-input {
+  width: 160px;
+  min-width: 0;
+  padding: 2px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+}
+.doc-find-count {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.doc-find-button {
+  flex: none;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+}
+.doc-find-button:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+/* Behind the characters, which keep their colour: a match in a string is still a
+   string. No padding or border, since either would slide the text off the box. */
+.ink-hit {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.ink-hit.current {
+  background: color-mix(in srgb, var(--warn) 55%, transparent);
 }
 .doc-scroll {
   flex: 1;

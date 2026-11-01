@@ -88,6 +88,16 @@ pub struct Document {
     pub fingerprint: String,
 }
 
+/// The files in a workspace, for finding one by name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkspaceFiles {
+    /// Workspace-relative with forward slashes, sorted.
+    pub paths: Vec<String>,
+    /// The walk stopped early, so this isn't every file.
+    pub cut: bool,
+}
+
 /// What the file looked like when it was read.
 ///
 /// Length and mtime — the comparison `make` and `rsync` have always used, and

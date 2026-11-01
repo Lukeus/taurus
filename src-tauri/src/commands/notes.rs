@@ -101,6 +101,12 @@ pub async fn forget_page(
     state.host.forget_page(scope, kind, &name).await
 }
 
+/// Every file in the workspace, for the file finder.
+#[tauri::command]
+pub async fn workspace_files(state: State<'_, Arc<AppState>>) -> CmdResult<WorkspaceFiles> {
+    state.host.workspace_files().await
+}
+
 /// One text file, read for the canvas.
 ///
 /// Called when a document is opened and again whenever it has to be re-read —
