@@ -493,8 +493,10 @@ mod tests {
             user = b.user.display()
         ));
         let text = b.line("./x.sh").await;
-        for line in ["hook=1", "keep=1", "ssh=1", "home=1"] {
-            assert!(text.contains(line), "{line}: {text}");
+        // Any failure counts: a refused redirect is 1 from macOS's sh and 2 from dash.
+        for name in ["hook", "keep", "ssh", "home"] {
+            assert!(text.contains(&format!("{name}=")), "{name}: {text}");
+            assert!(!text.contains(&format!("{name}=0")), "{name}: {text}");
         }
         for line in ["other=0", "gitfile=0", "config=0", "plain=0", "touch=0"] {
             assert!(text.contains(line), "{line}: {text}");
