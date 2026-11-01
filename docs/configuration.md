@@ -216,8 +216,15 @@ ignored.
 `pre_tool_use` and `user_prompt_submit`, all of these deny. That's the
 uncomfortable half, and it's on purpose. A hook exists to decide, and one that
 couldn't hasn't approved anything. That includes a `hooks.json` that's there
-and can't be read, because of its permissions or bytes that aren't UTF-8: both
-events refuse, naming the file, until you fix or remove it.
+and can't be used: its permissions, bytes that aren't UTF-8, a syntax error, the
+wrong shape, or an entry that isn't valid. Both events refuse, naming the file
+and what's wrong with it, until you fix or remove it. In a file with one bad
+entry, the good ones go on running too.
+
+You don't have to restart to get out of that. A refusal stops the model and your
+prompts, not you: fix the file in any editor, and your next message reads the
+fix. `taurus hooks check` names the problem without sending a prompt. A file like this isn't in `taurus hooks list` or Settings as hooks,
+only as a problem, since the hooks refusing in its place aren't ones you wrote.
 
 A typo in `hooks.json` that blocks every call is loud, names the hook and the
 exit code, and takes seconds to fix. A guard that silently stops guarding
@@ -658,11 +665,31 @@ installed, and the reasons are the error. A clone is made at the ref you
 name (the default branch otherwise) and stays at that commit until you run
 `update`, which fetches that same ref again. A plugin added with `--ref v1.2`
 stays on `v1.2`. You can't add a folder that holds the plugins folder itself,
-like `taurus plugin add . --project`, since it would be copied into itself. A clone's `.git` is dropped, so a
-project's `.taurus/plugins/` holds plain
+like `taurus plugin add . --project`, since it would be copied into itself. An
+`update` is held to the same check: a new copy that wouldn't load is turned
+away, and the one you have stays. A clone's `.git` is dropped, so a project's `.taurus/plugins/` holds plain
 files rather than a repository inside yours. Links in a plugin folder aren't
 followed when it's copied in, because one could point anywhere on the machine
 it was made on.
+
+**A plugin whose hooks file can't be used refuses, like a broken `hooks.json`.**
+That covers a syntax error, the wrong shape, a bad entry, a file that can't be
+read, and a hooks file its manifest names that isn't there. You can only get
+there by editing an installed plugin, or by a file going missing. Every prompt
+and tool call is refused, naming the plugin, the file and what's wrong. The
+plugin's skills, agents and servers stay out until then.
+
+There are three ways out, and any of them takes effect on your next message
+with no restart:
+
+- Fix the file.
+- Switch the plugin off with `taurus plugin disable ops`. A plugin that's off
+  doesn't refuse.
+- Remove it with `taurus plugin remove ops`.
+
+Add `--project` to either command for a project's plugin. **Plugins** in the
+rail does both in the app. A fetched plugin's `taurus plugin update` also mends
+it, if the new copy is fine.
 
 **Every part is named under its plugin**, as Claude Code names them. Skill
 `deploy` in plugin `ops` is `ops:deploy`, and so is an agent. Run it as
@@ -957,6 +984,18 @@ A file that won't parse costs only itself. The rest still load, and Settings ›
 Appearance says what's wrong, naming the file, the key and what to put there.
 The same goes for a color that isn't a color, a missing logo, or a size past
 its maximum: the theme paints the part of itself that works.
+
+## Turning off the write protection
+
+A command let through by a standing grant runs under a write deny-list (see
+[Permissions](safety.md#permissions)). If that breaks something you need, start
+Taurus with `TAURUS_NO_SANDBOX=1` set, and those commands run without it. The look
+after each command stays on either way. `0`, `false`, `no`, `off` or an empty value
+leave it on. It's read from Taurus's own environment, so a project can't set it and
+a command line can't set it for itself.
+
+On Linux it needs `bwrap`. Without it, or with user namespaces off, the first
+covered command in a conversation says so. Windows doesn't have it yet.
 
 ## Web search
 
