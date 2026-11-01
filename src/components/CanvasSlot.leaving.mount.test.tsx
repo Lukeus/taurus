@@ -21,7 +21,6 @@ import { useStore } from "../state/store";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {} };
 const doc = (path: string, text: string, fingerprint = "1") => ({
   path,
   text,
@@ -47,8 +46,7 @@ const render = () =>
       reveal={null}
       workspace={FOLDER}
       showing
-      pane={pane}
-      onUnsaved={() => {}}
+      onMark={() => {}}
       onSelect={() => {}}
       onAsk={() => {}}
       onClose={() => {}}

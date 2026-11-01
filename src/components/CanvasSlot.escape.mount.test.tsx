@@ -19,7 +19,6 @@ import { CanvasSlot } from "./CanvasSlot";
   true;
 
 const DOC = { path: "src/main.rs", text: "fn main() {}\n", lines: 2, fingerprint: "1-2" };
-const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {} };
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -42,8 +41,7 @@ async function mount(onClose: () => void) {
         reveal={null}
         workspace="/src/project"
         showing
-        pane={pane}
-        onUnsaved={() => {}}
+        onMark={() => {}}
         onSelect={() => {}}
         onAsk={() => {}}
         onClose={onClose}

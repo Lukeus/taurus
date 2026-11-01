@@ -812,6 +812,26 @@ Markdown opens on its rendered preview, with a **Source** switch for the
 asterisks. Source files open as source, colored by the same tokenizer the
 transcript uses.
 
+### Several files at once
+
+Open a second file and it gets a tab beside the first. Each tab keeps its own
+typing, scroll position and undo. A file behind another tab still saves itself
+and still reloads when a turn writes it, and its tab says if something's wrong,
+with `•` while a save is pending and `!` for a conflict or a file that's gone.
+
+- **Close one:** press its ✕, middle-click it, press Delete on the tab, or press
+  Escape in the file. Closing the last one gives the conversation its width back.
+- **Move between them:** click, or use the arrow keys once a tab has focus.
+- **When the model opens a file:** it comes to the front, unless you're typing in
+  the canvas. Then its tab appears beside yours and you stay where you are.
+
+Only the file on screen goes with your message. "This" means what you're looking
+at, not a tab behind it.
+
+The row holds 12 files. Past that, the least recently used one closes, as long as
+everything in it is saved. Each workspace has its own set of tabs, and they come
+back when you return to it in the same window.
+
 ### Asking about a passage
 
 Select some text and **Ask about this** appears. It puts the start of a

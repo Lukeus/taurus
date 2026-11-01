@@ -197,7 +197,7 @@ export function Canvas({
           </div>
         )}
 
-        <button className="canvas-close" onClick={onClose} aria-label="Close the editor">
+        <button className="canvas-close" onClick={onClose} aria-label="Close this file">
           ✕
         </button>
       </header>
