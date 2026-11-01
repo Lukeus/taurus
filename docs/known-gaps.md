@@ -1053,10 +1053,10 @@ the backlog, and they're the minority.
   3.3 MB is the Mermaid library above, 1.7 MB is Excalidraw's font
   subsetting, 1.2 MB is the editor, and 0.4 MB is its fonts. Its fifty-two
   unused translations are replaced with empty modules at build time.
-- **The canvas holds one file at a time.** Opening another replaces it. Tabs
-  would be a second navigation model to build and explain, and "open the
-  readme while we talk about it" doesn't need one. The cost is comparing two
-  files side by side, which is the terminal dock's job.
+- **The canvas shows one file at a time.** Files open in tabs, but there's no
+  split inside the canvas, so comparing two side by side is still the terminal
+  dock's job. Open tabs last as long as the window, and aren't restored when
+  it reopens.
 - **A canvas edit is invisible to the Changes panel and to rewind.** The
   drawer shows what this *conversation* changed and the way back from it.
   Your own typing is neither, so git is the undo that covers it. The cost is
@@ -1066,15 +1066,13 @@ the backlog, and they're the minority.
   a file during a conflict or after a failed save keeps your text and brings it
   back when you reopen the file, but it's held in memory. Closing the window
   loses it.
-- **A file changing outside a turn goes unnoticed.** The canvas reloads when
-  the running turn writes the file (`files_changed` says so on the turn's own
-  event stream) and when the document is opened again. A `git checkout` in
-  the terminal dock, or another editor, is neither, so the canvas keeps
-  showing what it read. Saving is still safe: it compares fingerprints and
-  refuses instead of overwriting. But you find out when you save, not when
-  the change happened. Watching the filesystem properly is a dependency and a
-  lifetime to get right. Refreshing on window focus, the way
-  `rescan_library` does, is the cheap version, and it isn't written.
+- **A file changing outside a turn goes unnoticed until you look at it.** The
+  canvas reloads when the running turn writes the file (`files_changed` says so
+  on the turn's own event stream), when its tab comes to the front, and when the
+  window regains focus. A `git checkout` in the terminal dock changes nothing on
+  screen until one of those happens, because the window never lost focus. Saving
+  is still safe: it compares fingerprints and refuses instead of overwriting.
+  Watching the filesystem properly is a dependency and a lifetime to get right.
 - **The editor folds nothing, finds nothing, and has one cursor.** No code
   folding, no in-editor find-and-replace, no multiple cursors, no bracket
   matching. Each is a feature in its own right. The canvas shares its

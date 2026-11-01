@@ -320,6 +320,10 @@ window.__TAURI_INTERNALS__ = {
     // The scrolled shot needs a file longer than the panel; every other canvas
     // shot is of the short one.
     if (cmd === "open_document" && shot === "canvas-scrolled") return LONG_DOCUMENT;
+    // Each tab has to be its own file, or the row folds them into one.
+    if (cmd === "open_document" && shot === "canvas-tabs") {
+      return { ...DOCUMENT, path: (args as { path: string }).path };
+    }
     // The conflict shot needs a save that comes back refused, which is a
     // decision about *this* call rather than a fixed answer — so it is here
     // rather than in `ANSWERS`.
@@ -888,6 +892,17 @@ requestAnimationFrame(() => {
         await until(() =>
           [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "100"),
         );
+      },
+      // Four files, two with one name, the way the model opens them. The row's
+      // overflow and its labels are the browser's layout, which jsdom doesn't do.
+      "canvas-tabs": async () => {
+        await until(() => document.querySelector(".doc-input"));
+        const more = ["crates/taurus-host/src/lib.rs", "crates/taurus-tools/src/lib.rs", "src/App.tsx"];
+        for (const [i, path] of more.entries()) {
+          useStore.setState({ opening: { path, lines: null, at: i + 2 } as never });
+          await until(() => document.querySelectorAll(".canvas-tab").length === i + 2 || null);
+        }
+        scrollTo(transcript, document.querySelector(".document-card"));
       },
       // The other half, taken the way somebody takes it: press the card's own
       // button and photograph where it lands. Async because the grid does not

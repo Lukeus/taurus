@@ -21,7 +21,6 @@ import { useStore } from "../state/store";
 
 const TEXT = "fn main() {}\n";
 const DOC = { path: "src/main.rs", text: TEXT, lines: 2, fingerprint: "1-2" };
-const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {} };
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -49,8 +48,7 @@ describe("the open file", () => {
           reveal={null}
           workspace="/src/project"
           showing
-          pane={pane}
-          onUnsaved={() => {}}
+          onMark={() => {}}
           onSelect={() => {}}
           onAsk={() => {}}
           onClose={() => {}}

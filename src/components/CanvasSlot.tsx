@@ -6,7 +6,6 @@ import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "../lib/documen
 import { useStore } from "../state/store";
 import { Canvas } from "./Canvas";
 import type { SaveState } from "../state/notebook";
-import { ResizeHandle, type Resizable } from "./ResizeHandle";
 
 /**
  * What was typed into a file that was left and couldn't be written.
@@ -25,6 +24,14 @@ export function keptIn(workspace: string | null): number {
   return [...kept.keys()].filter((key) => key.startsWith(prefix)).length;
 }
 
+/** What a tab says about its file. Compared by value, so it moves on the edge. */
+export type TabMark = {
+  /** The editor holds what the disk doesn't. */
+  unsaved: boolean;
+  /** What a hidden tab can't otherwise tell anybody. */
+  trouble: "conflict" | "gone" | null;
+};
+
 type Written = "written" | "stale" | "failed";
 const nameOf = (path: string) => path.split("/").pop() ?? path;
 
@@ -39,18 +46,20 @@ const nameOf = (path: string) => path.split("/").pop() ?? path;
  * the one thing it needs — whether there is unsaved typing — and only when
  * that flips.
  *
- * Mounted for as long as a file is open, including while Changes has the
- * column. It draws nothing then and keeps the document, so the file comes back
- * with its typing. The editor is what mounts and unmounts: laid out to nothing
- * it would not be hidden, it would be broken.
+ * Mounted for as long as a file is open, including in a tab that isn't showing
+ * and while Changes has the column. Behind another tab it's stacked and
+ * invisible, keeping its scroll and undo. While Changes has the column it draws
+ * nothing and keeps the document, so the file comes back with its typing. See
+ * `CanvasDeck`.
  */
 export function CanvasSlot({
   path,
   reveal,
   workspace,
   showing,
-  pane,
-  onUnsaved,
+  inColumn = showing,
+  onMark,
+  onNamed,
   onSelect,
   onAsk,
   onClose,
@@ -60,12 +69,14 @@ export function CanvasSlot({
   reveal: { from: number; to: number } | null;
   /** Re-read on a new folder, where the same path is a different file. */
   workspace: string | null;
-  /** Whether the column is this one's. Changes takes it while it is open. */
+  /** Whether this is the file on screen. */
   showing: boolean;
-  pane: Resizable;
-  /** Told when the editor starts or stops holding what the disk does not.
-   *  Called on the edge, so it must be stable — a state setter is. */
-  onUnsaved: (unsaved: boolean) => void;
+  /** Whether the column is the canvas's at all, whichever tab has the front. */
+  inColumn?: boolean;
+  /** Told when what the tab should say changes. Must be stable. */
+  onMark: (mark: TabMark) => void;
+  /** Told what the host calls the file, once it's read. Must be stable. */
+  onNamed?: (shown: string) => void;
   onSelect: (selection: Selection | null) => void;
   onAsk: (text: string) => void;
   onClose: () => void;
@@ -117,7 +128,12 @@ export function CanvasSlot({
   // it catches is the conflict, where the screen and the disk hold different
   // things until somebody decides. See `onScreenFor`.
   const unsaved = !!doc && typed !== doc.text;
-  useEffect(() => onUnsaved(unsaved), [unsaved, onUnsaved]);
+  const trouble = gone ? "gone" : conflict ? "conflict" : null;
+  useEffect(() => onMark({ unsaved, trouble }), [unsaved, trouble, onMark]);
+  const shownAs = doc?.path;
+  useEffect(() => {
+    if (shownAs) onNamed?.(shownAs);
+  }, [shownAs, onNamed]);
 
   // The same values, for code that runs after the render it was made in: a save
   // answered after a switch, a cleanup on the way out.
@@ -401,6 +417,53 @@ export function CanvasSlot({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wrote?.at]);
 
+  /*
+   * Looks again when the file comes back into view: the tab brought to the front,
+   * or the window brought back. A tab can sit behind another for hours, and a
+   * `git checkout` in the terminal says nothing to anybody.
+   *
+   * Skipped while a save is out, whose own write would read as somebody else's.
+   * An unchanged fingerprint means nothing moved, whatever the buffer holds.
+   */
+  const firstShow = useRef(true);
+  useEffect(() => {
+    // Counted while hidden too: a tab opened behind another was read then, and
+    // its first time on screen can be hours later.
+    const justRead = firstShow.current;
+    firstShow.current = false;
+    if (!showing) return;
+    const look = () => {
+      const { doc } = live.current;
+      if (!doc || saving.current) return;
+      const opening = session.current;
+      api
+        .openDocument(doc.path)
+        .then((read) => {
+          const { doc, typed } = live.current;
+          if (session.current !== opening || !doc || saving.current) return;
+          setGone(false);
+          if (read.fingerprint === doc.fingerprint) return;
+          if (read.fingerprint === landed.current?.fingerprint) return;
+          const what = reconcile({ base: doc.text, draft: typed }, read.text);
+          if (what.kind === "same") setDoc(read);
+          else if (what.kind === "conflict") setConflict(read);
+          else {
+            setFlash(changedLines(doc.text, read.text));
+            setDoc(read);
+            setTyped(read.text);
+          }
+        })
+        .catch(() => {
+          if (session.current === opening) setGone(true);
+        });
+    };
+    if (!justRead) look();
+    window.addEventListener("focus", look);
+    return () => window.removeEventListener("focus", look);
+    // Reads everything through refs, like `leave`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showing]);
+
   /* The tint is a moment, not a state. Cleared on a timer rather than by the
      animation ending, so nothing depends on an event that does not fire when
      motion is turned off. */
@@ -440,45 +503,42 @@ export function CanvasSlot({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [showing, onClose]);
 
-  if (!showing) return null;
+  if (!inColumn) return null;
 
   return (
-    <>
-      <ResizeHandle pane={pane} label="Editor width" />
-      <div className="side-slot" ref={pane.slot} style={{ width: pane.size }}>
-        <Canvas
-          path={path}
-          reveal={reveal}
-          document={doc}
-          draft={typed}
-          state={saveState}
-          stateWhy={saveError}
-          gone={gone}
-          flash={flash}
-          conflict={conflict}
-          error={docError}
-          onEdit={setTyped}
-          onKeepMine={() => {
-            // Adopt the *fingerprint* the refusal handed back while keeping
-            // the old text as the base. The stamp is what makes the next save
-            // succeed where the refused one did not; the stale base is what
-            // keeps `draft !== doc.text`, so the autosave above still has
-            // something to do.
-            if (conflict && doc) setDoc({ ...conflict, text: doc.text });
-            setConflict(null);
-          }}
-          onTakeTheirs={() => {
-            if (!conflict) return;
-            setDoc(conflict);
-            setTyped(conflict.text);
-            setConflict(null);
-            setSaveState("idle");
-          }}
-          onSelect={onSelect}
-          onAsk={onAsk}
-          onClose={onClose}
-        />
-      </div>
-    </>
+    <div className="canvas-panel" style={showing ? undefined : { visibility: "hidden" }}>
+      <Canvas
+        path={path}
+        reveal={reveal}
+        document={doc}
+        draft={typed}
+        state={saveState}
+        stateWhy={saveError}
+        gone={gone}
+        flash={flash}
+        conflict={conflict}
+        error={docError}
+        onEdit={setTyped}
+        onKeepMine={() => {
+          // Adopt the *fingerprint* the refusal handed back while keeping
+          // the old text as the base. The stamp is what makes the next save
+          // succeed where the refused one did not; the stale base is what
+          // keeps `draft !== doc.text`, so the autosave above still has
+          // something to do.
+          if (conflict && doc) setDoc({ ...conflict, text: doc.text });
+          setConflict(null);
+        }}
+        onTakeTheirs={() => {
+          if (!conflict) return;
+          setDoc(conflict);
+          setTyped(conflict.text);
+          setConflict(null);
+          setSaveState("idle");
+        }}
+        onSelect={onSelect}
+        onAsk={onAsk}
+        onClose={onClose}
+      />
+    </div>
   );
 }

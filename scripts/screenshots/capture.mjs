@@ -129,6 +129,9 @@ const SHOTS = [
   // The only check that the painted text and the gutter follow the box: every
   // other canvas shot is of a file shorter than the panel, which never moves.
   { name: "canvas-scrolled", shot: "canvas-scrolled", theme: "dark" },
+  // Several files open, with a clash of names and a save pending: the row of
+  // tabs is laid out by the browser, which jsdom doesn't do.
+  { name: "canvas-tabs", shot: "canvas-tabs", theme: "dark" },
   // The notebook: both scopes in the list, one note open in the editor that
   // wraps. The only picture of the pane, and the only check of the prose editor
   // there is — jsdom measures nothing, so a mount test can prove the text is in

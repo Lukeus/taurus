@@ -34,14 +34,14 @@ vi.mock("./components/CanvasSlot", async () => {
       steps.push(`keptIn ${workspace}`);
       return kept;
     },
-    CanvasSlot: ({ flushRef, path }: { path: string; flushRef: { current: (() => Promise<boolean>) | null } }) => {
+    CanvasSlot: ({ flushRef, path, showing }: { path: string; showing: boolean; flushRef: { current: (() => Promise<boolean>) | null } }) => {
       useEffect(() => {
         flushRef.current = async () => {
           steps.push("flush");
           return true;
         };
       }, [flushRef]);
-      return <div data-canvas={path} />;
+      return <div data-canvas={path} data-showing={showing} />;
     },
   };
 });
@@ -242,8 +242,8 @@ describe("a broken hooks file", () => {
     await act(async () => button!.click());
     await settle();
 
-    expect(host.querySelector("[data-canvas]")?.getAttribute("data-canvas")).toBe(
-      "/tmp/project/.taurus/hooks.json",
+    expect(host.querySelector('[data-showing="true"]')?.getAttribute("data-canvas")).toBe(
+      ".taurus/hooks.json",
     );
     expect(document.querySelector(".drawer-intro")).toBeNull();
     (state.status as { problems: unknown[] }).problems = [];

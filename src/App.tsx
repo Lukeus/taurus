@@ -18,7 +18,16 @@ import type { SettingsTab } from "./components/Settings";
 import {} from "./components/Attachments";
 import {} from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
-import { CanvasSlot, keptIn } from "./components/CanvasSlot";
+import { keptIn, type TabMark } from "./components/CanvasSlot";
+import { CanvasDeck } from "./components/CanvasDeck";
+import {
+  closeTab,
+  nameTab,
+  openTab,
+  samePath,
+  showTab,
+  type CanvasTabs,
+} from "./lib/canvasTabs";
 import { useAgentsView } from "./state/agentsView";
 import { LeavingDialog } from "./components/LeavingDialog";
 import { PermissionDialog } from "./components/PermissionDialog";
@@ -177,6 +186,9 @@ function warmPanels() {
     setTimeout(read, 500);
   }
 }
+
+/** How long after a keystroke somebody still counts as typing in the canvas. */
+const TYPING_MS = 5_000;
 
 export default function App() {
   // Everything except the transcript, compared field by field.
@@ -351,30 +363,26 @@ export default function App() {
    */
   const [pendingQuery, setPendingQuery] = useState<string | null>(null);
   /**
-   * The file open in the canvas, and where in it to go.
-   *
-   * One document at a time, deliberately: tabs are a second navigation model
-   * to build and to explain, and the case this exists for is "open the readme
-   * while we talk about it" rather than "keep nine files". See
-   * `docs/known-gaps.md`.
-   *
-   * `reveal` is an object rather than a bare range so that being sent to the
-   * same lines twice is two events — a model saying "look here" again should
-   * move the view again, even when it is already there.
+   * The files open in the canvas, and which is showing. See `canvasTabs`.
    */
-  const [canvas, setCanvas] = useState<{
-    path: string;
-    reveal: { from: number; to: number } | null;
-  } | null>(null);
+  const [canvas, setCanvas] = useState<CanvasTabs | null>(null);
   /**
-   * Whether the open file holds typing the disk does not.
+   * What each open file's tab says.
    *
-   * The document itself lives in `CanvasSlot`, which re-renders on every
-   * keystroke so that this component does not. All `App` needs of it is this
-   * one bit, for what travels with a message, and it moves only on the edge.
+   * The documents themselves live in their `CanvasSlot`s, which re-render on
+   * every keystroke so that this component does not. All `App` needs is this,
+   * for the row of tabs and what travels with a message, and it moves only on
+   * the edge.
    */
-  const [canvasUnsaved, setCanvasUnsaved] = useState(false);
-  /** Writes what the canvas is waiting to write. See `CanvasSlot`. */
+  const [canvasMarks, setCanvasMarks] = useState<Record<string, TabMark | undefined>>({});
+  /** When something was last typed in the canvas. */
+  const canvasTypedAt = useRef(0);
+  const canvasTyped = useCallback(() => {
+    canvasTypedAt.current = Date.now();
+  }, []);
+  const canvasMarksNow = useRef(canvasMarks);
+  canvasMarksNow.current = canvasMarks;
+  /** Writes what every open file is waiting to write. See `CanvasDeck`. */
   const canvasFlush = useRef<(() => Promise<boolean>) | null>(null);
   /** What is highlighted in the canvas right now. Travels with the next
    *  message; see `onScreenFor`. */
@@ -1095,10 +1103,57 @@ export default function App() {
    * split, so opening a file leaves whatever was in the middle column where it
    * was — which is the whole difference between this and the Data pane.
    */
-  const showDocument = (path: string, lines: LineRange | null) => {
-    setCanvas({ path, reveal: lines ? { from: lines.from, to: lines.to } : null });
-    setSelection(null);
+  const showDocument = (path: string, lines: LineRange | null, quietly = false) => {
+    const mark = canvasMarksNow.current;
+    setCanvas((now) =>
+      openTab(now, samePath(path, workspace), lines ? { from: lines.from, to: lines.to } : null, {
+        quietly,
+        keep: (open) => !!mark[open]?.unsaved || !!mark[open]?.trouble,
+      }),
+    );
   };
+
+  const closeDocument = useCallback((path: string) => {
+    setCanvas((now) => now && closeTab(now, path));
+    setCanvasMarks(({ [path]: _closed, ...rest }) => rest);
+  }, []);
+  const showTabOf = useCallback((path: string) => {
+    setCanvas((now) => now && showTab(now, path));
+  }, []);
+  const nameDocument = useCallback((path: string, shown: string) => {
+    setCanvas((now) => now && nameTab(now, path, shown));
+  }, []);
+  const markDocument = useCallback((path: string, mark: TabMark) => {
+    setCanvasMarks((all) => {
+      const was = all[path];
+      return was?.unsaved === mark.unsaved && was?.trouble === mark.trouble
+        ? all
+        : { ...all, [path]: mark };
+    });
+  }, []);
+
+  /*
+   * Open files belong to a folder, where the same path is a different file.
+   *
+   * Swapped in an effect and not during the render, so the slots first hear the
+   * new folder while still mounted: that's how they know what's typed in them
+   * can't be written here, and keep it instead.
+   */
+  const tabsByFolder = useRef(new Map<string, CanvasTabs>());
+  const tabsFolder = useRef(workspace);
+  useEffect(() => {
+    const from = tabsFolder.current;
+    if (from === workspace) return;
+    tabsFolder.current = workspace;
+    setCanvas((now) => {
+      if (from) {
+        if (now) tabsByFolder.current.set(from, now);
+        else tabsByFolder.current.delete(from);
+      }
+      return (workspace && tabsByFolder.current.get(workspace)) || null;
+    });
+    setCanvasMarks({});
+  }, [workspace]);
 
   /**
    * Opens a skill, agent or brief in the canvas, from a library drawer.
@@ -1139,7 +1194,12 @@ export default function App() {
   const opening = store.opening;
   useEffect(() => {
     if (!opening) return;
-    showDocument(opening.path, opening.lines);
+    // Not pulled out from under somebody typing in another file. The tab appears
+    // beside theirs, and pointing into the file they're in still moves the view.
+    // Typed lately rather than focused: the model pointing at lines focuses the
+    // editor itself, so focus would have kept its next file behind its last.
+    const typing = Date.now() - canvasTypedAt.current < TYPING_MS;
+    showDocument(opening.path, opening.lines, typing);
     // Only the counter. The path and the lines are read through the closure,
     // and depending on them would re-open the file every time this component
     // re-rendered with the same errand still sitting there.
@@ -1240,12 +1300,14 @@ export default function App() {
     showing,
     sql,
     canvas && {
-      path: canvas.path,
+      // The file on screen and no other. A tab behind it isn't what "this" means.
+      path:
+        canvas.tabs.find((tab) => tab.path === canvas.active)?.shown ?? canvas.active,
       selection,
       // Nearly always false — the canvas saves a moment after typing stops.
       // What it catches is the conflict, where the screen and the disk hold
       // different things until somebody decides.
-      unsaved: canvasUnsaved,
+      unsaved: !!canvasMarks[canvas.active]?.unsaved,
     },
     notebook.onScreen,
   );
@@ -1632,19 +1694,22 @@ export default function App() {
           )}
 
           {/* Mounted while a file is open, whichever panel has the column.
-              While Changes has it this draws nothing and keeps the document;
-              the editor inside is what mounts and unmounts. See `CanvasSlot`. */}
+              While Changes has it this draws nothing and keeps the documents.
+              See `CanvasDeck`. */}
           {canvas && (
-            <CanvasSlot
-              path={canvas.path}
-              reveal={canvas.reveal}
+            <CanvasDeck
+              canvas={canvas}
+              marks={canvasMarks}
               workspace={workspace}
               showing={side === "canvas"}
               pane={canvasPane}
-              onUnsaved={setCanvasUnsaved}
+              onShow={showTabOf}
+              onClose={closeDocument}
+              onNamed={nameDocument}
+              onMark={markDocument}
+              onTyped={canvasTyped}
               onSelect={setSelection}
               onAsk={ask}
-              onClose={() => setCanvas(null)}
               flushRef={canvasFlush}
             />
           )}
