@@ -212,10 +212,16 @@ impl Tool for RunSkillScript {
             ))
         })?;
 
-        let mut command = tokio::process::Command::new(&interpreter.program);
-        taurus_tools::login_path::apply(&mut command).args(&interpreter.leading_args);
-        command.arg(&script_path);
-        command.args(&input.args);
+        let mut invoked: Vec<String> = interpreter.leading_args.clone();
+        invoked.push(script_path.to_string_lossy().into_owned());
+        invoked.extend(input.args.iter().cloned());
+        // Under the write deny-list, for a call a standing grant let through.
+        let (program, invoked) = match ctx.fence() {
+            Some(fence) => fence.wrap(interpreter.program.to_string_lossy().into_owned(), invoked),
+            None => (interpreter.program.to_string_lossy().into_owned(), invoked),
+        };
+        let mut command = tokio::process::Command::new(&program);
+        taurus_tools::login_path::apply(&mut command).args(&invoked);
         // Scripts run against the workspace, not their own directory: a skill
         // operates on the user's project. SKILL_DIR gives them a way back to
         // their own bundled resources.
@@ -1189,5 +1195,57 @@ mod tests {
             "{err}"
         );
         assert!(sink.proposals.lock().await.is_empty());
+    }
+
+    /// Through dispatch, the way a skill script is really run, with a grant.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_script_under_a_grant_runs_under_the_write_deny_list() {
+        if std::env::var_os(taurus_tools::sandbox::OFF_ENV).is_some()
+            || std::process::Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+                .status()
+                .map_or(true, |status| !status.success())
+        {
+            let _ = std::io::Write::write_fmt(
+                &mut std::io::stderr(),
+                format_args!("SKIPPED a_script_under_a_grant: sandbox-exec won't start here"),
+            );
+            return;
+        }
+        let f = fixture(&[(
+            "alpha",
+            "scripts:\n  - path: run.sh\n    interpreter: bash\n",
+        )]);
+        write_script(
+            f.skills.path(),
+            "alpha",
+            "run.sh",
+            "#!/bin/bash\necho a > .git/hooks/x; echo hook=$?\necho a > plain; echo plain=$?\nexit 4\n",
+        );
+        let root = f.ctx.workspace.clone();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join(".taurus")).unwrap();
+        std::fs::write(
+            root.join(".taurus/permissions.json"),
+            r#"{"allowed": ["run_skill_script"]}"#,
+        )
+        .unwrap();
+        let home = TempDir::new().unwrap();
+        let engine = PermissionEngine::new(&root, home.path(), Box::new(taurus_tools::DenyAll));
+        let ctx = ToolContext::new(&root, Arc::new(engine), CancellationToken::new());
+        let mut registry = taurus_tools::ToolRegistry::new();
+        registry.register(Arc::new(RunSkillScript::new(f.catalog.clone())));
+        let text = registry
+            .execute(
+                "run_skill_script",
+                serde_json::json!({"skill": "alpha", "script": "run.sh"}),
+                &ctx,
+            )
+            .await
+            .map_or_else(|e| e.to_string(), |o| o.to_string());
+        assert!(text.contains("hook=1"), "{text}");
+        assert!(text.contains("plain=0"), "{text}");
+        assert!(!root.join(".git/hooks/x").exists(), "{text}");
     }
 }

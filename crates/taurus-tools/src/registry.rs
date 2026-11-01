@@ -253,8 +253,60 @@ impl ToolRegistry {
             taurus_hooks::HookEvent::PostToolUse,
         );
 
+        // What word-reading at the gate can't see: a call nobody looked at gets
+        // looked at afterwards, and one somebody approved keeps its place so a
+        // neighbour's look doesn't undo it. See [`crate::protected`]. Taken this
+        // late so a hook refusing the call costs nothing.
+        let ticket = match cleared {
+            crate::permission::Cleared::Standing if tool.touches_unpredictably() => {
+                let line = input
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_owned);
+                crate::protected::Ticket::watching(ctx, line).await
+            }
+            crate::permission::Cleared::Approved => crate::protected::Ticket::approved(ctx),
+            _ => None,
+        };
+        let mut ticket = ticket;
+        let no_fence_note = ticket.as_mut().and_then(|t| t.take_no_fence_note());
+        let slot = ticket.map(|ticket| Arc::new(std::sync::Mutex::new(Some(ticket))));
+        let watched_ctx = slot.as_ref().map(|slot| {
+            let mut watched = ctx.clone();
+            watched.protected = Some(slot.clone());
+            watched
+        });
+
         debug!(tool = name, "executing");
-        let mut result = tool.execute(input, ctx).await;
+        let mut result = tool
+            .execute(input, watched_ctx.as_ref().unwrap_or(ctx))
+            .await;
+
+        // Left in the slot unless the tool took it to go on running. Whatever the
+        // call's outcome: a command killed halfway wrote what it got to.
+        let ticket = slot.and_then(|slot| {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        });
+        if let Some(note) = no_fence_note {
+            annotate(&mut result, &note);
+        }
+        if let Some(ticket) = ticket {
+            let printed = match &result {
+                Ok(output) => output.to_string(),
+                Err(error) => error.to_string(),
+            };
+            if let Some(note) = ticket.about_output(&printed) {
+                annotate(&mut result, &note);
+            }
+            if let Some(note) = ticket.finish().await {
+                if matches!(result, Err(ToolError::Canceled)) {
+                    result = Err(ToolError::Failed("The command was stopped.".into()));
+                }
+                annotate(&mut result, &note);
+            }
+        }
 
         // Every image any tool hands back passes through here, whoever wrote
         // the tool. A built-in is trusted to produce a valid PNG; a skill and

@@ -299,6 +299,12 @@ pub struct ToolContext {
     /// By model, because a delegate can run on a different one than the turn
     /// that spawned it.
     pub spent: Option<Arc<std::sync::Mutex<taurus_provider::Spend>>>,
+    /// This call's place in the look after a command, for a tool that outlives
+    /// the call to take with it. See [`crate::protected`].
+    pub(crate) protected: Option<Arc<std::sync::Mutex<Option<crate::protected::Ticket>>>>,
+    /// Whether a covered call runs under [`crate::sandbox`]. Off only for tests of
+    /// the look afterwards, which need the writes to land.
+    pub(crate) fencing: bool,
 }
 
 impl ToolContext {
@@ -326,7 +332,21 @@ impl ToolContext {
             touched: None,
             pending: None,
             spent: None,
+            protected: None,
+            fencing: true,
         }
+    }
+
+    /// What a program this call starts has to run under, when anything: the
+    /// write deny-list, for a call a standing grant let through. A tool that starts
+    /// a program puts it under this with [`crate::sandbox::Fence::wrap`].
+    pub fn fence(&self) -> Option<Arc<crate::sandbox::Fence>> {
+        self.protected
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()?
+            .fence()
     }
 
     /// Sizes this context's answers to a model's context window.
