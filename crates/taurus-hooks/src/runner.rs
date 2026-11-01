@@ -300,10 +300,15 @@ pub struct HookSummary {
 }
 
 impl HookRunner {
-    /// Every hook that will run, in the order they would run in.
+    /// Every hook somebody wrote that will run, in the order they would run in.
+    ///
+    /// Not the ones standing in for a file that can't be used: a listing that
+    /// counted those would show two hooks nobody wrote, and the file is reported
+    /// as a problem.
     pub fn summaries(&self) -> Vec<HookSummary> {
         self.hooks
             .iter()
+            .filter(|(_, hook, _)| !hook.is_refusal())
             .map(|(name, hook, _)| summarize(name, hook))
             .collect()
     }

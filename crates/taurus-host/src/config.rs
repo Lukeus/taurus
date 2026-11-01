@@ -360,21 +360,24 @@ pub struct HookView {
 }
 
 /// Every hook the layers define, on or off, lowest layer first in the same
-/// order [`load_hooks`] reads them. A file that won't parse is left out here
-/// and reported by that.
+/// order [`load_hooks`] reads them. A file that can't be used has nothing here to
+/// switch: the hooks that refuse in its place aren't listed, and [`load_hooks`]
+/// reports it.
 pub fn hook_listing(workspace: Option<&Path>) -> Vec<HookView> {
     let readable = crate::trust::for_reading(workspace);
-    let mut layers: Vec<(HookLayer, taurus_hooks::HookConfig)> = crate::plugins::active(readable)
-        .iter()
-        .map(|plugin| {
-            (
-                HookLayer::Plugin {
-                    name: plugin.name().to_string(),
-                },
-                plugin.hooks().clone(),
-            )
-        })
-        .collect();
+    let mut layers: Vec<(HookLayer, taurus_hooks::HookConfig)> =
+        crate::plugins::installed(readable)
+            .iter()
+            .filter(|plugin| plugin.runs_hooks())
+            .map(|plugin| {
+                (
+                    HookLayer::Plugin {
+                        name: plugin.name().to_string(),
+                    },
+                    plugin.hooks().clone(),
+                )
+            })
+            .collect();
     for (scope, label) in [
         (Scope::Global, HookLayer::Global),
         (Scope::Workspace, HookLayer::Workspace),
@@ -388,6 +391,7 @@ pub fn hook_listing(workspace: Option<&Path>) -> Vec<HookView> {
     }
     taurus_hooks::layered(layers)
         .into_iter()
+        .filter(|listed| !listed.hook.is_refusal())
         .map(|listed| HookView {
             hook: taurus_hooks::summarize(&listed.name, &listed.hook),
             defined_in: listed.defined_in,
@@ -511,16 +515,28 @@ pub fn load_hooks(workspace: Option<&Path>) -> (taurus_hooks::HookRunner, Vec<St
     let mut problems = Vec::new();
     // Plugins' hooks first, the lowest layer, so your own hooks.json can
     // switch one off by its `plugin:hook` name.
-    let mut layers: Vec<taurus_hooks::HookConfig> =
-        crate::plugins::active(crate::trust::for_reading(workspace))
+    //
+    // Including one that refuses over a broken hooks file, which isn't active
+    // and still has a say. Reported here too, so it reaches the Hooks tab and
+    // `taurus hooks check` as well as the plugin's own row.
+    let plugins = crate::plugins::installed(crate::trust::for_reading(workspace));
+    problems.extend(
+        plugins
             .iter()
-            .map(|plugin| plugin.hooks().clone())
-            .collect();
+            .filter(|plugin| plugin.refuses())
+            .filter_map(|plugin| plugin.hook_refusal().map(str::to_string)),
+    );
+    let mut layers: Vec<taurus_hooks::HookConfig> = plugins
+        .iter()
+        .filter(|plugin| plugin.runs_hooks())
+        .map(|plugin| plugin.hooks().clone())
+        .collect();
     for dir in config_dirs(workspace) {
         match taurus_hooks::load(&dir) {
+            // A file that can't be used comes back as a layer that refuses,
+            // with the reason as a problem. Unlike every other layered file,
+            // it isn't skipped: dropping it would turn off the guards in it.
             Ok(layer) => layers.push(layer),
-            // One unparseable layer must not cost the other, the same rule
-            // every other layered file follows.
             Err(e) => problems.push(e),
         }
     }
@@ -2175,6 +2191,10 @@ pub(crate) fn replace_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()>
     // the real name pointing at content that never reached the disk.
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|e| e.error)?;
+    // Here so that no config write can forget it: Settings' edits to hooks, MCP,
+    // providers and search all come through. A write outside the set costs a
+    // lock and a compare.
+    taurus_tools::protected::written_by_this_process(path);
     Ok(())
 }
 

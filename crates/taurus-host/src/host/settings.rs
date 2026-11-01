@@ -129,6 +129,8 @@ impl Host {
         definition
             .write_to(&path)
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        // A plugin's agent is in the set a running command is watched against.
+        taurus_tools::protected::written_by_this_process(&path);
 
         info!(agent = name, limit, path = %path.display(), "agent iteration limit changed");
         self.rescan_agents().await;

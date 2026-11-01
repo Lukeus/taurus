@@ -579,6 +579,11 @@ fn write(workspace: &Path, wanted: &[Held], tips: &[Held], dry_run: bool) -> Vec
         }
     }
     let mut restored = apply(workspace, &writable, dry_run);
+    if !dry_run {
+        for held in &writable {
+            taurus_tools::protected::written_by_this_process(&workspace.join(&held.path));
+        }
+    }
     restored.extend(skipped);
     restored.sort_by(|a, b| a.path().cmp(b.path()));
     restored

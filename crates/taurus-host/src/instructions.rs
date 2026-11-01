@@ -276,6 +276,19 @@ pub fn load(sources: Vec<InstructionsSource>, workspace: Option<&Path>) -> Loade
         // Before the read, and whether or not it succeeds. A source that is not
         // there is a dependency on it staying not there.
         read.push(source.path.clone());
+        let within = match source.tier {
+            InstructionsTier::User => None,
+            InstructionsTier::Project => workspace.or(source.path.parent()),
+        };
+        // The rule an import is held to, for the same reason. The file itself
+        // may be a link, and the repository chooses where it points.
+        if within.is_some_and(|within| resolves_outside(&source.path, within)) {
+            problems.push(format!(
+                "{} is a link to somewhere outside this workspace, so it isn't read",
+                source.path.display()
+            ));
+            continue;
+        }
         let raw = match std::fs::read_to_string(&source.path) {
             Ok(raw) => raw,
             // Not there is the ordinary case for most of these. A folder in the
@@ -313,10 +326,6 @@ pub fn load(sources: Vec<InstructionsSource>, workspace: Option<&Path>) -> Loade
             continue;
         }
 
-        let within = match source.tier {
-            InstructionsTier::User => None,
-            InstructionsTier::Project => workspace.or(source.path.parent()),
-        };
         let (body, import_problems, imported) = resolve_imports(raw, &source.path, within);
         problems.extend(import_problems);
         read.extend(imported);
@@ -417,18 +426,13 @@ fn resolve_imports(
                     out.push('\n');
                     continue;
                 }
-                if let (Some(within), Ok(resolved)) = (within, path.canonicalize()) {
-                    if !within
-                        .canonicalize()
-                        .is_ok_and(|within| resolved.starts_with(within))
-                    {
-                        problems.push(format!(
-                            "{} imports {}, which is outside this workspace, so it isn't read",
-                            file.display(),
-                            target
-                        ));
-                        continue;
-                    }
+                if within.is_some_and(|within| resolves_outside(&path, within)) {
+                    problems.push(format!(
+                        "{} imports {}, which is outside this workspace, so it isn't read",
+                        file.display(),
+                        target
+                    ));
+                    continue;
                 }
                 match std::fs::read_to_string(&path) {
                     Ok(imported) => {
@@ -463,6 +467,16 @@ fn resolve_imports(
     }
 
     (out, problems, imported)
+}
+
+/// Whether `path` exists and, with every link followed, isn't under `within`. A
+/// path that isn't there resolves nowhere, and its reader finds that out.
+fn resolves_outside(path: &Path, within: &Path) -> bool {
+    path.canonicalize().is_ok_and(|resolved| {
+        !within
+            .canonicalize()
+            .is_ok_and(|within| resolved.starts_with(within))
+    })
 }
 
 /// Keeps track of a Markdown code fence, and answers whether this line opens or
@@ -1065,5 +1079,69 @@ mod tests {
             "{:?}",
             loaded.problems
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_projects_brief_that_links_outside_the_workspace_isnt_read() {
+        let outside = tempdir();
+        let secret = write(outside.path(), "secret.md", "SECRET");
+        let workspace = tempdir();
+        let brief = workspace.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&secret, &brief).unwrap();
+
+        let loaded = super::load(
+            vec![source(brief.clone(), InstructionsOrigin::Claude)],
+            Some(workspace.path()),
+        );
+        assert!(loaded.instructions.is_empty());
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .any(|p| p.contains("outside this workspace")),
+            "{:?}",
+            loaded.problems
+        );
+        assert!(
+            loaded.read.contains(&brief),
+            "still watched, so changing the link is noticed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_projects_brief_may_link_to_another_file_inside_the_workspace() {
+        let workspace = tempdir();
+        let target = write(workspace.path(), "AGENTS.md", "SHARED");
+        let brief = workspace.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&target, &brief).unwrap();
+
+        let loaded = super::load(
+            vec![source(brief, InstructionsOrigin::Claude)],
+            Some(workspace.path()),
+        );
+        assert_eq!(loaded.instructions[0].body, "SHARED");
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn your_own_brief_may_link_anywhere() {
+        let outside = tempdir();
+        let target = write(outside.path(), "dotfiles.md", "MINE");
+        let home = tempdir();
+        let brief = home.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&target, &brief).unwrap();
+
+        let loaded = super::load(
+            vec![InstructionsSource {
+                tier: InstructionsTier::User,
+                origin: InstructionsOrigin::Claude,
+                path: brief,
+            }],
+            Some(tempdir().path()),
+        );
+        assert_eq!(loaded.instructions[0].body, "MINE");
     }
 }

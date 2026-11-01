@@ -423,13 +423,16 @@ pub fn pending(workspace: &Path) -> PendingConfig {
             .collect();
     }
 
-    // Counted from what parses, like `mcp.json`. A hooks file that doesn't
-    // parse runs nothing, and the loader says so once it's trusted.
+    // Counted without the two hooks that stand in for a file that can't be
+    // used. That file is a counted entry of its own: trusted, it refuses every
+    // prompt and tool call until it's fixed, so it is something to decide about.
     if let Ok(layer) = taurus_hooks::load(&config::workspace_dir(workspace)) {
-        pending.hooks = layer.hooks.len() + layer.invalid.len();
+        let written = |entry: &taurus_hooks::HookEntry| !matches!(entry, taurus_hooks::HookEntry::Hook(hook) if hook.is_refusal());
+        pending.hooks = layer.hooks.values().filter(|e| written(e)).count() + layer.invalid.len();
         pending.hook_commands = layer
             .hooks
             .iter()
+            .filter(|(_, entry)| written(entry))
             .map(|(name, entry)| format!("{name}: {}", describe_hook(entry)))
             .collect();
     }
@@ -437,19 +440,23 @@ pub fn pending(workspace: &Path) -> PendingConfig {
     // The project's plugins. Their skills and agents are already counted:
     // the source lists above include them. Their servers and hooks are named
     // here, under the keys they'd run as.
-    for plugin in crate::plugins::active(Some(workspace))
+    //
+    // One that refuses over a broken hooks file counts too, as one hook on top
+    // of those it has: trusted, it refuses every prompt until it's dealt with.
+    for plugin in crate::plugins::installed(Some(workspace))
         .into_iter()
-        .filter(|plugin| plugin.scope() == config::Scope::Workspace)
+        .filter(|plugin| plugin.scope() == config::Scope::Workspace && plugin.runs_hooks())
     {
         pending.plugins.push(plugin.name().to_string());
         let hooks = plugin.hooks().clone();
-        pending.hooks += hooks.hooks.len();
-        pending.hook_commands.extend(
-            hooks
-                .hooks
-                .iter()
-                .map(|(name, entry)| format!("{name}: {}", describe_hook(entry))),
-        );
+        let written = hooks.hooks.iter().filter(|(_, entry)| !entry.is_refusal());
+        pending.hooks += written.clone().count() + usize::from(plugin.refuses());
+        pending
+            .hook_commands
+            .extend(written.map(|(name, entry)| format!("{name}: {}", describe_hook(entry))));
+        if !plugin.is_active() {
+            continue;
+        }
         let servers = plugin.into_mcp().servers;
         pending.mcp_servers += servers.len();
         pending.mcp_commands.extend(
@@ -859,6 +866,52 @@ mod tests {
         assert!(
             summary.contains(&"2 MCP servers".to_string()),
             "{summary:?}"
+        );
+    }
+
+    #[test]
+    fn the_refusing_hooks_arent_counted_as_hooks_somebody_wrote() {
+        let _home = isolated_home();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let dir = config::workspace_dir(workspace.path());
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("hooks.json"), "{\"hooks\":{,}}").unwrap();
+        let broken = pending(workspace.path());
+        assert_eq!(broken.hooks, 1, "the file, once");
+        assert!(
+            broken.hook_commands.is_empty(),
+            "{:?}",
+            broken.hook_commands
+        );
+
+        std::fs::write(
+            dir.join("hooks.json"),
+            r#"{"hooks":{"good":{"on":"stop","command":"true"},"bad":{"on":"stop"}}}"#,
+        )
+        .unwrap();
+        let partly = pending(workspace.path());
+        assert_eq!(partly.hooks, 2);
+        assert_eq!(partly.hook_commands.len(), 1, "{:?}", partly.hook_commands);
+    }
+
+    #[test]
+    fn a_project_plugin_that_refuses_is_counted_once_and_named() {
+        let _home = isolated_home();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let root = crate::plugins::dir(config::Scope::Workspace, Some(workspace.path()))
+            .unwrap()
+            .join("kit");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("hooks.json"), "{,").unwrap();
+
+        let waiting = pending(workspace.path());
+        assert_eq!(waiting.plugins, ["kit"]);
+        assert_eq!(waiting.hooks, 1);
+        assert!(
+            waiting.hook_commands.is_empty(),
+            "{:?}",
+            waiting.hook_commands
         );
     }
 }

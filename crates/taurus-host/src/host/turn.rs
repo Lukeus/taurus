@@ -599,14 +599,7 @@ impl Host {
 /// `after <= i` happened before the call in message `i`. Any accepted call
 /// answers the edits before it, the way [`PlanBoard::set`] clears the note.
 fn replay_plan(messages: &[Message], edits: &[PlanEditMark]) -> Option<RestoredPlan> {
-    let accepted = |id: &str, at: usize| {
-        messages.get(at + 1).is_some_and(|reply| {
-            reply.content.iter().any(|block| {
-                matches!(block, ContentBlock::ToolResult { tool_use_id, is_error, .. }
-                    if tool_use_id == id && !is_error)
-            })
-        })
-    };
+    let accepted = accepted_calls(messages);
     let mut plan: Vec<Step> = Vec::new();
     let mut yours: Vec<String> = Vec::new();
     let mut removed: Vec<String> = Vec::new();
@@ -636,14 +629,11 @@ fn replay_plan(messages: &[Message], edits: &[PlanEditMark]) -> Option<RestoredP
         while let Some(edit) = edits.next_if(|edit| edit.after <= at) {
             apply(edit, &mut plan, &mut yours, &mut removed, &mut pending);
         }
-        for block in &message.content {
-            let ContentBlock::ToolUse {
-                id, name, input, ..
-            } = block
-            else {
+        for (position, block) in message.content.iter().enumerate() {
+            let ContentBlock::ToolUse { name, input, .. } = block else {
                 continue;
             };
-            if name != UPDATE_PLAN_TOOL || !accepted(id, at) {
+            if name != UPDATE_PLAN_TOOL || !accepted.contains(&(at, position)) {
                 continue;
             }
             let Ok(input) = serde_json::from_value::<UpdatePlanInput>(input.clone()) else {
@@ -669,6 +659,26 @@ fn replay_plan(messages: &[Message], edits: &[PlanEditMark]) -> Option<RestoredP
         removed,
         pending,
     })
+}
+
+/// Which calls got a result that wasn't an error, by message and block.
+///
+/// Paired by [`taurus_provider::pair_tool_results`], the one rule for a history
+/// whose ids repeat.
+fn accepted_calls(messages: &[Message]) -> std::collections::HashSet<(usize, usize)> {
+    taurus_provider::pair_tool_results(messages)
+        .into_iter()
+        .filter(|((at, position), _)| {
+            matches!(
+                messages[*at].content[*position],
+                ContentBlock::ToolResult {
+                    is_error: false,
+                    ..
+                }
+            )
+        })
+        .map(|(_, call)| call)
+        .collect()
 }
 
 #[cfg(test)]
@@ -790,5 +800,97 @@ mod replay_tests {
     #[test]
     fn a_conversation_without_a_plan_restores_nothing() {
         assert!(replay_plan(&[Message::user("hi")], &[]).is_none());
+    }
+
+    #[test]
+    fn a_call_is_answered_even_with_a_message_between_it_and_its_result() {
+        let messages = [
+            call("ptc_1", &[("One", "pending")]),
+            Message::user("while you're at it"),
+            answered("ptc_1"),
+        ];
+        let plan = replay_plan(&messages, &[]).expect("a plan");
+        assert_eq!(plan.steps[0].text, "One");
+    }
+
+    /// One response with a read and a plan under the same id, in that order.
+    fn a_read_then_a_plan(id: &str) -> Message {
+        let mut both = call(id, &[("One", "pending")]);
+        both.content.insert(
+            0,
+            ContentBlock::tool_use(id, "read_file", serde_json::json!({})),
+        );
+        both
+    }
+
+    #[test]
+    fn two_calls_under_one_id_are_answered_in_the_order_they_went_out() {
+        let answers = Message::new(
+            Role::User,
+            vec![
+                ContentBlock::tool_result("x", "contents"),
+                ContentBlock::tool_result("x", "ok"),
+            ],
+        );
+        let plan = replay_plan(&[a_read_then_a_plan("x"), answers], &[]).expect("a plan");
+        assert_eq!(plan.steps[0].text, "One");
+    }
+
+    #[test]
+    fn both_of_two_calls_under_one_id_are_accepted_when_both_are_answered() {
+        let mut both = a_read_then_a_plan("x");
+        both.content.reverse();
+        let answers = Message::new(
+            Role::User,
+            vec![
+                ContentBlock::tool_result("x", "ok"),
+                ContentBlock::tool_result("x", "contents"),
+            ],
+        );
+        let accepted = accepted_calls(&[both, answers]);
+        assert!(
+            accepted.contains(&(0, 0)) && accepted.contains(&(0, 1)),
+            "{accepted:?}"
+        );
+    }
+
+    #[test]
+    fn one_result_for_two_calls_under_one_id_answers_the_first() {
+        // The read got it, so the plan never reached the board.
+        assert!(replay_plan(&[a_read_then_a_plan("x"), answered("x")], &[]).is_none());
+
+        // The plan went out first, so it's the plan that got it.
+        let mut plan_first = call("x", &[("One", "pending")]);
+        plan_first.content.push(ContentBlock::tool_use(
+            "x",
+            "read_file",
+            serde_json::json!({}),
+        ));
+        assert!(replay_plan(&[plan_first, answered("x")], &[]).is_some());
+    }
+
+    #[test]
+    fn an_old_call_left_unanswered_doesnt_take_a_newer_ones_result() {
+        let messages = [
+            call("x", &[("Abandoned", "pending")]),
+            Message::user("never mind"),
+            call("x", &[("Taken", "pending")]),
+            answered("x"),
+        ];
+        let plan = replay_plan(&messages, &[]).expect("a plan");
+        assert_eq!(plan.steps[0].text, "Taken");
+    }
+
+    #[test]
+    fn a_repeated_id_later_on_doesnt_stand_in_for_an_earlier_refusal() {
+        let messages = [
+            call("ptc_1", &[("Refused", "pending")]),
+            refused("ptc_1"),
+            call("ptc_1", &[("Taken", "pending")]),
+            answered("ptc_1"),
+        ];
+        let plan = replay_plan(&messages, &[]).expect("a plan");
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].text, "Taken");
     }
 }

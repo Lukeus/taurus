@@ -252,6 +252,9 @@ pub fn write_if_current(
     // it are all attached to that — a cost worth paying for a config file the
     // app owns, and not for one in somebody's repository.
     std::fs::write(resolved, &body).map_err(|e| format!("Could not save {shown}: {e}"))?;
+    // The canvas can open a hooks file or a plugin's, in the set a running
+    // command is watched against, and a person saving one is not that command.
+    taurus_tools::protected::written_by_this_process(resolved);
 
     let after = fingerprint_of(resolved)
         .ok_or_else(|| format!("{shown} went missing as it was written."))?;

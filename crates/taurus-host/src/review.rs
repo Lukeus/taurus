@@ -156,26 +156,33 @@ impl Claims {
             .find(|m| m.role == taurus_provider::Role::Assistant && !m.text().trim().is_empty())
             .map(|m| m.text().trim().to_string())?;
 
-        let calls: std::collections::HashMap<&str, (&str, &serde_json::Value)> = messages
-            .iter()
-            .flat_map(|m| m.tool_uses())
-            .map(|(id, name, input)| (id, (name, input)))
-            .collect();
+        // By the one rule for a history whose ids repeat, as an old transcript's
+        // can. A map of the whole turn would file an earlier result under the
+        // last call with that id.
+        let pairs = taurus_provider::pair_tool_results(messages);
         let mut evidence = Vec::new();
-        for block in messages.iter().flat_map(|m| m.content.iter()) {
+        let blocks = messages.iter().enumerate().flat_map(|(at, message)| {
+            message
+                .content
+                .iter()
+                .enumerate()
+                .map(move |(position, block)| ((at, position), block))
+        });
+        for (place, block) in blocks {
             let ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
+                content, is_error, ..
             } = block
             else {
                 continue;
             };
-            let Some((name, input)) = calls.get(tool_use_id.as_str()) else {
+            let Some(ContentBlock::ToolUse { name, input, .. }) = pairs
+                .get(&place)
+                .map(|(at, position)| &messages[*at].content[*position])
+            else {
                 continue;
             };
             let text = content.to_text();
-            let line = match *name {
+            let line = match name.as_str() {
                 "run_command" => format!(
                     "`{}` {}: {}",
                     input["command"].as_str().unwrap_or("?"),
@@ -986,5 +993,63 @@ mod tests {
             stored(workspace, "torn", "after").is_some(),
             "a review written after a torn line has to be found"
         );
+    }
+
+    #[test]
+    fn a_repeated_id_keeps_each_result_with_its_own_call() {
+        let call = |id: &str, name: &str, input| ContentBlock::tool_use(id, name, input);
+        let failed = ContentBlock::ToolResult {
+            tool_use_id: "ptc_1".into(),
+            content: "2 tests failed".into(),
+            is_error: true,
+        };
+        let messages = vec![
+            Message::new(
+                taurus_provider::Role::Assistant,
+                vec![call(
+                    "ptc_1",
+                    "run_command",
+                    serde_json::json!({"command": "cargo test"}),
+                )],
+            ),
+            Message::new(taurus_provider::Role::User, vec![failed]),
+            Message::new(
+                taurus_provider::Role::Assistant,
+                vec![call("ptc_1", "read_file", serde_json::json!({"path": "a"}))],
+            ),
+            Message::new(
+                taurus_provider::Role::User,
+                vec![ContentBlock::tool_result("ptc_1", "contents")],
+            ),
+            Message::assistant("All tests pass."),
+        ];
+        let claims = Claims::from_turn(&messages).unwrap();
+        assert_eq!(claims.evidence.len(), 1, "{:?}", claims.evidence);
+        assert!(claims.evidence[0].contains("`cargo test` failed"));
+    }
+
+    #[test]
+    fn two_calls_under_one_id_keep_their_results_in_the_order_they_went_out() {
+        let call = |name: &str, command: &str| {
+            ContentBlock::tool_use("x", name, serde_json::json!({ "command": command }))
+        };
+        let messages = vec![
+            Message::new(
+                taurus_provider::Role::Assistant,
+                vec![call("run_command", "first"), call("run_command", "second")],
+            ),
+            Message::new(
+                taurus_provider::Role::User,
+                vec![
+                    ContentBlock::tool_result("x", "output of one"),
+                    ContentBlock::tool_result("x", "output of two"),
+                ],
+            ),
+            Message::assistant("Done."),
+        ];
+        let evidence = Claims::from_turn(&messages).unwrap().evidence;
+        assert_eq!(evidence.len(), 2, "{evidence:?}");
+        assert!(evidence[0].contains("`first`") && evidence[0].contains("output of one"));
+        assert!(evidence[1].contains("`second`") && evidence[1].contains("output of two"));
     }
 }

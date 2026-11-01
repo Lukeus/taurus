@@ -187,6 +187,8 @@ pub struct Plugin {
     mcp: taurus_mcp::McpConfig,
     hooks: taurus_hooks::HookConfig,
     hook_files: Vec<PathBuf>,
+    /// What a refused call is told. See [`Plugin::refuses`].
+    hook_refusal: Option<String>,
     /// Every path [`load`] looked at to decide what this plugin is, whether it
     /// was there or not. See [`Plugin::consulted`].
     consulted: Vec<PathBuf>,
@@ -203,6 +205,28 @@ impl Plugin {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Whether this plugin's hooks file can't be used and it's switched on, so
+    /// prompts and tool calls are refused until that's dealt with.
+    ///
+    /// Not active, so its skills, agents and servers stay out. But turning its
+    /// hooks off with them would turn off a guard because of a typo in it, which
+    /// is why a broken `hooks.json` refuses too. Switched off or replaced, it
+    /// has no say.
+    pub fn refuses(&self) -> bool {
+        self.summary.enabled && !self.summary.shadowed && self.hook_refusal.is_some()
+    }
+
+    /// Whether this plugin's hooks are in force: one that's active, or one that
+    /// [`refuses`](Self::refuses).
+    pub fn runs_hooks(&self) -> bool {
+        self.is_active() || self.refuses()
+    }
+
+    /// What a refused call is told. See [`Plugin::refuses`].
+    pub fn hook_refusal(&self) -> Option<&str> {
+        self.hook_refusal.as_deref()
     }
 
     /// Loads something: switched on, not replaced, and nothing wrong with it.
@@ -679,6 +703,9 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         .filter(|path| path.is_file())
         .map(canonical)
         .collect();
+    // Problems that aren't a hooks file refusing for itself: the file and what's
+    // wrong with it. Handled after the files, in one refusal.
+    let mut hook_faults: Vec<(PathBuf, String)> = Vec::new();
     let mut add_hooks = |layer: BTreeMap<String, taurus_hooks::HookEntry>| {
         for (hook, entry) in layer {
             hooks
@@ -695,13 +722,29 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
                 &mut unsupported,
                 &mut problems,
             );
+            if !translated.problems.is_empty() {
+                hook_faults.push((
+                    manifest_path.clone(),
+                    format!("has hooks it can't use: {}", translated.problems.join("; ")),
+                ));
+            }
             add_hooks(translated.hooks);
         }
         other => {
+            let before = problems.len();
             for path in paths(root, other.as_ref(), "hooks", &mut problems) {
                 if !hook_files.contains(&path) {
                     hook_files.push(path);
                 }
+            }
+            if problems.len() > before {
+                hook_faults.push((
+                    manifest_path.clone(),
+                    format!(
+                        "names hooks it can't reach: {}",
+                        problems[before..].join("; ")
+                    ),
+                ));
             }
         }
     }
@@ -719,9 +762,17 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
                     &mut unsupported,
                     &mut problems,
                 );
+                if !translated.problems.is_empty() {
+                    hook_faults.push((
+                        file.clone(),
+                        format!("has hooks it can't use: {}", translated.problems.join("; ")),
+                    ));
+                }
                 add_hooks(translated.hooks);
             }
-            _ => match taurus_hooks::load_file(&file) {
+            _ => match taurus_hooks::load_file_with(&file, &|what| {
+                plugin_refusal(&name, scope, &file, what)
+            }) {
                 Ok(layer) => {
                     for (hook, problem) in &layer.invalid {
                         problems.push(format!("{}: hook \"{hook}\": {problem}", file.display()));
@@ -733,6 +784,13 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         }
         taurus_hook_files.push(file);
     }
+    if let Some((file, what)) = hook_faults.first() {
+        add_hooks(taurus_hooks::refusing_layer(&plugin_refusal(&name, scope, file, what)).hooks);
+    }
+    let hook_refusal = hooks.hooks.values().find_map(|entry| match entry {
+        taurus_hooks::HookEntry::Hook(hook) if hook.is_refusal() => hook.args.first().cloned(),
+        _ => None,
+    });
 
     let consulted = consulted(root, &manifest, &mcp_files, &taurus_hook_files);
 
@@ -766,8 +824,10 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         mcp_servers: server_names,
         hooks: hooks
             .hooks
-            .keys()
-            .map(|key| key.trim_start_matches(&format!("{name}:")).to_string())
+            .iter()
+            // The ones refusing for a broken file aren't hooks anybody wrote.
+            .filter(|(_, entry)| !entry.is_refusal())
+            .map(|(key, _)| key.trim_start_matches(&format!("{name}:")).to_string())
             .collect(),
         name,
         scope,
@@ -790,8 +850,26 @@ pub fn load(root: &Path, scope: Scope, workspace: Option<&Path>) -> Plugin {
         mcp,
         hooks,
         hook_files: taurus_hook_files,
+        hook_refusal,
         consulted,
     }
+}
+
+/// What a call refused over a plugin's broken hooks file is told: which plugin,
+/// which file, what's wrong, and the three ways out.
+fn plugin_refusal(name: &str, scope: Scope, file: &Path, what: &str) -> String {
+    let project = match scope {
+        Scope::Workspace => " --project",
+        Scope::Global => "",
+    };
+    format!(
+        "The plugin \"{name}\" has a hooks file that can't be used: {} {what}. Its hooks can't \
+         run, so prompts and tool calls are refused until that's dealt with. Fix the file, switch \
+         the plugin off with `taurus plugin disable {name}{project}`, or remove it with `taurus \
+         plugin remove {name}{project}`. Plugins in the rail does both in the app. Any of these \
+         takes effect on your next message.",
+        file.display()
+    )
 }
 
 /// The names the command files under `dirs` run as, sorted: each file's
@@ -925,8 +1003,12 @@ pub fn scaffold(
         std::fs::create_dir_all(root.join("agents"))?;
         std::fs::write(root.join(MANIFEST), format!("{text}\n"))
     };
-    if let Err(e) = make() {
+    let made = make();
+    if made.is_err() {
         let _ = std::fs::remove_dir_all(&root);
+    }
+    taurus_tools::protected::written_by_this_process(&plugins);
+    if let Err(e) = made {
         return Err(format!("could not make {}: {e}", root.display()));
     }
     Ok(load(&root, scope, workspace).summary)
@@ -968,23 +1050,40 @@ pub fn update(name: &str, scope: Scope, workspace: Option<&Path>) -> Result<Plug
     std::fs::rename(&target, &old).map_err(|e| format!("{}: {e}", target.display()))?;
     if let Err(e) = staged.install(&target) {
         let _ = std::fs::rename(&old, &target);
+        taurus_tools::protected::written_by_this_process(&plugins);
         return Err(e);
     }
     let _ = std::fs::remove_dir_all(&old);
+    taurus_tools::protected::written_by_this_process(&plugins);
     Ok(load(&target, scope, workspace).summary)
 }
 
 /// Deletes an installed plugin's folder, and its switch in that scope's
 /// settings.
+///
+/// Found by the name a listing shows, which is the manifest's, and which needn't
+/// be its folder's or even a usable one: this is the way out for a plugin that's
+/// broken, and the message that sends you here gives that name.
 pub fn remove(name: &str, scope: Scope, workspace: Option<&Path>) -> Result<(), String> {
-    check_name(name)?;
-    let target = dir(scope, workspace)
-        .ok_or("there's no project open")?
-        .join(name);
+    let listed = installed(workspace)
+        .into_iter()
+        .find(|plugin| plugin.scope() == scope && plugin.name() == name);
+    let target = match listed {
+        Some(plugin) => plugin.root().to_path_buf(),
+        None => {
+            check_name(name)?;
+            dir(scope, workspace)
+                .ok_or("there's no project open")?
+                .join(name)
+        }
+    };
     if !target.is_dir() {
         return Err(format!("no plugin is installed at {}", target.display()));
     }
-    std::fs::remove_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    let removed = std::fs::remove_dir_all(&target);
+    // Even a removal that failed partway has moved the set.
+    taurus_tools::protected::written_by_this_process(&target);
+    removed.map_err(|e| format!("{}: {e}", target.display()))?;
     config::edit_settings(scope, workspace, |settings| {
         if let Some(switches) = settings.plugins.as_mut() {
             switches.remove(name);
@@ -1227,6 +1326,11 @@ impl Drop for Staged {
         // The plugin has been moved out of `root` if it was installed, so
         // this removes only what's left: the rest of a clone, or everything.
         let _ = std::fs::remove_dir_all(&self.root);
+        // The folder a fetch has been staged in, and installed into. This runs
+        // however it went, which is why add's own write is told about here.
+        if let Some(plugins) = self.root.parent() {
+            taurus_tools::protected::written_by_this_process(plugins);
+        }
     }
 }
 
@@ -2459,5 +2563,202 @@ mod tests {
             "{:?}",
             plugin.summary.warnings
         );
+    }
+
+    /// A plugin of your own with a syntax error in its hooks file.
+    fn broken(name: &str) -> PathBuf {
+        let root = dir(Scope::Global, None).unwrap().join(name);
+        write(
+            &root,
+            &[
+                (MANIFEST, &format!(r#"{{"name": "{name}"}}"#)),
+                ("hooks.json", "{\"hooks\":{,}}"),
+            ],
+        );
+        root
+    }
+
+    #[test]
+    fn a_broken_hooks_file_refuses_and_says_how_out() {
+        let _home = isolated_home();
+        let root = broken("kit");
+        let plugin = load(&root, Scope::Global, None);
+        assert!(!plugin.is_active(), "its other parts stay out");
+        assert!(plugin.refuses());
+        let (hooks, _) = taurus_hooks::merge(vec![plugin.hooks().clone()]);
+        let events: Vec<_> = hooks.iter().map(|(_, hook)| hook.on).collect();
+        assert!(events.contains(&taurus_hooks::HookEvent::PreToolUse));
+        assert!(events.contains(&taurus_hooks::HookEvent::UserPromptSubmit));
+        assert!(
+            plugin.summary.hooks.is_empty(),
+            "{:?}",
+            plugin.summary.hooks
+        );
+
+        let said = plugin.hook_refusal().unwrap();
+        for part in [
+            "\"kit\"",
+            "hooks.json",
+            "doesn't parse",
+            "`taurus plugin disable kit`",
+            "`taurus plugin remove kit`",
+            "Plugins in the rail",
+        ] {
+            assert!(said.contains(part), "{part} isn't in: {said}");
+        }
+    }
+
+    #[test]
+    fn a_project_plugins_way_out_names_the_project() {
+        let _home = isolated_home();
+        let workspace = tempfile::tempdir().unwrap();
+        let root = dir(Scope::Workspace, Some(workspace.path()))
+            .unwrap()
+            .join("kit");
+        write(&root, &[("hooks.json", "[")]);
+        let plugin = load(&root, Scope::Workspace, Some(workspace.path()));
+        let said = plugin.hook_refusal().unwrap();
+        assert!(
+            said.contains("`taurus plugin disable kit --project`"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_hooks_file_refuses() {
+        let _home = isolated_home();
+        let root = broken("kit");
+        std::fs::write(root.join("hooks.json"), [0xFF, 0xFE]).unwrap();
+        let plugin = load(&root, Scope::Global, None);
+        assert!(plugin.refuses());
+        assert!(plugin.hook_refusal().unwrap().contains("could not be read"));
+    }
+
+    #[test]
+    fn a_bad_entry_refuses_and_the_good_hook_stays() {
+        let _home = isolated_home();
+        let root = broken("kit");
+        std::fs::write(
+            root.join("hooks.json"),
+            r#"{"hooks":{"good":{"on":"stop","command":"true"},"bad":{"on":"stop"}}}"#,
+        )
+        .unwrap();
+        let plugin = load(&root, Scope::Global, None);
+        assert!(plugin.refuses());
+        assert_eq!(plugin.summary.hooks, ["good"]);
+    }
+
+    #[test]
+    fn a_manifest_naming_a_missing_hooks_file_refuses() {
+        let _home = isolated_home();
+        let root = dir(Scope::Global, None).unwrap().join("kit");
+        write(
+            &root,
+            &[(MANIFEST, r#"{"name": "kit", "hooks": "./gone.json"}"#)],
+        );
+        let plugin = load(&root, Scope::Global, None);
+        assert!(plugin.refuses());
+        assert!(plugin.hook_refusal().unwrap().contains("gone.json"));
+    }
+
+    #[test]
+    fn a_translated_hooks_file_with_a_problem_refuses() {
+        let _home = isolated_home();
+        let root = broken("kit");
+        std::fs::write(
+            root.join("hooks.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command"}]}]}}"#,
+        )
+        .unwrap();
+        let plugin = load(&root, Scope::Global, None);
+        assert!(!plugin.summary.problems.is_empty(), "the fixture is broken");
+        assert!(plugin.refuses(), "{:?}", plugin.summary.problems);
+    }
+
+    #[test]
+    fn a_healthy_plugin_or_one_broken_elsewhere_doesnt_refuse() {
+        let _home = isolated_home();
+        let root = broken("kit");
+        std::fs::write(root.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
+        assert!(!load(&root, Scope::Global, None).refuses());
+        write(&root, &[(MANIFEST, r#"{"name": "Bad Name"}"#)]);
+        assert!(!load(&root, Scope::Global, None).refuses());
+    }
+
+    #[test]
+    fn a_switched_off_plugin_doesnt_refuse() {
+        let _home = isolated_home();
+        broken("kit");
+        assert!(installed(None)[0].refuses());
+        set_enabled("kit", Scope::Global, None, false).unwrap();
+        assert!(!installed(None)[0].refuses());
+        assert!(!installed(None)[0].runs_hooks());
+    }
+
+    #[test]
+    fn a_broken_plugin_can_be_removed() {
+        let _home = isolated_home();
+        let root = broken("kit");
+        remove("kit", Scope::Global, None).unwrap();
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn a_plugin_is_removed_by_the_name_the_listing_shows() {
+        let _home = isolated_home();
+        let root = dir(Scope::Global, None).unwrap().join("Folder_Name");
+        write(&root, &[("hooks.json", "[")]);
+        remove("Folder_Name", Scope::Global, None).unwrap();
+        assert!(
+            !root.exists(),
+            "a name `check_name` refuses is still the way out"
+        );
+
+        let renamed = broken("folder");
+        write(&renamed, &[(MANIFEST, r#"{"name": "other"}"#)]);
+        remove("other", Scope::Global, None).unwrap();
+        assert!(!renamed.exists(), "the manifest's name, not the folder's");
+    }
+
+    #[test]
+    fn an_update_with_a_broken_hooks_file_keeps_the_copy_that_works() {
+        let _home = isolated_home();
+        let source = tempfile::tempdir().unwrap();
+        write(
+            source.path(),
+            &[(MANIFEST, r#"{"name": "kit", "version": "1.0.0"}"#)],
+        );
+        add(source.path().to_str().unwrap(), None, Scope::Global, None).unwrap();
+
+        write(source.path(), &[("hooks.json", "{,")]);
+        let why = update("kit", Scope::Global, None).unwrap_err();
+        assert!(why.contains("the installed one is kept"), "{why}");
+        assert!(installed(None)[0].is_active());
+    }
+
+    #[test]
+    fn an_update_can_mend_a_broken_install() {
+        let _home = isolated_home();
+        let source = tempfile::tempdir().unwrap();
+        write(source.path(), &[(MANIFEST, r#"{"name": "kit"}"#)]);
+        add(source.path().to_str().unwrap(), None, Scope::Global, None).unwrap();
+        let installed_at = dir(Scope::Global, None).unwrap().join("kit");
+        std::fs::write(installed_at.join("hooks.json"), "{,").unwrap();
+        assert!(installed(None)[0].refuses());
+
+        update("kit", Scope::Global, None).unwrap();
+        assert!(!installed(None)[0].refuses());
+    }
+
+    #[test]
+    fn a_plugins_refusal_gets_no_open_button() {
+        // `hooksFileIn` in `src/lib/hooksFile.ts` matches only `.taurus/hooks.json`.
+        let _home = isolated_home();
+        let root = broken("kit");
+        let said = load(&root, Scope::Global, None)
+            .hook_refusal()
+            .unwrap()
+            .to_string();
+        assert!(!said.contains(".taurus/hooks.json"), "{said}");
     }
 }
