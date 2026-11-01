@@ -180,11 +180,11 @@ impl ToolRegistry {
         // turn past the Stop button, with an answer the only way out. Dropping
         // the check is what withdraws the question: the prompt behind it takes
         // its request back out of the pending map when it goes.
-        tokio::select! {
+        let cleared = tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => return Err(ToolError::Canceled),
             checked = ctx.permissions.check_touching(tool.as_ref(), &input, &touched, &asking) => checked?,
-        }
+        };
 
         // After the permission engine, never before it. A hook here can refuse
         // a call the user allowed and cannot allow one the user refused, so
@@ -320,6 +320,14 @@ impl ToolRegistry {
         if let (Some(jobs), Some(recorder)) = (&ctx.jobs, &ctx.checkpoints) {
             for warning in jobs.reap(recorder).await {
                 annotate(&mut result, &warning);
+            }
+        }
+
+        // A background command's look happens when it exits, so what it found is
+        // said at the first call after that, whichever call it is.
+        if let Some(jobs) = &ctx.jobs {
+            for note in jobs.repairs() {
+                annotate(&mut result, &note);
             }
         }
 

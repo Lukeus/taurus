@@ -32,7 +32,78 @@ pub struct Programs {
     /// Why no list of names covers this line, when none does. Finishes the
     /// sentence "this one …", for the places that say so.
     pub beyond: Option<&'static str>,
+    /// Each command the line runs, with every word on it, for a caller that
+    /// can judge those words against the file system. This crate can't: it
+    /// knows shell syntax, and which paths matter is `taurus-tools`' business.
+    /// A segment that's already [`Self::beyond`] isn't here.
+    pub commands: Vec<Command>,
 }
+
+/// One command of a line, and the words written on it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Command {
+    /// As [`Programs::names`] spells it.
+    pub program: String,
+    /// All of them, the program's own included, with quoting already removed.
+    pub words: Vec<String>,
+}
+
+impl Command {
+    /// Whether this only reads the paths written on it, so naming a file isn't
+    /// a way to change one.
+    ///
+    /// A short list, kept to what has no way to write short of a redirect, and
+    /// a redirect is [`Programs::beyond`] already. `sed`, `awk`, `sort` and
+    /// `find` aren't here: each has a spelling that writes. Only a bare name
+    /// counts, since `./cat` is whatever that file is. `git`'s subcommands
+    /// change the index and history, not the files these words name, and
+    /// `--output` is the one way `git diff` and `git log` write anywhere.
+    pub fn only_reads(&self) -> bool {
+        if self.program.contains(['/', '\\']) {
+            return false;
+        }
+        let name = bare_name(&self.program);
+        if name == "git" {
+            let writes = self.words.iter().any(|w| w.starts_with("--output"));
+            return !writes
+                && git_subcommand(&self.words)
+                    .is_some_and(|(sub, _)| GIT_ONLY_READS.contains(&sub));
+        }
+        ONLY_READ.contains(&name.as_str())
+    }
+
+    /// The directory a `cd` or `pushd` moves to, when it's written plainly.
+    pub fn moves_to(&self) -> Option<&str> {
+        if self.program.contains(['/', '\\']) || !matches!(self.program.as_str(), "cd" | "pushd") {
+            return None;
+        }
+        let at = self.words.iter().position(|w| *w == self.program)?;
+        self.words[at + 1..]
+            .iter()
+            .find(|w| !w.starts_with('-'))
+            .map(String::as_str)
+    }
+}
+
+/// Programs that read what they're given and write nowhere.
+const ONLY_READ: &[&str] = &[
+    "cat", "head", "tail", "ls", "wc", "grep", "rg", "stat", "file", "du", "diff", "echo",
+    "printf", "test", "[", "[[", "type", "dir", "findstr",
+];
+
+/// `git` subcommands that leave the working tree's files alone.
+const GIT_ONLY_READS: &[&str] = &[
+    "status",
+    "log",
+    "diff",
+    "show",
+    "blame",
+    "ls-files",
+    "rev-parse",
+    "grep",
+    "add",
+    "commit",
+];
 
 const SUBSTITUTES: &str = "runs another command inside it";
 const REDIRECTS: &str = "writes its output into a file";
@@ -52,6 +123,7 @@ const WILDCARD: &str = "names its program with a wildcard";
 const CONTROL_FLOW: &str = "uses the shell's own control flow, which runs commands no program \
                             name stands for";
 const NOT_A_SETTING: &str = "runs something with `=` in its name, which reads like a setting";
+const GIT_RUNS: &str = "has git run something a setting or an argument on the line names";
 const ASSIGNS: &str = "sets a variable that can change what the command runs";
 
 /// Whose rules a line is read by.
@@ -372,8 +444,9 @@ impl Programs {
                 // `gitx`.
                 '{' => {
                     if posix
-                        && s.words.len() == s.leading
-                        && (s.in_word || next.is_some_and(|n| !n.is_whitespace()))
+                        && ((s.words.len() == s.leading
+                            && (s.in_word || next.is_some_and(|n| !n.is_whitespace())))
+                            || braces_build_a_config_path(&s.word, &chars[i..]))
                     {
                         beyond.get_or_insert(BRACES);
                     }
@@ -411,9 +484,14 @@ impl Programs {
         s.end_segment();
 
         let mut names: Vec<String> = Vec::new();
+        let mut commands: Vec<Command> = Vec::new();
         for segment in &s.segments {
             match program_of(segment, dialect) {
                 Ok(Some(name)) => {
+                    commands.push(Command {
+                        program: name.clone(),
+                        words: segment.words.clone(),
+                    });
                     if !names.iter().any(|n| n == &name) {
                         names.push(name);
                     }
@@ -427,7 +505,11 @@ impl Programs {
         if names.is_empty() {
             beyond.get_or_insert(NOTHING);
         }
-        Programs { names, beyond }
+        Programs {
+            names,
+            beyond,
+            commands,
+        }
     }
 }
 
@@ -502,6 +584,21 @@ impl Scan {
         self.word.push_str("${");
         at + 2
     }
+}
+
+/// Whether a `{` here could spell `.git` or `.taurus` a word-by-word look at the
+/// line wouldn't see: `.taurus/{hooks,x}.json`, `.{git,x}/hooks/y`.
+fn braces_build_a_config_path(before: &str, from: &[char]) -> bool {
+    let inside: String = from
+        .iter()
+        .take_while(|c| **c != '}' && !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    let before = before.to_lowercase();
+    before.ends_with('.')
+        || [before.as_str(), inside.as_str()]
+            .iter()
+            .any(|text| text.contains(".git") || text.contains(".taurus"))
 }
 
 /// Whether the shell reads `word` as setting a variable.
@@ -727,6 +824,15 @@ fn program_of(segment: &Segment, dialect: Dialect) -> Result<Option<String>, &'s
             if rest.iter().any(|w| FIND_WRITES.contains(&w.as_str())) {
                 return Err(REDIRECTS);
             }
+        }
+        if name == "git" && git_runs_what_it_is_told(words) {
+            return Err(GIT_RUNS);
+        }
+        if AWKS.contains(&name.as_str()) && rest.iter().any(|w| awk_reaches_out(w)) {
+            return Err(INLINE_CODE);
+        }
+        if name == "sed" && sed_scripts(rest).iter().any(|s| sed_reaches_out(s)) {
+            return Err(INLINE_CODE);
         }
         // `export PATH=./evil; git status` by another spelling.
         if posix
@@ -1271,5 +1377,159 @@ mod tests {
         );
         assert_eq!(names("{ a; b; }"), ["a", "b"]);
         assert_eq!(names("git log --format='%H %s' | head -5"), ["git", "head"]);
+    }
+
+    #[test]
+    fn a_git_setting_that_runs_something_is_asked_about() {
+        for line in [
+            "git config core.hooksPath z",
+            "git config --global core.fsmonitor ./x",
+            "git config core.sshCommand ./x",
+            "git config alias.x '!rm -rf ~'",
+            "git config set alias.x y",
+            "git config --add ALIAS.x y",
+            "git config --edit",
+            "git -c core.hooksPath=z commit",
+            "git -c alias.x='!rm -rf ~' x",
+            "git -ccore.pager=x log",
+            "git --config-env=core.pager=X log",
+            "git clone -c core.sshCommand=x url",
+            "git -c filter.a.clean=x add .",
+            "git -c diff.a.textconv=x diff",
+            "git --exec-path=./x status",
+            "git --git-dir=./evil status",
+            "git rebase -x 'rm -rf ~' main",
+            "git rebase --exec=x main",
+            "git submodule foreach 'rm -rf ~'",
+            "git bisect run ./x",
+            "git filter-branch --tree-filter x",
+            "git grep -Ox foo",
+            "git clone --upload-pack=x url",
+            "git fetch ext::sh",
+        ] {
+            assert_eq!(reason(line), Some(GIT_RUNS), "{line:?}");
+        }
+        for line in [
+            "git config user.name me",
+            "git config core.hooksPath",
+            "git config --get core.hooksPath",
+            "git config --list",
+            "git config get alias.x",
+            "git -c color.ui=never log",
+            "git -c user.name=x commit -m y",
+            "git -C crates/x status",
+            "git commit -m 'set core.hooksPath'",
+            "git log -x",
+            "git clean -x",
+            "git cherry-pick -x abc",
+        ] {
+            assert_eq!(reason(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn git_settings_mean_the_same_under_cmd() {
+        assert_eq!(cmd("git -c core.hooksPath=z commit").beyond, Some(GIT_RUNS));
+        assert_eq!(cmd("git.exe config alias.x y").beyond, Some(GIT_RUNS));
+    }
+
+    #[test]
+    fn awk_that_reaches_out_is_asked_about() {
+        for line in [
+            r#"awk 'BEGIN { system("rm -rf ~") }'"#,
+            r#"awk '{ print | "sh" }'"#,
+            r#"awk 'BEGIN { "id" | getline x }'"#,
+            r#"awk '{ print $1 > "out" }'"#,
+            r#"gawk '@load "x"'"#,
+            r#"/usr/bin/awk 'BEGIN{system ("x")}'"#,
+        ] {
+            assert_eq!(reason(line), Some(INLINE_CODE), "{line:?}");
+        }
+        for line in [
+            "awk '{print $2}' file",
+            "awk '$1>5 {print $2}' file",
+            "awk '/a|b/ {print}' file",
+            "awk -F: '{print $1}' file",
+            "awk '/system/' file",
+        ] {
+            assert_eq!(reason(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn sed_that_reaches_out_is_asked_about() {
+        for line in [
+            "sed 's/a/rm -rf x/e' f",
+            "sed 's/a/b/ge' f",
+            "sed '1e rm -rf x' f",
+            "sed -n '/x/e id' f",
+            "sed 's/a/b/w out' f",
+            "sed 'w out' f",
+            "sed -e 's/a/b/' -e '2e id' f",
+            "sed -ne 'e id' f",
+            "sed --expression='e id' f",
+            "sed 's/a/b/;e id' f",
+            r"sed 's|a|b|e' f",
+            "sed 's/a/b' f",
+        ] {
+            assert_eq!(reason(line), Some(INLINE_CODE), "{line:?}");
+        }
+        for line in [
+            "sed -n 1,5p f",
+            "sed 's/here/there/g' f",
+            "sed -i 's/e/w/' f",
+            "sed -i '' 's/e/w/' f",
+            "sed -i .bak 's/a/b/' f",
+            "sed -E 's/(we)/\\1/' f",
+            "sed '/we/d' f",
+            "sed '$d' f",
+            "sed -e 's/a/b/' -e 's/c/d/' f",
+            "sed 's/a;e/b/' f",
+            "sed '1i hello w' f",
+            r"sed 's/a\/e/b/' f",
+        ] {
+            assert_eq!(reason(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn braces_cannot_spell_a_config_path() {
+        for line in [
+            "tee .taurus/{hooks,x}.json",
+            "tee .{taurus,x}/hooks.json",
+            "cp x {.git,y}/hooks/z",
+        ] {
+            assert_eq!(reason(line), Some(BRACES), "{line:?}");
+        }
+        assert_eq!(names("cp x{,.bak} src/{a,b}.rs"), ["cp"]);
+    }
+
+    #[test]
+    fn a_command_knows_whether_it_only_reads() {
+        let first = |line: &str| Programs::read(line, Dialect::Posix).commands.remove(0);
+        for line in [
+            "cat .git/hooks/x",
+            "ls .git/hooks",
+            "git status",
+            "git -C x log --oneline",
+            "git add .",
+            "rtk cat x",
+        ] {
+            assert!(first(line).only_reads(), "{line}");
+        }
+        for line in [
+            "tee x",
+            "./cat x",
+            "cp a b",
+            "git checkout -- x",
+            "git diff --output=x",
+            "git",
+            "sed -n 1p x",
+        ] {
+            assert!(!first(line).only_reads(), "{line}");
+        }
+        assert_eq!(first("cd -P sub").moves_to(), Some("sub"));
+        assert_eq!(first("rtk cd sub").moves_to(), Some("sub"));
+        assert_eq!(first("cp a b").moves_to(), None);
     }
 }

@@ -507,4 +507,66 @@ mod tests {
             "--allow write_file"
         );
     }
+
+    /// A workspace with a `.git`, a real script, and the real tool, through a
+    /// prompt that has no terminal and whatever flags the policy says.
+    #[cfg(unix)]
+    async fn run_a_script_that_writes_a_hook(policy: Policy) -> (tempfile::TempDir, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        let script = root.join("x.sh");
+        std::fs::write(&script, "#!/bin/sh\necho evil > .git/hooks/pre-commit\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let home = root.join("no-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let engine = taurus_tools::PermissionEngine::new(
+            &root,
+            &home,
+            Box::new(TerminalPrompt::non_interactive(policy)),
+        );
+        let ctx = taurus_tools::ToolContext::new(
+            &root,
+            std::sync::Arc::new(engine),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let text = taurus_tools::ToolRegistry::with_builtins()
+            .execute("run_command", json!({"command": "./x.sh"}), &ctx)
+            .await
+            .unwrap()
+            .to_string();
+        (dir, text)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_line_let_through_by_a_flag_is_looked_at_afterwards() {
+        let policy = Policy {
+            allow_commands: ["./x.sh".to_string()].into_iter().collect(),
+            ..Policy::default()
+        };
+        let (dir, text) = run_a_script_that_writes_a_hook(policy).await;
+        assert!(!dir.path().join(".git/hooks/pre-commit").exists(), "{text}");
+        assert!(text.contains("pre-commit"), "{text}");
+
+        let policy = Policy {
+            allow_tools: ["run_command".to_string()].into_iter().collect(),
+            ..Policy::default()
+        };
+        let (dir, text) = run_a_script_that_writes_a_hook(policy).await;
+        assert!(!dir.path().join(".git/hooks/pre-commit").exists(), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn allow_all_is_not_looked_at() {
+        let policy = Policy {
+            allow_all: true,
+            ..Policy::default()
+        };
+        let (dir, text) = run_a_script_that_writes_a_hook(policy).await;
+        assert!(dir.path().join(".git/hooks/pre-commit").exists(), "{text}");
+        assert!(!text.contains("[taurus]"), "{text}");
+    }
 }

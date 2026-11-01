@@ -179,7 +179,7 @@ fn canonical_root(root: &Path) -> Result<PathBuf, ToolError> {
 /// work. These files aren't: `.taurus/permissions.json` is a list of grants,
 /// `.taurus/hooks.json`, `.taurus/mcp.json` and anything under `.taurus/plugins`
 /// start programs, `providers.json` and `search.json` decide where data goes,
-/// and git runs `.git/hooks/*` and whatever `.git/config` names. A grant to edit
+/// and git runs `.git/hooks/*` and whatever `.git/config` or `.gitconfig` names. A grant to edit
 /// source must not be a way to give itself every other grant.
 ///
 /// `path` has to be what [`resolve`] returned, so a symlink has already become
@@ -213,10 +213,13 @@ pub fn decides_what_runs(root: &Path, path: &Path) -> bool {
             // The `.git` itself: in a submodule it's a file saying where the
             // real one is, and pointing that elsewhere is the same act.
             rest.is_empty()
-                || rest.last().is_some_and(|name| name == "config")
+                || rest
+                    .last()
+                    .is_some_and(|name| name == "config" || name == "config.worktree")
                 || rest.iter().any(|name| name == "hooks")
         });
-    if git {
+    // What `~/.gitconfig` says, git does in every repository.
+    if git || whole.last().is_some_and(|name| name == ".gitconfig") {
         return true;
     }
 
@@ -240,6 +243,68 @@ pub fn decides_what_runs(root: &Path, path: &Path) -> bool {
             .contains(&file.as_str()),
             _ => false,
         })
+}
+
+/// Whether a word on a command line could name a file [`decides_what_runs`] is
+/// about, as best a word can say.
+///
+/// Best effort, and it's only ever asking one more question: a word isn't a
+/// path until a program treats it as one, and a program can build a path at run
+/// time from nothing on the line. `base` is where a relative path would land.
+///
+/// `--target-directory=x`, `of=x` and `-ox` are each looked at past their flag.
+/// The word is checked as written and with its symlinks followed, so a link made
+/// by an earlier command counts while a name that doesn't exist yet still does.
+pub fn word_names_what_runs(root: &Path, base: &Path, word: &str) -> bool {
+    let mut forms = vec![word];
+    if let Some((_, value)) = word.split_once('=') {
+        forms.push(value);
+    }
+    if word.starts_with('-') && !word.starts_with("--") {
+        forms.push(word.get(2..).unwrap_or_default());
+    }
+    forms
+        .into_iter()
+        .filter(|form| !form.is_empty())
+        .any(|form| {
+            if wildcard_reaches_config(form) {
+                return true;
+            }
+            let lexical = lexically_normalize(&base.join(form));
+            decides_what_runs(root, &lexical)
+                || canonical_where_it_can(&lexical)
+                    .is_some_and(|real| decides_what_runs(root, &real))
+        })
+}
+
+/// `lexical` with its symlinks followed as far as anything exists.
+pub(crate) fn canonical_where_it_can(lexical: &Path) -> Option<PathBuf> {
+    let mut existing = lexical;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return Some(
+                tail.into_iter()
+                    .rev()
+                    .fold(real, |path, name| path.join(name)),
+            );
+        }
+        tail.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+}
+
+/// Whether a wildcard could expand to one of those files: `.g*/hooks/x`,
+/// `.git/*/x`, `.taurus/h*`. A wildcard doesn't match a leading dot unless it's
+/// written, so `*/hooks/x` and `src/*` can't.
+fn wildcard_reaches_config(word: &str) -> bool {
+    let has = |part: &str| part.contains(['*', '?', '[']);
+    let parts: Vec<&str> = word.split(['/', '\\']).collect();
+    parts.iter().enumerate().any(|(at, part)| {
+        (part.starts_with('.') && has(part))
+            || (matches!(fold_name(part).as_str(), ".git" | ".taurus")
+                && parts[at + 1..].iter().any(|later| has(later)))
+    })
 }
 
 /// One path name as a case-insensitive file system would match it.
@@ -736,5 +801,57 @@ mod tests {
         let plugin = root.join("plugins/mine");
         let path = resolve(&plugin, "plugin.json").unwrap();
         assert!(!decides_what_runs(&plugin, &path));
+    }
+
+    #[test]
+    fn a_word_on_a_command_line_is_judged_the_same_way() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        let hits = |base: &Path, word: &str| word_names_what_runs(&root, base, word);
+        for word in [
+            ".git/hooks/y",
+            ".GIT/Hooks/y",
+            ".taurus/hooks.json",
+            "./.taurus/permissions.json",
+            "sub/../.git/config",
+            "--target-directory=.git/hooks",
+            "of=.taurus/mcp.json",
+            "-o.git/hooks/x",
+            ".g*/hooks/x",
+            ".git/*/x",
+            ".taurus/h*",
+            "~/.gitconfig",
+            "$HOME/.git/hooks/x",
+        ] {
+            assert!(hits(&root, word), "{word}");
+        }
+        for word in [
+            "src/main.rs",
+            "*/hooks/x",
+            "src/*",
+            ".",
+            "--all",
+            "-la",
+            "hooks",
+            ".gitignore",
+        ] {
+            assert!(!hits(&root, word), "{word}");
+        }
+        // Where the command runs counts.
+        let hooks = root.join(".git/hooks");
+        assert!(hits(&hooks, "pre-commit"));
+        assert!(hits(&hooks, "."));
+        assert!(hits(&root.join(".taurus"), "hooks.json"));
+        assert!(!hits(&root.join("sub"), "hooks.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_word_is_judged_through_a_symlink_too() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::os::unix::fs::symlink(root.join(".git/hooks"), root.join("innocent")).unwrap();
+        assert!(word_names_what_runs(&root, &root, "innocent/x"));
     }
 }

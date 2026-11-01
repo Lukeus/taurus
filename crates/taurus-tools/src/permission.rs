@@ -273,6 +273,10 @@ pub struct PermissionEngine {
     ///
     /// [`check`]: Self::check
     once: Mutex<HashMap<String, BTreeSet<String>>>,
+    /// Command lines a standing grant won't cover the next time they run,
+    /// because the last time they changed something that had to be undone.
+    /// That's what makes "run it again and approve it" possible at all.
+    ask_next: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl PermissionEngine {
@@ -294,6 +298,7 @@ impl PermissionEngine {
             allowlists: Mutex::new(allowlists),
             workspace_rules: true,
             once: Mutex::new(HashMap::new()),
+            ask_next: std::sync::Mutex::default(),
         }
     }
 
@@ -592,7 +597,11 @@ fn keys_for(
                     .iter()
                     .map(|program| format!("{}:{program}", tool.name()))
                     .collect(),
-                beyond: programs.beyond.or(fed.then_some(FED_STDIN)),
+                beyond: programs
+                    .beyond
+                    .or(fed.then_some(FED_STDIN))
+                    .or(names_what_decides_what_runs(&programs, input, workspace)
+                        .then_some(NAMES_WHAT_RUNS)),
             };
         }
     }
@@ -615,6 +624,35 @@ fn keys_for(
         rules: vec![tool.name().to_string()],
         beyond,
     }
+}
+
+/// Whether a command other than a reading one names a file that decides what
+/// runs, so that `cp x .git/hooks/y` isn't whatever a grant for `cp` is.
+///
+/// Each relative word lands where the command would be standing: the call's
+/// `cwd`, moved along by any plain `cd` before it. See
+/// [`crate::path_guard::word_names_what_runs`] for what this can't know.
+fn names_what_decides_what_runs(
+    programs: &Programs,
+    input: &serde_json::Value,
+    workspace: &Path,
+) -> bool {
+    let Ok(root) = workspace.canonicalize() else {
+        return false;
+    };
+    let cwd = input.get("cwd").and_then(|c| c.as_str()).unwrap_or(".");
+    let mut at = root.join(cwd);
+    programs.commands.iter().any(|command| {
+        if let Some(to) = command.moves_to() {
+            at = at.join(to);
+            return false;
+        }
+        !command.only_reads()
+            && command
+                .words
+                .iter()
+                .any(|word| crate::path_guard::word_names_what_runs(&root, &at, word))
+    })
 }
 
 /// What granting `rules` would mean, in a sentence the prompt shows.
@@ -1974,6 +2012,70 @@ mod tests {
         for input in [
             serde_json::json!({"command": "python3 x.py"}),
             serde_json::json!({"command": "python3 x.py", "stdin": ""}),
+        ] {
+            engine
+                .check(&run, &input, &Asking::default())
+                .await
+                .unwrap();
+            assert!(seen.lock().await.is_none(), "{input}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_program_grant_does_not_reach_a_file_that_decides_what_runs() {
+        let homes = Homes::new();
+        let file = workspace_allowlist_file(homes.workspace.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            r#"{"allowed": ["run_command:cp", "run_command:tee", "run_command:mv",
+                "run_command:ln", "run_command:cat", "run_command:ls",
+                "run_command:git", "run_command:cd"]}"#,
+        )
+        .unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        let engine = homes.engine(Box::new(Asked { seen: seen.clone() }));
+        let run = Fake {
+            name: "run_command",
+            effect: Effect::Execute,
+        };
+
+        for input in [
+            serde_json::json!({"command": "cp x .git/hooks/y"}),
+            serde_json::json!({"command": "tee .taurus/hooks.json"}),
+            serde_json::json!({"command": "mv x .GIT/HOOKS/y"}),
+            serde_json::json!({"command": "ln -s x .git/hooks/y"}),
+            serde_json::json!({"command": "cp --target-directory=.git/hooks x"}),
+            serde_json::json!({"command": "cd .git/hooks && cp ../x y"}),
+            serde_json::json!({"command": "cd .taurus; tee hooks.json"}),
+            serde_json::json!({"command": "cp x y", "cwd": ".git/hooks"}),
+            serde_json::json!({"command": "cat x | tee .taurus/permissions.json"}),
+            serde_json::json!({"command": "git checkout -- .taurus/hooks.json"}),
+        ] {
+            engine
+                .check(&run, &input, &Asking::default())
+                .await
+                .unwrap();
+            let request = seen
+                .lock()
+                .await
+                .take()
+                .unwrap_or_else(|| panic!("{input} was let through on its programs"));
+            assert_eq!(
+                request.beyond_grant.as_deref(),
+                Some(NAMES_WHAT_RUNS),
+                "{input}"
+            );
+            assert!(!request.offer_always, "{input}");
+        }
+
+        for input in [
+            serde_json::json!({"command": "cat .git/hooks/pre-commit"}),
+            serde_json::json!({"command": "ls .git/hooks"}),
+            serde_json::json!({"command": "git status"}),
+            serde_json::json!({"command": "git diff .taurus/hooks.json"}),
+            serde_json::json!({"command": "cp src/a.rs src/b.rs"}),
+            serde_json::json!({"command": "cd .git/hooks && ls"}),
         ] {
             engine
                 .check(&run, &input, &Asking::default())
