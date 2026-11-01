@@ -1,6 +1,6 @@
 import type { ReactNode, Ref } from "react";
 
-import type { Ink } from "../lib/ink";
+import type { FoundInk } from "../lib/find";
 
 /**
  * The painted layer under a textarea: the same characters, coloured.
@@ -23,7 +23,7 @@ export function InkLayer({
   before,
   after,
 }: {
-  runs: Ink[];
+  runs: FoundInk[];
   className: string;
   /** For an editor that keeps the layer's scroll in step with the box. */
   ghost?: Ref<HTMLPreElement>;
@@ -34,7 +34,7 @@ export function InkLayer({
     <pre className={`painted-ink ${className}`} aria-hidden="true" ref={ghost}>
       {before}
       {runs.map((run, i) => (
-        <span key={i} className={`ink-${run.kind}`}>
+        <span key={i} className={`ink-${run.kind}${run.hit ? ` ink-hit ${run.hit}` : ""}`}>
           {run.text}
         </span>
       ))}

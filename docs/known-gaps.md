@@ -1087,15 +1087,13 @@ the backlog, and they're the minority.
   join the earlier set, but the coloring is a shared scanner, not a parser. HTML
   gets comments and attribute values and not its tags, and a Lua `--[[` block
   comment colors only its first line.
-- **The editor folds nothing, finds nothing, and has one cursor.** No code
-  folding, no in-editor find-and-replace, no multiple cursors, no bracket
-  matching. Each is a feature in its own right. The canvas shares its
-  painted-textarea approach with the query box, so each would have to be
-  built, not configured. That's the honest cost of not carrying a quarter of
-  a megabyte of editor. The browser's own find-on-page still works, because
-  underneath it's a real `<textarea>`. If this list becomes the reason people
-  don't use it, that's the evidence for importing an editor instead of
-  growing this one.
+- **The editor folds nothing, replaces nothing, and has one cursor.** No code
+  folding, no find-and-replace, no regular expressions in find, no multiple
+  cursors, no bracket matching. Each is a feature in its own right. The canvas
+  shares its painted-textarea approach with the query box, so each would have to
+  be built, not configured. That's the honest cost of not carrying a quarter of a
+  megabyte of editor. If this list becomes the reason people don't use it, that's
+  the evidence for importing an editor instead of growing this one.
 - **Source view doesn't wrap, so long prose lines scroll sideways.** A
   paragraph written as one long line runs off the right edge of the editor
   instead of folding. That's a decision, not an omission, and it was made by

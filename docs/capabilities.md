@@ -832,6 +832,23 @@ The row holds 12 files. Past that, the least recently used one closes, as long a
 everything in it is saved. Each workspace has its own set of tabs, and they come
 back when you return to it in the same window.
 
+### Finding in a file
+
+Press ⌘F (Ctrl+F on Windows and Linux) with the file focused. Every match is
+highlighted and the box shows `3 of 12`. Enter goes to the next one, Shift-Enter
+to the previous one, and so do F3 and Shift-F3 (⌘G and ⇧⌘G work on a Mac too).
+Escape closes the box and selects the match you stopped on.
+
+Case only matters once your search has a capital in it, so `retry` finds `Retry`
+but `Retry` doesn't find `retry`. If a word is selected when you press ⌘F, that's
+what gets searched for. Searching a Markdown preview switches it to source.
+
+To go to a line, press Control+G, or type a colon and a number in the box, like
+`:120`, then Enter.
+
+Your matches aren't sent to the model while the box is open. Only the match you
+stop on is selected, and a selection goes with your next message.
+
 ### Going to a file
 
 Press **Go to file** in the toolbar, or ⌘P (Ctrl+P on Windows and Linux), and type

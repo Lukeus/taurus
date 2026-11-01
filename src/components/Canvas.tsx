@@ -7,6 +7,7 @@ import { Markdown } from "./Markdown";
 import { ConflictBanner } from "./ConflictBanner";
 import type { SaveState } from "../state/notebook";
 import { onTabKeys } from "../lib/tabs";
+import type { FindKey } from "../lib/find";
 
 /**
  * The file open beside the conversation.
@@ -42,6 +43,7 @@ export function Canvas({
   flash,
   conflict,
   error,
+  findAsk = null,
   onEdit,
   onKeepMine,
   onTakeTheirs,
@@ -71,6 +73,8 @@ export function Canvas({
    */
   conflict: Document | null;
   error: string | null;
+  /** A find key. There's nothing to search in a preview, so it goes to source. */
+  findAsk?: { key: FindKey } | null;
   onEdit: (text: string) => void;
   /** Saves what is in the editor over the other version. */
   onKeepMine: () => void;
@@ -115,6 +119,10 @@ export function Canvas({
     // `reveal` by identity, so being sent to a *new* place in a file already
     // open switches back to the source it will be marked in.
   }, [path, prose, reveal]);
+
+  useEffect(() => {
+    if (findAsk) setMode("source");
+  }, [findAsk]);
 
   const take = (next: Sel | null) => {
     setSelection(next);
@@ -239,6 +247,7 @@ export function Canvas({
           path={document.path}
           reveal={reveal}
           flash={flash}
+          ask={findAsk}
           onSelect={take}
           onChange={onEdit}
         />

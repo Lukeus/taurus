@@ -926,6 +926,27 @@ requestAnimationFrame(() => {
           [...document.querySelectorAll(".doc-line-no")].find((n) => n.textContent === "80"),
         );
       },
+      // Find in a file, with matches on screen. Highlights lie under the textarea's
+      // text and have to line up with it, which only a real layout can show.
+      "canvas-find": async () => {
+        const area = (await until(() =>
+          document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        area.focus();
+        area.setSelectionRange(0, 0);
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "f",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            bubbles: true,
+          }),
+        );
+        const box = (await until(() =>
+          document.querySelector(".doc-find-input"),
+        )) as HTMLInputElement;
+        typeInto(box, "attempt");
+        await until(() => document.querySelector(".ink-hit.current"));
+      },
       // The finder, part way through a search. Real keys rather than state,
       // because the shortcut and the ranking are what the picture is of.
       finder: async () => {

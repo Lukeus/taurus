@@ -8,9 +8,11 @@ import {
   type KeyboardEvent,
 } from "react";
 
+import { cutAtHits, findAll, hitFrom, lineAsked, MOST_HITS, type FindKey } from "../lib/find";
 import { enterEdit, indentOf, outdentEdit, replaceText, tabEdit, type Edit } from "../lib/indent";
 import { grammarFor, paint, sliceRuns } from "../lib/ink";
 import { isComposing } from "../lib/keys";
+import { FindBar } from "./FindBar";
 import { InkLayer } from "./InkLayer";
 
 /**
@@ -67,7 +69,7 @@ import { InkLayer } from "./InkLayer";
  *
  * # What is deliberately not here
  *
- * Folding, multiple cursors, and bracket matching. Each is a
+ * Folding, multiple cursors, bracket matching, and replace. Each is a
  * feature in its own right rather than a detail of this one, and the honest
  * shape of that decision is a list rather than a half-built version of each.
  * See `docs/known-gaps.md`.
@@ -77,6 +79,7 @@ export function DocumentEditor({
   path,
   reveal,
   flash,
+  ask = null,
   onSelect,
   onChange,
 }: {
@@ -108,6 +111,8 @@ export function DocumentEditor({
    * two flashes.
    */
   flash: { from: number; to: number } | null;
+  /** A find key, for the bar. An object so pressing it twice is two events. */
+  ask?: { key: FindKey } | null;
   onSelect: (selection: { from: number; to: number; text: string } | null) => void;
   /** What was typed. Absent while the document is not editable. */
   onChange?: (text: string) => void;
@@ -299,10 +304,141 @@ export function DocumentEditor({
     report(area);
   };
 
+  /*
+   * Find. Nothing is selected while the bar is open, only painted, because a
+   * selection travels to the model with the next message and "lines 40–41" would
+   * be a claim about whatever the search last passed. Closing the bar selects the
+   * match it stopped on, which is where somebody meant to be.
+   */
+  const [finding, setFinding] = useState(false);
+  const [asked, setAsked] = useState(0);
+  const [query, setQuery] = useState("");
+  const [current, setCurrent] = useState(-1);
+  /** Where the caret was, for a search to begin from rather than the top. */
+  const startedAt = useRef(0);
+  const goingTo = lineAsked(query);
+  const hits = useMemo(
+    () => (finding && goingTo === null ? findAll(text, query) : []),
+    [finding, goingTo, text, query],
+  );
+  const shown = hits.length === 0 ? -1 : Math.min(Math.max(current, 0), hits.length - 1);
+
+  const lookAt = useCallback(
+    (offset: number) => {
+      const area = box.current;
+      if (!area) return;
+      const at = lineAt(text, offset);
+      const rows = area.clientHeight / row;
+      const top = area.scrollTop / row;
+      if (at < top || at >= top + rows - 1) {
+        area.scrollTop = Math.max(0, (at - Math.floor(rows / 3)) * row);
+      }
+      // Sideways too, since nothing wraps and a match can be far along its line.
+      const column = offset - offsetOf(lines, at);
+      const x = column * charWidth(area);
+      if (x < area.scrollLeft || x > area.scrollLeft + area.clientWidth - 64) {
+        area.scrollLeft = Math.max(0, x - area.clientWidth / 2);
+      }
+      view();
+    },
+    [text, lines, row, view],
+  );
+
+  const typeQuery = (next: string) => {
+    setQuery(next);
+    const found = lineAsked(next) === null ? findAll(text, next) : [];
+    const at = hitFrom(found, startedAt.current);
+    setCurrent(at);
+    if (at >= 0) lookAt(found[at].from);
+  };
+
+  const move = (by: 1 | -1) => {
+    if (hits.length === 0) return;
+    const next = (shown + by + hits.length) % hits.length;
+    setCurrent(next);
+    lookAt(hits[next].from);
+  };
+
+  const closeFind = () => {
+    const area = box.current;
+    const hit = hits[shown];
+    setFinding(false);
+    if (!area) return;
+    area.focus({ preventScroll: true });
+    if (hit) {
+      area.setSelectionRange(hit.from, hit.to);
+      lookAt(hit.from);
+      report(area);
+    }
+  };
+
+  /** Enter in the box. Answers whether it was a line to go to. */
+  const goToLine = () => {
+    const area = box.current;
+    if (goingTo === null) return false;
+    const line = Math.min(goingTo, lines.length) - 1;
+    setFinding(false);
+    if (!area) return true;
+    const start = offsetOf(lines, line);
+    area.focus({ preventScroll: true });
+    area.setSelectionRange(start, start);
+    lookAt(start);
+    report(area);
+    return true;
+  };
+
+  useEffect(() => {
+    if (!ask) return;
+    const area = box.current;
+    if (ask.key === "next" || ask.key === "previous") {
+      if (finding && hits.length > 0) {
+        move(ask.key === "next" ? 1 : -1);
+        return;
+      }
+    }
+    if (!finding && area) startedAt.current = area.selectionStart;
+    if (ask.key === "line") setQuery(":");
+    else if (area && area.selectionStart !== area.selectionEnd && !area.value.slice(area.selectionStart, area.selectionEnd).includes("\n")) {
+      // What's highlighted is usually what's being looked for.
+      typeQuery(area.value.slice(area.selectionStart, area.selectionEnd));
+    } else if (lineAsked(query) !== null || query === ":") setQuery("");
+    setFinding(true);
+    setAsked((n) => n + 1);
+    // Fires on the key and nothing else. What it reads is this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ask]);
+
+  const found = useMemo(
+    () => cutAtHits(painted, offsetOf(lines, window_.from), hits, shown),
+    [painted, lines, window_.from, hits, shown],
+  );
+
+  const said =
+    goingTo !== null
+      ? `Go to line ${Math.min(goingTo, lines.length)}`
+      : !query
+        ? null
+        : hits.length === 0
+          ? "No matches"
+          : hits.length >= MOST_HITS
+            ? `${shown + 1} of ${MOST_HITS.toLocaleString()}+`
+            : `${shown + 1} of ${hits.length}`;
+
   const total = lines.length;
 
   return (
     <div className="doc-editor">
+      {finding && (
+        <FindBar
+          query={query}
+          said={said}
+          asked={asked}
+          onQuery={typeQuery}
+          onMove={move}
+          onSubmit={goToLine}
+          onClose={closeFind}
+        />
+      )}
       <div className="doc-gutter" aria-hidden ref={rail}>
         <div style={{ height: window_.from * row }} />
         {lines.slice(window_.from, window_.to).map((_, i) => {
@@ -345,7 +481,7 @@ export function DocumentEditor({
         )}
 
         <InkLayer
-          runs={painted}
+          runs={found}
           className="doc-ink"
           ghost={ghost}
           // What is above the window and below it, as height and nothing else.
@@ -391,6 +527,14 @@ const SCAN_WHOLE = 1024 * 1024;
 
 /** Row height before anything has been measured. Only ever briefly true. */
 const DEFAULT_ROW = 20;
+
+/** How wide a character is in the box. The font is fixed-pitch, or columns mean nothing. */
+function charWidth(area: HTMLTextAreaElement): number {
+  const pen = document.createElement("canvas").getContext?.("2d");
+  if (!pen) return 8;
+  pen.font = getComputedStyle(area).font;
+  return pen.measureText("M").width || 8;
+}
 
 /** The character offset where line `n` starts, counting from 0. */
 function offsetOf(lines: string[], n: number): number {
