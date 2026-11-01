@@ -1057,6 +1057,10 @@ the backlog, and they're the minority.
   split inside the canvas, so comparing two side by side is still the terminal
   dock's job. Open tabs last as long as the window, and aren't restored when
   it reopens.
+- **The file finder lists at most 50,000 files.** The list crosses to the
+  frontend as one message, so the walk stops at that count or after 5 seconds,
+  and the finder says when it did. It matches names, not contents, and it only
+  looks in the workspace. Personal skills and agents open from their drawers.
 - **A canvas edit is invisible to the Changes panel and to rewind.** The
   drawer shows what this *conversation* changed and the way back from it.
   Your own typing is neither, so git is the undo that covers it. The cost is
@@ -1073,15 +1077,23 @@ the backlog, and they're the minority.
   screen until one of those happens, because the window never lost focus. Saving
   is still safe: it compares fingerprints and refuses instead of overwriting.
   Watching the filesystem properly is a dependency and a lifetime to get right.
-- **The editor folds nothing, finds nothing, and has one cursor.** No code
-  folding, no in-editor find-and-replace, no multiple cursors, no bracket
-  matching. Each is a feature in its own right. The canvas shares its
-  painted-textarea approach with the query box, so each would have to be
-  built, not configured. That's the honest cost of not carrying a quarter of
-  a megabyte of editor. The browser's own find-on-page still works, because
-  underneath it's a real `<textarea>`. If this list becomes the reason people
-  don't use it, that's the evidence for importing an editor instead of
-  growing this one.
+- **Colors can be wrong in a file over 1 MB.** Up to that size the editor reads
+  the whole file for every edit, so a comment or string that opens above the
+  screen colors correctly. A larger file would lag on each keystroke (about 130 ms
+  at 4 MB), so it's colored from the top of the screen. A long comment you've
+  scrolled into can show the wrong way round. The text itself is never affected.
+- **Languages are colored, not understood.** C and C++, C#, Java, Kotlin, Swift,
+  Ruby, PHP, Lua, CSS, HTML and XML, SQL, Dockerfiles, Makefiles and config files
+  join the earlier set, but the coloring is a shared scanner, not a parser. HTML
+  gets comments and attribute values and not its tags, and a Lua `--[[` block
+  comment colors only its first line.
+- **The editor folds nothing, replaces nothing, and has one cursor.** No code
+  folding, no find-and-replace, no regular expressions in find, no multiple
+  cursors, no bracket matching. Each is a feature in its own right. The canvas
+  shares its painted-textarea approach with the query box, so each would have to
+  be built, not configured. That's the honest cost of not carrying a quarter of a
+  megabyte of editor. If this list becomes the reason people don't use it, that's
+  the evidence for importing an editor instead of growing this one.
 - **Source view doesn't wrap, so long prose lines scroll sideways.** A
   paragraph written as one long line runs off the right edge of the editor
   instead of folding. That's a decision, not an omission, and it was made by

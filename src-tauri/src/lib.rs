@@ -318,6 +318,7 @@ pub fn run() {
             commands::list_datasets,
             commands::dataset_profile,
             commands::dataset_page,
+            commands::workspace_files,
             commands::open_document,
             commands::save_document,
             commands::dataset_tables,

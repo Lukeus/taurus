@@ -38,7 +38,7 @@ pub mod usage;
 pub use attach::Attachment;
 pub use command::{CommandError, CommandKind, CommandSummary, Invocation};
 pub use config::{ModelRoute, ModelRoutes, ProviderConfig, ProviderKind, Scope, Settings, Theme};
-pub use document::{Document, Saved};
+pub use document::{Document, Saved, WorkspaceFiles};
 pub use fork::{Comparison, Forked, Side, Switched};
 pub use git::{Commit, Repo, RepoStatus};
 pub use host::{

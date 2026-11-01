@@ -591,6 +591,25 @@ window that never stops spinning.
  * the scroll went unseen for as long as that was true. A history section
  * rather than filler, so the picture still reads as a document.
  */
+/** A docstring long enough for the paint to begin inside it, and code below it. */
+export const CODE_DOCUMENT = (() => {
+  const notes = Array.from({ length: 90 }, (_, i) => `    Note ${i + 1}: def if return are only words here.`);
+  const text = [
+    "def retry(call, attempts=4):",
+    '    """',
+    ...notes,
+    '    """',
+    "    for attempt in range(attempts):",
+    "        try:",
+    "            return call()  # the common path",
+    "        except TimeoutError:",
+    "            continue",
+    '    raise RuntimeError("out of attempts")',
+    "",
+  ].join("\n");
+  return { path: "src/retry.py", text, lines: text.split("\n").length - 1, fingerprint: "1-1" };
+})();
+
 export const LONG_DOCUMENT = (() => {
   const history = Array.from({ length: 40 }, (_, i) => {
     const day = String(28 - (i % 28)).padStart(2, "0");

@@ -152,6 +152,45 @@ export function rank<T>(
 }
 
 /**
+ * What a match in a filename is worth over one in its folders.
+ *
+ * Enough to put every file named for the query above every file merely filed
+ * under it: `mod` means `mod.rs`, not the forty files in a folder called `models`.
+ */
+const IN_NAME = 40;
+/** Between equal names, the one nearer the root. */
+const PER_PATH_CHAR = 0.01;
+
+/**
+ * The best files for `query`, best first, with `spans` indexing the whole path.
+ *
+ * Not `rank`, which reads one label, and over a whole path would mark a filename
+ * down for how deep it's filed.
+ */
+export function rankPaths(paths: readonly string[], query: string, limit: number): Scored<string>[] {
+  if (!query.trim()) {
+    return paths.slice(0, limit).map((item) => ({ item, score: 0, spans: [] }));
+  }
+  const scored: Scored<string>[] = [];
+  for (const item of paths) {
+    const start = item.lastIndexOf("/") + 1;
+    const named = score(item.slice(start), query);
+    if (named) {
+      scored.push({
+        item,
+        score: named.score + IN_NAME - item.length * PER_PATH_CHAR,
+        spans: named.spans.map((at) => at + start),
+      });
+      continue;
+    }
+    const whole = score(item, query);
+    if (whole) scored.push({ item, score: whole.score, spans: whole.spans });
+  }
+  scored.sort((a, b) => b.score - a.score || (a.item < b.item ? -1 : 1));
+  return scored.slice(0, limit);
+}
+
+/**
  * Splits a label into the runs that matched and the runs that did not.
  *
  * Runs rather than per-character spans: three adjacent matched characters are

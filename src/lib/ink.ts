@@ -22,6 +22,8 @@
  * today; the label above the block still says what it is.
  */
 
+import { SQL } from "./sql";
+
 /** What a run of characters is, for the one purpose of tinting it. */
 export type InkKind =
   | "keyword"
@@ -100,7 +102,11 @@ type Grammar = {
   fold: boolean;
 };
 
-const words = (source: string) => new Set(source.split(/\s+/).filter(Boolean));
+// A declaration, because `sql.ts` calls it as it loads and the two import each
+// other: the SQL grammar's vocabulary is its own, and painting a file needs it.
+function words(source: string) {
+  return new Set(source.split(/\s+/).filter(Boolean));
+}
 
 /** The delimiters every C-descendant here agrees about. */
 const C_QUOTES: Quote[] = [
@@ -220,6 +226,157 @@ const GRAMMARS: Record<string, Grammar> = {
     calls: new Set<string>(),
     fold: false,
   },
+  c: {
+    line: ["//"],
+    block: [["/*", "*/"]],
+    quotes: CHAR_QUOTES,
+    keywords: words(`alignas alignof auto break case catch class const constexpr continue default
+      delete do else enum explicit extern false final for friend goto if inline namespace new
+      noexcept nullptr operator override private protected public return sizeof static struct
+      switch template this throw true try typedef typename union using virtual volatile while`),
+    types: words(`bool char double float int long short signed unsigned void size_t int8_t int16_t
+      int32_t int64_t uint8_t uint16_t uint32_t uint64_t string vector`),
+    calls: "any",
+    fold: false,
+  },
+  csharp: {
+    line: ["//"],
+    block: [["/*", "*/"]],
+    quotes: CHAR_QUOTES,
+    keywords: words(`abstract as async await base break case catch class const continue default
+      delegate do else enum event explicit extern false finally fixed for foreach get if implicit
+      in interface internal is lock namespace new null operator out override params partial
+      private protected public readonly record ref required return sealed set static struct switch
+      this throw true try typeof using var virtual when where while yield`),
+    types: words(`bool byte char decimal double dynamic float int long object sbyte short string
+      uint ulong ushort void Task List Dictionary`),
+    calls: "any",
+    fold: false,
+  },
+  java: {
+    line: ["//"],
+    block: [["/*", "*/"]],
+    quotes: [{ delim: '"""', kind: "string", escape: "backslash", spans: true }, ...CHAR_QUOTES],
+    keywords: words(`abstract assert break case catch class const continue default do else enum
+      extends false final finally for if implements import instanceof interface native new null
+      package permits private protected public record return sealed static super switch
+      synchronized this throw throws transient true try var volatile while yield`),
+    types: words(`boolean byte char double float int long short void String Object List Map Set`),
+    calls: "any",
+    fold: false,
+  },
+  kotlin: {
+    line: ["//"],
+    block: [["/*", "*/"]],
+    quotes: [{ delim: '"""', kind: "string", escape: "backslash", spans: true }, ...CHAR_QUOTES],
+    keywords: words(`abstract as break by catch class companion const continue data do else enum
+      false final finally for fun if import in inline interface internal is lateinit null object
+      open out override package private protected public return sealed super suspend this throw
+      true try typealias val var when where while`),
+    types: words(`Any Boolean Byte Char Double Float Int List Long Map Nothing Set Short String Unit`),
+    calls: "any",
+    fold: false,
+  },
+  swift: {
+    line: ["//"],
+    block: [["/*", "*/"]],
+    quotes: [
+      { delim: '"""', kind: "string", escape: "backslash", spans: true },
+      { delim: '"', kind: "string", escape: "backslash", spans: false },
+    ],
+    keywords: words(`actor as async await break case catch class continue default defer deinit do
+      else enum extension fallthrough false fileprivate final for func guard if import in init
+      inout internal is let nil open override private protocol public repeat rethrows return self
+      Self static struct subscript super switch throw throws true try typealias var where while`),
+    types: words(`Any Array Bool Character Dictionary Double Float Int Optional Set String Void`),
+    calls: "any",
+    fold: false,
+  },
+  ruby: {
+    line: ["#"],
+    block: [],
+    quotes: C_QUOTES,
+    keywords: words(`alias and begin break case class def defined do else elsif end ensure false
+      for if in module next nil not or redo require rescue retry return self super then true undef
+      unless until when while yield`),
+    types: new Set<string>(),
+    calls: "any",
+    fold: false,
+  },
+  php: {
+    line: ["//", "#"],
+    block: [["/*", "*/"]],
+    quotes: C_QUOTES,
+    keywords: words(`abstract and array as break callable case catch class clone const continue
+      declare default do echo else elseif empty enum extends false final finally fn for foreach
+      function global if implements include instanceof interface isset list match namespace new
+      null or print private protected public readonly require return static switch throw trait
+      true try unset use var while yield`),
+    types: words(`bool float int mixed object string void`),
+    calls: "any",
+    fold: false,
+  },
+  lua: {
+    line: ["--"],
+    block: [],
+    quotes: C_QUOTES,
+    keywords: words(`and break do else elseif end false for function goto if in local nil not or
+      repeat return then true until while`),
+    types: new Set<string>(),
+    calls: "any",
+    fold: false,
+  },
+  css: {
+    line: [],
+    block: [["/*", "*/"]],
+    quotes: C_QUOTES,
+    keywords: words(`important inherit initial none unset auto`),
+    types: new Set<string>(),
+    calls: "any",
+    fold: false,
+  },
+  // Comments and attribute values. Tags need a parser's idea of where one ends.
+  html: {
+    line: [],
+    block: [["<!--", "-->"]],
+    quotes: [
+      { delim: '"', kind: "string", escape: "double", spans: true },
+      { delim: "'", kind: "string", escape: "double", spans: false },
+    ],
+    keywords: new Set<string>(),
+    types: new Set<string>(),
+    calls: new Set<string>(),
+    fold: false,
+  },
+  dockerfile: {
+    line: ["#"],
+    block: [],
+    quotes: C_QUOTES,
+    keywords: words(`FROM RUN CMD LABEL EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG
+      ONBUILD STOPSIGNAL HEALTHCHECK SHELL AS`),
+    types: new Set<string>(),
+    calls: new Set<string>(),
+    fold: false,
+  },
+  makefile: {
+    line: ["#"],
+    block: [],
+    quotes: C_QUOTES,
+    keywords: words(`ifeq ifneq ifdef ifndef else endif include define endef export`),
+    types: new Set<string>(),
+    calls: new Set<string>(),
+    fold: false,
+  },
+  // `.ini`, `.env`, `.gitignore` and their kind: comments, and little else to say.
+  conf: {
+    line: ["#", ";"],
+    block: [],
+    quotes: C_QUOTES,
+    keywords: words(`true false`),
+    types: new Set<string>(),
+    calls: new Set<string>(),
+    fold: false,
+  },
   toml: {
     line: ["#"],
     block: [],
@@ -270,17 +427,71 @@ const ALIASES: Record<string, string> = {
   yaml: "yaml",
   yml: "yaml",
   toml: "toml",
+  c: "c",
+  h: "c",
+  cc: "c",
+  cpp: "c",
+  cxx: "c",
+  hpp: "c",
+  hh: "c",
+  "c++": "c",
+  cs: "csharp",
+  csharp: "csharp",
+  java: "java",
+  kt: "kotlin",
+  kts: "kotlin",
+  kotlin: "kotlin",
+  swift: "swift",
+  rb: "ruby",
+  ruby: "ruby",
+  php: "php",
+  lua: "lua",
+  css: "css",
+  scss: "css",
+  less: "css",
+  html: "html",
+  htm: "html",
+  xml: "html",
+  svg: "html",
+  vue: "html",
+  sql: "sql",
+  dockerfile: "dockerfile",
+  makefile: "makefile",
+  mk: "makefile",
+  ini: "conf",
+  cfg: "conf",
+  conf: "conf",
+  properties: "conf",
+  env: "conf",
   md: "markdown",
   markdown: "markdown",
   mdx: "markdown",
 };
 
 /**
+ * Files named for what they are, with no extension to go on.
+ */
+const NAMES: Record<string, string> = {
+  makefile: "makefile",
+  gnumakefile: "makefile",
+  dockerfile: "dockerfile",
+  gemfile: "ruby",
+  rakefile: "ruby",
+  ".gitignore": "conf",
+  ".dockerignore": "conf",
+  ".gitattributes": "conf",
+  ".editorconfig": "conf",
+  ".bashrc": "shell",
+  ".zshrc": "shell",
+  ".profile": "shell",
+};
+
+/**
  * The grammar for a fence label, a file extension, or a whole path.
  *
- * `null` for everything else, which is most things, and that is the honest
- * answer rather than a failure — see the note at the top of the file about
- * what an unknown language renders as.
+ * `null` for everything else, and that is the honest answer rather than a
+ * failure — see the note at the top of the file about what an unknown language
+ * renders as.
  */
 export function grammarFor(hint: string | null | undefined): string | null {
   if (!hint) return null;
@@ -289,6 +500,9 @@ export function grammarFor(hint: string | null | undefined): string | null {
   // A path, then: the part after the last dot, and only if there was a dot
   // after the last separator — `.gitignore` and `Makefile` name no language.
   const name = cleaned.split(/[\\/]/).pop() ?? "";
+  if (name in NAMES) return NAMES[name];
+  if (name === ".env" || name.startsWith(".env.")) return "conf";
+  if (name.startsWith("dockerfile.")) return "dockerfile";
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return null;
   const extension = name.slice(dot + 1);
@@ -313,9 +527,34 @@ export function paint(source: string, grammar: string | null): Ink[] {
   // the editor, the transcript and the diff paint it with the palette they
   // already have.
   if (grammar === "markdown") return markdown(source);
-  const g = grammar ? GRAMMARS[grammar] : undefined;
+  const g = grammar === "sql" ? SQL : grammar ? GRAMMARS[grammar] : undefined;
   if (!g) return source.length ? [{ text: source, kind: "plain" }] : [];
   return scan(source, g);
+}
+
+/**
+ * The runs covering `from` to `to` of the text they were painted from.
+ *
+ * What lets an editor scan a whole file once and draw a window of it. A window
+ * scanned by itself starts with no idea what it's inside, so one opening in the
+ * middle of a docstring reads the closing quotes as an opening, and colours
+ * everything below the wrong way round.
+ */
+export function sliceRuns(runs: readonly Ink[], from: number, to: number): Ink[] {
+  const out: Ink[] = [];
+  let at = 0;
+  for (const run of runs) {
+    const end = at + run.text.length;
+    if (end > from && at < to) {
+      out.push({
+        text: run.text.slice(Math.max(from - at, 0), Math.min(to - at, run.text.length)),
+        kind: run.kind,
+      });
+    }
+    if (end >= to) break;
+    at = end;
+  }
+  return out;
 }
 
 /**
