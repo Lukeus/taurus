@@ -280,11 +280,15 @@ describe("the workspace moving", () => {
   });
 
   it("writes on being asked, before the switch", async () => {
-    const flushRef: { current: (() => Promise<void>) | null } = { current: null };
+    const flushRef: { current: (() => Promise<boolean>) | null } = { current: null };
     await open("a.rs", { flushRef });
     await type("mine\n");
 
-    await act(async () => flushRef.current!());
+    let written = false;
+    await act(async () => {
+      written = await flushRef.current!();
+    });
+    expect(written).toBe(true);
 
     expect(saves).toEqual([{ path: "a.rs", text: "mine\n", fingerprint: "1" }]);
   });

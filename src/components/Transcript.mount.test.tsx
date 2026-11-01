@@ -630,3 +630,36 @@ describe("moving to another conversation", () => {
     act(() => root.unmount());
   });
 });
+
+describe("a message refused by a broken hooks file", () => {
+  it("offers the file where the refusal is, and nothing on another failure", () => {
+    const opened: unknown[] = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const notice = (text: string): Entry => ({ kind: "notice", id: "n", tone: "error", text, failed: true });
+    const show = (text: string) =>
+      act(() =>
+        root.render(
+          <Transcript
+            entries={[notice(text)]}
+            busy={false}
+            empty={null}
+            onAnswer={() => {}}
+            onOpenDelegate={() => {}}
+            onOpenDocument={(...args) => opened.push(args)}
+          />,
+        ),
+      );
+    const button = () =>
+      [...host.querySelectorAll("button")].find((b) => b.textContent === "Open hooks.json");
+
+    show("The model is down.");
+    expect(button()).toBeUndefined();
+
+    show("/w/.taurus/hooks.json doesn't parse: x. Fix or remove the file.");
+    act(() => button()!.click());
+    expect(opened).toEqual([["/w/.taurus/hooks.json", null]]);
+    act(() => root.unmount());
+  });
+});

@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 
 import * as api from "../../lib/api";
+import { hooksFileIn } from "../../lib/hooksFile";
 import type { HookEvent, HookLayer, HookView, Scope } from "../../lib/api";
 import { useStore } from "../../state/store";
-import { Problem, Problems } from "../Problem";
+import { Problem } from "../Problem";
 
 const WHEN: Record<HookEvent, string> = {
   pre_tool_use: "before a tool call",
@@ -28,7 +29,7 @@ const WHEN: Record<HookEvent, string> = {
  * the project defines can only be switched off in the project's file.
  * Switching on goes to whichever layer has it off.
  */
-export function HooksTab() {
+export function HooksTab({ onOpenFile }: { onOpenFile?: (path: string) => void }) {
   const status = useStore((s) => s.status);
   const trusted = useStore((s) => s.trust?.trusted ?? false);
   const [hooks, setHooks] = useState<HookView[] | null>(null);
@@ -79,7 +80,26 @@ export function HooksTab() {
         here edits <code>hooks.json</code>; writing one is done in the file.
       </p>
 
-      {problems.length > 0 && <Problems problems={problems.map((p) => p.message)} />}
+      {/* A broken file refuses every prompt, so the model can't fix it for you.
+          The way to the file is beside what's wrong with it. */}
+      {problems.length > 0 && (
+        <section className="section">
+          <span className="micro">Could not load</span>
+          {problems.map(({ message }) => {
+            const file = onOpenFile ? hooksFileIn(message) : null;
+            return (
+              <div key={message} className="flex flex-col items-start gap-1.5">
+                <Problem>{message}</Problem>
+                {file && (
+                  <button data-tip={file} onClick={() => onOpenFile?.(file)}>
+                    Open hooks.json
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      )}
 
       {hooks === null ? (
         !error && <p className="drawer-loading">Reading…</p>

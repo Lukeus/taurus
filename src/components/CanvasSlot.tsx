@@ -72,9 +72,11 @@ export function CanvasSlot({
   /**
    * Set to what writes the waiting typing now, for `App` to run before it
    * switches workspace. By the time this component hears of a switch, the host
-   * already answers for the new folder, so a write then would land there.
+   * already answers for the new folder, so a write then would land there. Also
+   * run before a message goes, because a fix made a moment ago has to be on disk
+   * for that message to see it. Answers whether the disk now has what's typed.
    */
-  flushRef?: MutableRefObject<(() => Promise<void>) | null>;
+  flushRef?: MutableRefObject<(() => Promise<boolean>) | null>;
 }) {
   const noteError = useStore((s) => s.noteError);
   const wrote = useStore((s) => s.wrote);
@@ -305,7 +307,8 @@ export function CanvasSlot({
       if (timer.current !== null) clearTimeout(timer.current);
       timer.current = null;
       const { doc, typed, conflict } = live.current;
-      if (doc && !conflict && typed !== doc.text) await write(doc, typed);
+      if (!doc || typed === doc.text) return true;
+      return !conflict && (await write(doc, typed)) === "written";
     };
     return () => {
       flushRef.current = null;

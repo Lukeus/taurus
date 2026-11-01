@@ -1501,3 +1501,43 @@ describe("an input method", () => {
     expect(invoke).not.toHaveBeenCalledWith("create_page", expect.anything());
   });
 });
+
+describe("a save queued behind another", () => {
+  it("doesn't make the note that was left current when its answer lands", async () => {
+    // The queued save runs after the switch, and took its ticket then. So it
+    // counted as current, and put `One` back under `Two`.
+    let land: () => void = () => {};
+    let first = true;
+    twoNotes({
+      save_page: (args: never) => {
+        const { name, text } = args as { name: string; text: string };
+        const written = { type: "written", page: { ...page(name, text), fingerprint: "40-2000" } };
+        if (name === "One" && first) {
+          first = false;
+          return new Promise((resolve) => (land = () => resolve(written)));
+        }
+        return written;
+      },
+    });
+    const { host, click, type } = await mount();
+    await click(rows(host)[0]);
+    vi.useFakeTimers();
+    await type(host.querySelector("textarea"), "# One\n\nfirst\n");
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    await type(host.querySelector("textarea"), "# One\n\nfirst and second\n");
+    await click(rows(host)[1]);
+    expect(host.querySelector("textarea")?.value).toBe("# Two\n");
+
+    await act(async () => land());
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    const ones = saves().filter((s) => (s as { name: string }).name === "One");
+    expect((ones[1] as { text: string }).text).toBe("# One\n\nfirst and second\n");
+    expect(host.querySelector(".notes-name")?.textContent).toBe("Two");
+    expect(host.querySelector("textarea")?.value).toBe("# Two\n");
+  });
+});

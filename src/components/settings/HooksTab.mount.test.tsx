@@ -176,3 +176,30 @@ describe("which layer a switch goes to", () => {
     expect(offBy({ kind: "global" })).toContain("~/.taurus/hooks.json");
   });
 });
+
+describe("a hooks file that can't be used", () => {
+  const broken = "/home/me/.taurus/hooks.json doesn't parse: trailing comma. Its hooks can't run.";
+  const button = (host: HTMLElement) =>
+    [...host.querySelectorAll("button")].find((b) => b.textContent === "Open hooks.json");
+
+  it("offers the file beside the problem", async () => {
+    state.status = { problems: [{ source: "hooks", message: broken }] };
+    const opened: string[] = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await act(async () =>
+      createRoot(host).render(<HooksTab onOpenFile={(path) => opened.push(path)} />),
+    );
+    expect(host.textContent).toContain("trailing comma");
+    await act(async () => button(host)!.click());
+    expect(opened).toEqual(["/home/me/.taurus/hooks.json"]);
+  });
+
+  it("offers nothing for a plugin's file, or with no problem", async () => {
+    state.status = { problems: [{ source: "hooks", message: "/p/lint/hooks.json doesn't parse: x" }] };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await act(async () => createRoot(host).render(<HooksTab onOpenFile={() => {}} />));
+    expect(button(host)).toBeUndefined();
+  });
+});

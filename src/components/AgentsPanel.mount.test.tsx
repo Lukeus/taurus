@@ -157,3 +157,21 @@ describe("the agent activity panel", () => {
     ui.unmount();
   });
 });
+
+describe("two delegations under one call id", () => {
+  it("shows each its own record, not one shared between them", () => {
+    const first = spawn("d", "explorer");
+    const second = { ...spawn("d", "coder"), id: "d_2", call: "d" } as typeof first;
+    const { host, unmount } = mount({
+      entries: [ask("u1", "go"), first, second],
+      agents: {
+        d: running("d", { text: "the first one's words" }),
+        d_2: running("d_2", { text: "the second one's words" }),
+      },
+      focus: "d_2",
+    });
+    expect(host.textContent).toContain("the second one's words");
+    expect(host.textContent).not.toContain("the first one's words");
+    unmount();
+  });
+});

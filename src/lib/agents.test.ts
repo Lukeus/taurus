@@ -39,7 +39,7 @@ describe("mergeAgents", () => {
     // A break between rounds, so two rounds don't read as one sentence.
     expect(c1.text).toBe("Looking around.\n\n");
     expect(c1.tools).toEqual([
-      { call: "r1", name: "grep", preview: "grep port", startedAt: 1_100, ok: true, endedAt: 1_400 },
+      { call: "r1", round: 1, name: "grep", preview: "grep port", startedAt: 1_100, ok: true, endedAt: 1_400 },
     ]);
     expect(c1.usage).toEqual({ input: 900, output: 40 });
     expect(stateOf(c1)).toBe("done");

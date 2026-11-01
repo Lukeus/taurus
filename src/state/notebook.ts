@@ -304,9 +304,13 @@ export function useNotebook({
    * made the old note current again under the new one's text, and the next
    * autosave wrote that text into the old file. The outcome is returned either
    * way, for the one caller that has to know — a rename.
+   *
+   * `mine` is the opening it was asked in, taken once. A save queued behind
+   * another runs later, by which time the editor may have left the file, and
+   * taken then it would count as current and put the old page back.
    */
   const write = useCallback(
-    (target: Page, text: string): Promise<Flushed> => {
+    (target: Page, text: string, mine = session.current): Promise<Flushed> => {
       const underway = saving.current;
       if (underway && same(underway.page, target) && underway.text === text) return underway.done;
       // Another save of this file is still out. Sent now, this one would carry
@@ -320,12 +324,11 @@ export function useNotebook({
           if (first !== "written") return first;
           const base =
             landed.current && same(landed.current, target) ? landed.current : target;
-          return write(base, text);
+          return write(base, text, mine);
         });
         saving.current = { page: target, text, done: after };
         return after;
       }
-      const mine = session.current;
       const here = () => session.current === mine;
       setSaveState("saving");
       const done = api
