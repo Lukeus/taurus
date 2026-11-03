@@ -554,6 +554,34 @@ fn has(steps: &[Step], text: &str) -> bool {
     steps.iter().any(|s| s.text.trim() == text.trim())
 }
 
+/// A step's words, lowercased, with punctuation and spacing gone.
+///
+/// What a model changes when it copies a step the person wrote: it
+/// capitalizes it, ends it with a full stop, swaps a quote. None of that is a
+/// different step, and matching the person's steps on exact text read it as
+/// one, so the step was put back beside the model's copy and never closed.
+pub(crate) fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Whether two step texts are the same step, by [`words`].
+pub(crate) fn same_text(a: &str, b: &str) -> bool {
+    let a = words(a);
+    !a.is_empty() && a == words(b)
+}
+
+/// Whether `text` says everything `step` does, in the same order, and maybe
+/// more: "Update the changelog for the fix" is "update the changelog" with
+/// the detail the model filled in.
+pub(crate) fn says(text: &str, step: &str) -> bool {
+    let step = words(step);
+    let mut text = words(text).into_iter();
+    !step.is_empty() && step.iter().all(|w| text.any(|t| t == *w))
+}
+
 /// Whether two lists say the same thing about the same steps.
 ///
 /// Trimmed, because the difference between "Add the token type" and the same
@@ -596,7 +624,7 @@ fn valid_edit(previous: &[Step], steps: Vec<Step>) -> Result<Vec<Step>, String> 
         step.text = text.to_string();
     }
     for (n, step) in steps.iter().enumerate() {
-        if steps[..n].iter().any(|s| s.text == step.text) {
+        if steps[..n].iter().any(|s| same_text(&s.text, &step.text)) {
             return Err(format!("'{}' is on the plan twice.", step.text));
         }
     }

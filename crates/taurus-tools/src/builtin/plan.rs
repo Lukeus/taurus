@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::plan::{same_steps, PlanBoard, Rules};
+use crate::plan::{same_steps, same_text, says, PlanBoard, Rules};
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
 use crate::view::{Step, StepState, TranscriptView};
 
@@ -152,13 +152,43 @@ fn honor_edits(mut steps: Vec<Step>, rules: &Rules) -> (Vec<Step>, Option<String
     let previous = &rules.previous[..];
     // A carried plan replaced by one with nothing in common is the request
     // having moved on, and the person's steps belonged to the plan it left.
-    if rules.carried && !previous.iter().any(|old| has(&steps, &old.text)) {
+    if rules.carried
+        && !previous
+            .iter()
+            .any(|old| steps.iter().any(|s| same_text(&s.text, &old.text)))
+    {
         return (steps, None);
+    }
+
+    // The model's copy of a step the person wrote goes back to their wording,
+    // keeping the state the model gave it. Matched on exact text alone, a copy
+    // the model had tidied counted as the step missing, the step was put back
+    // beside it, and the model could mark its copy done for ever while the
+    // person's stayed open and the plan never finished.
+    let mut reworded = Vec::new();
+    for text in &rules.yours {
+        if has(&steps, text) {
+            continue;
+        }
+        let theirs = |s: &Step| !rules.yours.iter().any(|y| same_text(y, &s.text));
+        let new = |s: &Step| !previous.iter().any(|p| same_text(&p.text, &s.text));
+        let copy = steps
+            .iter()
+            .position(|s| same_text(&s.text, text))
+            .or_else(|| {
+                steps
+                    .iter()
+                    .position(|s| theirs(s) && new(s) && says(&s.text, text))
+            });
+        if let Some(at) = copy {
+            reworded.push(steps[at].text.trim().to_string());
+            steps[at].text = text.clone();
+        }
     }
 
     let mut left_off = Vec::new();
     steps.retain(|s| {
-        let removed = rules.removed.iter().any(|t| t == s.text.trim());
+        let removed = rules.removed.iter().any(|t| same_text(t, &s.text));
         if removed {
             left_off.push(s.text.trim().to_string());
         }
@@ -206,6 +236,12 @@ fn honor_edits(mut steps: Vec<Step>, rules: &Rules) -> (Vec<Step>, Option<String
             .join(", ")
     };
     let mut said = Vec::new();
+    if !reworded.is_empty() {
+        said.push(format!(
+            "Put {} back in the user's wording: they wrote that step, so send it worded as it is.",
+            quoted(&reworded)
+        ));
+    }
     if !kept.is_empty() {
         said.push(format!(
             "Kept {} on the plan: the user added it, so it stays, worded as it is.",
@@ -1077,5 +1113,109 @@ mod tests {
         .await
         .expect("a different task");
         assert!(!board.reminder().unwrap().contains("added by the user"));
+    }
+    #[tokio::test]
+    async fn a_users_step_the_model_tidied_is_one_step_and_closes() {
+        // The bug this guards: a step typed as "update the changelog" came back
+        // from the model as "Update the changelog.", was read as the person's
+        // step gone missing, and was put back beside the copy. The model then
+        // closed its copy every round, the person's stayed open, and the
+        // identical-plan rule refused each try until the turn stalled.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let mine = vec![step("Read the parser", StepState::Active)];
+        tool.execute(input(mine.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        let mut edited = mine.clone();
+        edited.push(step("update the changelog", StepState::Todo));
+        board.edit(&mine, edited).expect("a valid edit");
+
+        let said = text(
+            tool.execute(
+                input(vec![
+                    step("Read the parser", StepState::Done),
+                    step("Update the changelog.", StepState::Done),
+                ]),
+                &ctx,
+            )
+            .await
+            .expect("a finished plan"),
+        );
+        assert!(said.contains("Every step is done"), "{said}");
+        assert!(said.contains("back in the user's wording"), "{said}");
+        assert_eq!(
+            texts(&board),
+            [
+                ("Read the parser".to_string(), StepState::Done),
+                ("update the changelog".to_string(), StepState::Done),
+            ]
+        );
+        assert!(!board.unfinished());
+    }
+
+    #[tokio::test]
+    async fn a_users_step_the_model_filled_in_is_the_same_step() {
+        // A new step that says everything the person's did, and more, is the
+        // model's wording of it rather than a second task.
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let mine = vec![step("Read the parser", StepState::Active)];
+        tool.execute(input(mine.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        let mut edited = mine.clone();
+        edited.push(step("Add a test", StepState::Todo));
+        board.edit(&mine, edited).expect("a valid edit");
+
+        tool.execute(
+            input(vec![
+                step("Read the parser", StepState::Done),
+                step("Add a test for the empty input", StepState::Active),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("a valid plan");
+        assert_eq!(
+            texts(&board),
+            [
+                ("Read the parser".to_string(), StepState::Done),
+                ("Add a test".to_string(), StepState::Active),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_step_stays_off_however_the_model_spells_it() {
+        let (ctx, _dir) = test_ctx();
+        let board = PlanBoard::new();
+        let tool = UpdatePlan::new(board.clone());
+        let plan = vec![
+            step("Read the parser", StepState::Active),
+            step("Rewrite the lexer", StepState::Todo),
+        ];
+        tool.execute(input(plan.clone()), &ctx)
+            .await
+            .expect("a valid plan");
+        board
+            .edit(&plan, vec![step("Read the parser", StepState::Active)])
+            .expect("a valid edit");
+
+        tool.execute(
+            input(vec![
+                step("Read the parser", StepState::Done),
+                step("rewrite the lexer.", StepState::Active),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("repaired, not refused");
+        assert_eq!(
+            texts(&board),
+            [("Read the parser".to_string(), StepState::Done)]
+        );
     }
 }
