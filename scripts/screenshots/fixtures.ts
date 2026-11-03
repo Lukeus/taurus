@@ -43,6 +43,12 @@ export const STATUS = {
   ],
   settings: {
     last_workspace: "/Users/you/code/taurus",
+    recent_workspaces: [
+      "/Users/you/code/taurus",
+      "/Users/you/code/lukeus-site",
+      "/Users/you/notes/journal",
+      "/Users/you/code/data-pipeline",
+    ],
     last_provider: "ollama",
     last_model: "qwen3.6:27b",
     skill_synthesis_enabled: true,

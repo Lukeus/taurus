@@ -280,6 +280,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::set_workspace,
+            commands::forget_workspace,
             commands::workspace_trust,
             commands::trust_workspace,
             commands::revoke_workspace_trust,

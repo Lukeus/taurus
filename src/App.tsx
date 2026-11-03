@@ -10,7 +10,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
-import { chord, isChord, TERMINAL_SHORTCUT } from "./lib/keys";
+import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
 import type { Action } from "./lib/palette";
 // Type only, so it's erased and Settings stays a lazily loaded chunk.
 import type { SettingsTab } from "./components/Settings";
@@ -108,6 +108,7 @@ const PANELS = {
   traces: () => import("./components/TracePanel"),
   palette: () => import("./components/CommandPalette"),
   finder: () => import("./components/FileFinder"),
+  switcher: () => import("./components/WorkspaceSwitcher"),
   changes: () => import("./components/ChangesDrawer"),
   delegate: () => import("./components/DelegateTranscript"),
   activity: () => import("./components/AgentsPanel"),
@@ -130,6 +131,12 @@ const PluginsDrawer = lazy(() =>
 const UsagePanel = lazy(() => PANELS.usage().then((m) => ({ default: m.UsagePanel })));
 const TracePanel = lazy(() => PANELS.traces().then((m) => ({ default: m.TracePanel })));
 const FileFinder = lazy(() => PANELS.finder().then((m) => ({ default: m.FileFinder })));
+const WorkspaceSwitcher = lazy(() =>
+  PANELS.switcher().then((m) => ({ default: m.WorkspaceSwitcher })),
+);
+
+/** The recent folders before a status has said what they are. */
+const NO_FOLDERS: string[] = [];
 const CommandPalette = lazy(() =>
   PANELS.palette().then((m) => ({ default: m.CommandPalette })),
 );
@@ -423,6 +430,7 @@ export default function App() {
   const [tracesOpen, setTracesOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   /**
    * Text a search jump is looking for in the open conversation.
    *
@@ -510,8 +518,21 @@ export default function App() {
       e.preventDefault();
       setTerminalOpen((open) => !open);
     };
+    // ⌃R for the recent folders, as other editors have it. Not from the
+    // terminal, where it is the shell's history search.
+    const recent = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "r" || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest(".xterm")) return;
+      e.preventDefault();
+      setSwitcherOpen(true);
+    };
     window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
+    window.addEventListener("keydown", recent);
+    return () => {
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", recent);
+    };
   }, []);
 
   /*
@@ -787,25 +808,29 @@ export default function App() {
   const available = offered(models, provider, store.session?.model);
   const workspace = store.status?.workspace ?? null;
 
+  /** The folder dialog, then the switch. */
   const pickWorkspace = async () => {
     const chosen = await open({ directory: true, multiple: false });
-    if (typeof chosen === "string") {
-      // Written now rather than after: once the host has switched, a project
-      // note's autosave would land in the new folder's file of the same name.
-      // A version still waiting for a choice is kept for this folder.
-      await notebook.flush(true);
-      // The canvas has the same problem. What it can't write is kept for this
-      // folder when the switch reaches it, and said after the switch, because
-      // opening the next folder's conversation clears the banner.
-      await canvasFlush.current?.();
-      const from = workspace;
-      await store.setWorkspace(chosen);
-      const left = keptIn(from);
-      if (left > 0 && from && useStore.getState().status?.workspace !== from) {
-        store.noteError(
-          `Your unsaved version of ${left === 1 ? "a file" : `${left} files`} is kept for when ${basename(from)} is open again, until this window closes.`,
-        );
-      }
+    if (typeof chosen === "string") await switchWorkspace(chosen);
+  };
+
+  /** Moves the window to `chosen`, from the dialog or the recent folders. */
+  const switchWorkspace = async (chosen: string) => {
+    // Written now rather than after: once the host has switched, a project
+    // note's autosave would land in the new folder's file of the same name.
+    // A version still waiting for a choice is kept for this folder.
+    await notebook.flush(true);
+    // The canvas has the same problem. What it can't write is kept for this
+    // folder when the switch reaches it, and said after the switch, because
+    // opening the next folder's conversation clears the banner.
+    await canvasFlush.current?.();
+    const from = workspace;
+    await store.setWorkspace(chosen);
+    const left = keptIn(from);
+    if (left > 0 && from && useStore.getState().status?.workspace !== from) {
+      store.noteError(
+        `Your unsaved version of ${left === 1 ? "a file" : `${left} files`} is kept for when ${basename(from)} is open again, until this window closes.`,
+      );
     }
   };
 
@@ -835,6 +860,7 @@ export default function App() {
    */
   const latest = useRef<{
     pickWorkspace: () => Promise<void>;
+    switchWorkspace: (path: string) => Promise<void>;
     chooseTheme: (next: Theme) => Promise<void>;
   } | null>(null);
 
@@ -860,6 +886,14 @@ export default function App() {
    * an unchanged catalog would refetch on every status.
    */
   const library = `${store.status?.skill_count ?? 0}:${store.status?.agent_count ?? 0}`;
+
+  // The folders opened before, and why switching to one can't happen now. The
+  // same rule the rail's button keeps, and the backend's.
+  const recentFolders = store.status?.settings.recent_workspaces ?? NO_FOLDERS;
+  const switchBlocked =
+    store.busy || store.running.length > 0
+      ? "Stop the running turn before switching workspace"
+      : null;
 
   // What the two reading-aloud commands say and whether Stop can run.
   const readAloud = store.status?.settings.speech?.read_aloud ?? false;
@@ -946,6 +980,14 @@ export default function App() {
         keywords: "open find search file canvas editor",
         shortcut: chord("P"),
         run: () => setFinderOpen(true),
+      },
+      {
+        id: "workspace-switch",
+        label: "Switch workspace",
+        group: "Do",
+        keywords: "recent folder project directory open",
+        shortcut: SWITCH_SHORTCUT,
+        run: () => setSwitcherOpen(true),
       },
       {
         id: "workspace",
@@ -1047,6 +1089,17 @@ export default function App() {
         unavailable: theme === next ? "Already in use" : undefined,
         run: () => void latest.current?.chooseTheme(next),
       })),
+      // One row per recent folder, so its name alone gets you there.
+      ...recentFolders
+        .filter((path) => path !== workspace)
+        .map<Action>((path) => ({
+          id: `workspace:${path}`,
+          label: `Switch to ${basename(path)}`,
+          group: "Workspaces",
+          keywords: `workspace folder project recent ${path}`,
+          unavailable: switchBlocked ?? undefined,
+          run: () => void latest.current?.switchWorkspace(path),
+        })),
     ],
     // Rebuilt when whether each one can run changes. What each one does is
     // read at the moment it runs, through `start` and `latest`: this list is
@@ -1054,7 +1107,7 @@ export default function App() {
     // start a conversation against the model list as it stood before the
     // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store.busy, store.session, theme, readAloud, speaking],
+    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked],
   );
 
   /**
@@ -1085,7 +1138,7 @@ export default function App() {
     applyTheme(next, custom);
     await api.setTheme(next);
   };
-  latest.current = { pickWorkspace, chooseTheme };
+  latest.current = { pickWorkspace, switchWorkspace, chooseTheme };
 
   /** Opens a dataset in the Data pane, from a card in the transcript. */
   const showDataset = (name: string) => {
@@ -1350,7 +1403,7 @@ export default function App() {
     [custom],
   );
   const railJobs = jobs.filter((job) => job.running).length;
-  const railPickWorkspace = useStable(pickWorkspace);
+  const railPickWorkspace = useCallback(() => setSwitcherOpen(true), []);
   const railNew = useStable(newConversation);
   const railTheme = useStable(chooseTheme);
   const railSkills = useCallback(() => setSkillsOpen(true), []);
@@ -1888,6 +1941,19 @@ export default function App() {
           see `warmPanels` — and a flash of skeleton for a frame that usually
           does not happen reads worse than the drawer simply appearing. */}
       <Suspense fallback={null}>
+        {switcherOpen && (
+          <WorkspaceSwitcher
+            current={workspace}
+            recent={recentFolders}
+            blocked={switchBlocked}
+            onSwitch={(path) => void switchWorkspace(path)}
+            onBrowse={() => void pickWorkspace()}
+            onForget={(path) =>
+              void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
+            }
+            onClose={() => setSwitcherOpen(false)}
+          />
+        )}
         {finderOpen && (
           <FileFinder
             open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}

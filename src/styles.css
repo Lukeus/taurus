@@ -3712,6 +3712,39 @@ body.resizing-y * {
   border-radius: 2px;
 }
 /* The folder after the filename, first to give way when the row runs out. */
+/* A recent folder, and the button that takes it off the list. The button shows
+   on the row being pointed at or moved to, so the list reads as folders. */
+.workspace-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.workspace-row .palette-row {
+  padding-right: 32px;
+}
+.workspace-row .palette-row[aria-disabled="true"] {
+  opacity: 0.55;
+}
+.workspace-forget {
+  position: absolute;
+  right: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  opacity: 0;
+}
+.workspace-row:hover .workspace-forget,
+.workspace-row:focus-within .workspace-forget,
+.workspace-row:has(.palette-row.on) .workspace-forget {
+  opacity: 1;
+}
+.workspace-forget:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
 .finder-where {
   min-width: 0;
   overflow: hidden;

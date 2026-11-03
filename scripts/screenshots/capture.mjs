@@ -134,6 +134,8 @@ const SHOTS = [
   { name: "canvas-tabs", shot: "canvas-tabs", theme: "dark" },
   { name: "finder", shot: "finder", theme: "dark" },
   { name: "canvas-find", shot: "canvas-find", theme: "dark" },
+  // The recent folders on ⌃R, starting on the one before this.
+  { name: "switcher", shot: "switcher", theme: "dark" },
   // Colour read from the top of the file, not from the top of the screen.
   { name: "canvas-code", shot: "canvas-code", theme: "dark" },
   // The notebook: both scopes in the list, one note open in the editor that
