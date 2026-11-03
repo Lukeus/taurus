@@ -189,3 +189,94 @@ describe("find in a file", () => {
     expect(input()).toBeNull();
   });
 });
+
+describe("replace in a file", () => {
+  const swap = () => document.querySelector<HTMLInputElement>(".doc-replace-input");
+  const typeSwap = (text: string) =>
+    act(async () => {
+      const box = swap()!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, text);
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  // Each its own file: what a test types is kept per path, as unsaved work is.
+  const button = (name: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>(".doc-find-action")].find(
+      (b) => b.textContent === name,
+    )!;
+  const click = (el: HTMLElement) =>
+    act(async () => {
+      el.click();
+    });
+
+  it("opens with the replace row on its key", async () => {
+    await mount("r1.rs");
+    await key({ key: "h", ctrlKey: true });
+    expect(input()).not.toBeNull();
+    expect(swap()).not.toBeNull();
+  });
+
+  it("replaces one match, moves on to the next, and keeps the focus in the bar", async () => {
+    await mount("r2.rs");
+    await key({ key: "h", ctrlKey: true });
+    await type("retry");
+    await typeSwap("again");
+    await key({ key: "Enter" }, swap()!);
+    expect(editor().value).toBe("one again\ntwo\nthree retry\nfour RETRY\n");
+    expect(count()).toBe("1 of 2");
+    expect(document.activeElement).toBe(swap());
+  });
+
+  it("doesn't step onto what it just put in", async () => {
+    await mount("r3.rs");
+    await key({ key: "h", ctrlKey: true });
+    await type("retry");
+    await typeSwap("retry retry");
+    await click(button("Replace"));
+    // The next one is the old second match, not the copy just written.
+    expect(count()).toBe("3 of 4");
+  });
+
+  it("replaces every match and says how many", async () => {
+    await mount("r4.rs");
+    await key({ key: "h", ctrlKey: true });
+    await type("retry");
+    await typeSwap("again");
+    await click(button("All"));
+    expect(editor().value).toBe("one again\ntwo\nthree again\nfour again\n");
+    expect(count()).toBe("Replaced 3");
+  });
+
+  it("fills groups in a pattern", async () => {
+    await mount("r5.rs");
+    await key({ key: "h", ctrlKey: true });
+    await click(document.querySelector<HTMLButtonElement>('[aria-label="Regular expression"]')!);
+    await type("(\\w+) retry");
+    await typeSwap("retry $1");
+    await click(button("All"));
+    // A pattern ignores case until Match case is on.
+    expect(editor().value).toBe("retry one\ntwo\nretry three\nretry four\n");
+  });
+
+  it("says a broken pattern is broken", async () => {
+    await mount("r6.rs");
+    await openFind();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-label="Regular expression"]')!.click();
+    });
+    await type("(");
+    expect(count()).toBe("Not a valid pattern");
+  });
+
+  it("toggles from the keyboard", async () => {
+    await mount("r7.rs");
+    await openFind();
+    await type("retry");
+    expect(count()).toBe("1 of 3");
+    await key({ key: "c", code: "KeyC", altKey: true }, input()!);
+    expect(count()).toBe("1 of 2");
+    expect(
+      document.querySelector('[aria-label="Match case"]')?.getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+});
+

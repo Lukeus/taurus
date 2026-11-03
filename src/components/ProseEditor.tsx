@@ -1,9 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { cutAtHits, type FindKey } from "../lib/find";
 import { replaceText } from "../lib/indent";
 import { isComposing } from "../lib/keys";
+import { useFind } from "../lib/useFind";
 
 import { paint } from "../lib/ink";
 import { carry, suggest, type Choice, type Offer } from "../lib/prose";
+import { FindBar } from "./FindBar";
 import { growToContent, InkLayer } from "./InkLayer";
 
 /**
@@ -97,6 +100,7 @@ export function ProseEditor({
   label,
   sketches = NONE,
   notes = NONE,
+  ask = null,
 }: {
   text: string;
   onChange: (text: string) => void;
@@ -112,6 +116,8 @@ export function ProseEditor({
   sketches?: readonly string[];
   /** The other notes in its notebook, which the menu offers to link to. */
   notes?: readonly string[];
+  /** A find key, for the bar. The same bar and keys as the canvas's. */
+  ask?: { key: FindKey } | null;
 }) {
   const box = useRef<HTMLTextAreaElement>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -124,10 +130,42 @@ export function ProseEditor({
    */
   const placing = useRef(false);
 
-  const runs = useMemo(
+  const painted = useMemo(
     () => (text.length > PAINT_LIMIT ? null : paint(text, "markdown")),
     [text],
   );
+
+  /*
+   * Find, replace and go to a line, the canvas's own — see `useFind`. Lines wrap
+   * here, so a place is brought into view by where the painted match is, not by
+   * counting rows. A note past the paint limit has no painted layer, and is
+   * scrolled to by how far through the text the place is, which is close.
+   */
+  const lookAt = useCallback((offset: number) => {
+    const area = box.current;
+    if (!area) return;
+    const scroller = scrollParent(area);
+    if (!scroller) return;
+    const mark = area.parentElement?.querySelector<HTMLElement>(".ink-hit.current");
+    const y = mark
+      ? mark.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+      : area.offsetTop + (offset / Math.max(area.value.length, 1)) * area.scrollHeight;
+    const view = scroller.clientHeight;
+    if (y < scroller.scrollTop + 48 || y > scroller.scrollTop + view - 48) {
+      scroller.scrollTop = Math.max(0, y - view / 3);
+    }
+  }, []);
+  const { bar, hits, shown } = useFind({ text, box, ask, editable: true, lookAt });
+  const runs = useMemo(
+    () => (painted ? cutAtHits(painted, 0, hits, shown) : null),
+    [painted, hits, shown],
+  );
+  // The current match is painted a render after it is chosen, and only then
+  // can it be scrolled to.
+  useEffect(() => {
+    const at = hits[shown];
+    if (at) lookAt(at.from);
+  }, [hits, shown, lookAt]);
 
   // As tall as its content, measured after every change. `scrollHeight` is zero
   // in jsdom, so nothing about this is provable in a mount test — the notes
@@ -236,6 +274,13 @@ export function ProseEditor({
   };
 
   return (
+    <>
+      {/* Its own layer, sticky and no height, so opening it moves no text. */}
+      {bar && (
+        <div className="prose-find-dock">
+          <FindBar {...bar} />
+        </div>
+      )}
     <div className="prose-edit">
       {/* Behind the text, and hidden from a screen reader: the textarea over it
           holds the same characters, and a reader that saw both would read the
@@ -343,7 +388,17 @@ export function ProseEditor({
         </ul>
       )}
     </div>
+    </>
   );
+}
+
+/** The nearest box around `el` that scrolls, which is the note's panel. */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let at = el.parentElement; at; at = at.parentElement) {
+    const { overflowY } = getComputedStyle(at);
+    if (overflowY === "auto" || overflowY === "scroll") return at;
+  }
+  return null;
 }
 
 /** Where the caret is, in pixels from the editor's top left: the bottom of its

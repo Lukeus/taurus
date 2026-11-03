@@ -7231,13 +7231,49 @@ button.link:where(:not(.excalidraw *)):hover {
   right: 16px;
   z-index: 2;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
   padding: 4px 6px;
   max-width: calc(100% - 32px);
   background: var(--bg-elevated);
   border: 1px solid var(--rule);
   border-radius: var(--r-sm);
+}
+.doc-find-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* The replace box starts under the find box, past the fold arrow's width. */
+.doc-find-row + .doc-find-row {
+  padding-left: calc(16px + 6px);
+}
+.doc-find-fold {
+  width: 16px;
+  padding: 2px 0;
+}
+.doc-find-toggle {
+  font-family: var(--mono);
+  padding: 2px 4px;
+}
+.doc-find-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--bg-active);
+}
+.doc-find-action {
+  color: var(--text-dim);
+}
+/* A note scrolls with its panel, so its bar is pinned to the panel's top as it
+   goes. No height of its own, so opening it moves none of the note's text. */
+.prose-find-dock {
+  position: sticky;
+  top: 8px;
+  z-index: 3;
+  height: 0;
+}
+.prose-find-dock .doc-find {
+  top: 0;
 }
 .doc-find-input {
   width: 160px;

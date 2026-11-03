@@ -948,6 +948,51 @@ describe("write, read, or both", () => {
     outside.remove();
   });
 
+  it("finds and replaces with the canvas's bar and keys", async () => {
+    // One find for every editor: the same bar, toggles and keys as a file on
+    // the canvas, reached from inside the note.
+    const { host, click } = await openPlan();
+    const editor = host.querySelector("textarea")!;
+    await chord("f", editor);
+    const find = host.querySelector<HTMLInputElement>(".doc-find-input")!;
+    expect(find).not.toBeNull();
+    const fill = (box: HTMLInputElement, text: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, text);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    await fill(find, "plan");
+    expect(host.querySelector(".doc-find-count")?.textContent).toBe("1 of 2");
+    expect(host.querySelectorAll(".prose-ink .ink-hit")).toHaveLength(2);
+
+    await click(host.querySelector('[aria-label="Show replace"]'));
+    await fill(host.querySelector<HTMLInputElement>(".doc-replace-input")!, "roadmap");
+    await click(
+      [...host.querySelectorAll<HTMLButtonElement>(".doc-find-action")].find(
+        (b) => b.textContent === "All",
+      ),
+    );
+    expect(editor.value).toBe(TEXT.replace("# Plan", "# roadmap").replace("old plan", "old roadmap"));
+    expect(host.querySelector(".doc-find-count")?.textContent).toBe("Replaced 2");
+  });
+
+  it("brings the editor back from Read to search it", async () => {
+    const { host, click } = await openPlan();
+    await click(saying(host, "Read"));
+    await chord("f", host.querySelector(".notes-read")!);
+    expect(selected(host)).toBe("Write");
+    expect(host.querySelector(".doc-find-input")).not.toBeNull();
+  });
+
+  it("leaves find to the canvas when the note isn't where the focus is", async () => {
+    const { host } = await openPlan();
+    const outside = document.createElement("textarea");
+    document.body.appendChild(outside);
+    await chord("f", outside);
+    expect(host.querySelector(".doc-find-input")).toBeNull();
+    outside.remove();
+  });
+
   it("ticks a task in Read, into the note's own text", async () => {
     const { host, click } = await openPlan();
     await click(saying(host, "Read"));
