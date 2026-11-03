@@ -43,9 +43,9 @@ impl Host {
             .to_string();
         // Logged rather than returned, like `remember_session`: the switch
         // itself has happened either way.
-        if let Err(e) =
-            config::edit_settings(Scope::Global, None, |s| s.last_workspace = Some(remembered))
-        {
+        if let Err(e) = config::edit_settings(Scope::Global, None, |s| {
+            config::remember_workspace(s, remembered)
+        }) {
             tracing::warn!(error = %e, "could not remember the workspace");
         }
 
@@ -56,6 +56,13 @@ impl Host {
         // window on the old folder until the last of them answered.
         self.reload_local().await;
         Ok(canonical)
+    }
+
+    /// Takes a folder off the recent ones, for a row in the switcher that
+    /// somebody is done with. The folder and its conversations are untouched.
+    pub async fn forget_workspace(&self, path: &str) -> Result<(), String> {
+        self.edit_global_setting(|s| config::forget_workspace(s, path))
+            .await
     }
 
     /// Whether this workspace's own config is being read, and what it holds.

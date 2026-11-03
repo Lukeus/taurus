@@ -33,6 +33,9 @@ export const chord = (key: string): string => `${MOD}${APPLE ? "" : "+"}${key}`;
  */
 export const TERMINAL_SHORTCUT = APPLE ? "⌃`" : "Ctrl+`";
 
+/** The recent folders. Control on every platform, as other editors bind it. */
+export const SWITCH_SHORTCUT = APPLE ? "⌃R" : "Ctrl+R";
+
 /** Completion in the query box: Control and Space everywhere. */
 export const COMPLETE_SHORTCUT = APPLE ? "⌃Space" : "Ctrl+Space";
 

@@ -1652,12 +1652,14 @@ silently dropped, and the other layer still loads.
 The workspace layer belongs to a directory you can change at any time, so all
 of it is re-resolved on every workspace switch, not just at startup.
 
-Two values are deliberately not layered:
+Three values are deliberately not layered:
 
 - `last_workspace` is written globally only. A pointer to a workspace, stored
   inside the workspace it names, could only ever point at itself. It's the
   folder the app and the CLI open on. Before there is one, the app opens on
   your home folder and the CLI on the directory you run it from.
+- `recent_workspaces` is written globally only, for the same reason. It's the
+  list the workspace switcher offers, newest first, up to 10.
 - Edits from the app's provider settings also write globally. The workspace
   layer is meant to be hand-written and version-controlled, and round-tripping
   the merged view into it would bake every inherited value into the project

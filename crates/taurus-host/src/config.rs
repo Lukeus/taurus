@@ -1306,6 +1306,11 @@ impl ModelRoutes {
 pub struct Settings {
     #[serde(default)]
     pub last_workspace: Option<String>,
+    /// Folders opened before, most recent first, for switching back to one
+    /// without the folder dialog. Written globally only, as `last_workspace`
+    /// is, and for the same reason. See [`remember_workspace`].
+    #[serde(default)]
+    pub recent_workspaces: Vec<String>,
     #[serde(default)]
     pub last_provider: Option<String>,
     #[serde(default)]
@@ -1794,6 +1799,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             last_workspace: None,
+            recent_workspaces: Vec::new(),
             last_provider: None,
             last_model: None,
             skill_synthesis_enabled: true,
@@ -1834,6 +1840,9 @@ impl Default for Settings {
 pub struct StoredSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_workspace: Option<String>,
+    /// See [`Settings::recent_workspaces`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_workspaces: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1925,6 +1934,7 @@ pub struct StoredSettings {
 impl StoredSettings {
     fn overlay(&mut self, other: StoredSettings) {
         self.last_workspace = other.last_workspace.or(self.last_workspace.take());
+        self.recent_workspaces = other.recent_workspaces.or(self.recent_workspaces.take());
         self.last_provider = other.last_provider.or(self.last_provider.take());
         self.last_model = other.last_model.or(self.last_model.take());
         self.skill_synthesis_enabled = other
@@ -1975,6 +1985,7 @@ impl StoredSettings {
         let defaults = Settings::default();
         Settings {
             last_workspace: self.last_workspace,
+            recent_workspaces: self.recent_workspaces.unwrap_or_default(),
             last_provider: self.last_provider,
             last_model: self.last_model,
             skill_synthesis_enabled: self
@@ -2145,6 +2156,36 @@ pub fn edit_settings(
         let _ = std::fs::create_dir_all(parent);
     }
     replace_file(&path, &json).map_err(|e| format!("couldn't write {}: {e}", path.display()))
+}
+
+/// Folders [`Settings::recent_workspaces`] keeps. Enough for the handful of
+/// projects somebody moves between, short enough to read at a glance.
+pub const RECENT_WORKSPACES: usize = 10;
+
+/// Notes `path` as the folder just opened: the last one, and first among the
+/// recent ones.
+///
+/// Folders that are gone are dropped as it goes, since a menu row that can
+/// only fail is worse than no row. A file written before the list existed has
+/// only `last_workspace`, which is the folder opened before this one, so the
+/// list starts from it rather than from nothing.
+pub fn remember_workspace(stored: &mut StoredSettings, path: String) {
+    let mut recent = stored
+        .recent_workspaces
+        .take()
+        .unwrap_or_else(|| stored.last_workspace.iter().cloned().collect());
+    recent.retain(|p| *p != path && Path::new(p).is_dir());
+    recent.insert(0, path.clone());
+    recent.truncate(RECENT_WORKSPACES);
+    stored.recent_workspaces = Some(recent);
+    stored.last_workspace = Some(path);
+}
+
+/// Takes `path` off the recent folders. The folder itself is untouched.
+pub fn forget_workspace(stored: &mut StoredSettings, path: &str) {
+    if let Some(recent) = &mut stored.recent_workspaces {
+        recent.retain(|p| p != path);
+    }
 }
 
 /// Writes a config file, creating its directory.
@@ -2405,10 +2446,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_folder_opened_goes_first_among_the_recent_ones_once() {
+        let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+        let path = |n: usize| dirs[n].path().display().to_string();
+        // A file from before the list: the folder it remembers starts it.
+        let mut stored = StoredSettings {
+            last_workspace: Some(path(0)),
+            ..Default::default()
+        };
+        remember_workspace(&mut stored, path(1));
+        remember_workspace(&mut stored, path(2));
+        remember_workspace(&mut stored, path(0));
+        assert_eq!(
+            stored.recent_workspaces,
+            Some(vec![path(0), path(2), path(1)])
+        );
+        assert_eq!(stored.last_workspace, Some(path(0)));
+
+        forget_workspace(&mut stored, &path(2));
+        assert_eq!(stored.recent_workspaces, Some(vec![path(0), path(1)]));
+    }
+
+    #[test]
+    fn the_recent_folders_drop_the_gone_and_stop_at_the_cap() {
+        let dirs: Vec<_> = (0..RECENT_WORKSPACES + 2)
+            .map(|_| tempfile::tempdir().unwrap())
+            .collect();
+        let mut stored = StoredSettings {
+            recent_workspaces: Some(vec!["/no/such/folder".into()]),
+            ..Default::default()
+        };
+        for dir in &dirs {
+            remember_workspace(&mut stored, dir.path().display().to_string());
+        }
+        let recent = stored.recent_workspaces.unwrap();
+        assert_eq!(recent.len(), RECENT_WORKSPACES);
+        assert_eq!(recent[0], dirs.last().unwrap().path().display().to_string());
+        assert!(!recent.iter().any(|p| p == "/no/such/folder"));
+    }
+
     /// Every setting a layer can hold, each set.
     fn every_setting() -> StoredSettings {
         StoredSettings {
             last_workspace: Some("/code/taurus".into()),
+            recent_workspaces: Some(vec!["/code/taurus".into()]),
             last_provider: Some("gateway".into()),
             last_model: Some("gpt-x".into()),
             skill_synthesis_enabled: Some(false),

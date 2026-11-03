@@ -78,6 +78,7 @@ const state = {
     theme: null,
     settings: {
       last_workspace: null,
+      recent_workspaces: ["/tmp/project", "/tmp/older"],
       last_provider: "ollama",
       last_model: null,
       skill_synthesis_enabled: true,
@@ -165,7 +166,15 @@ const changeWorkspace = async (host: HTMLElement) => {
   expect(button, host.innerHTML.slice(0, 400)).toBeDefined();
   await act(async () => button!.click());
   await settle();
+  // The rail opens the recent folders; the dialog is their last row.
+  await act(async () => option("Open folder…")!.click());
+  await settle();
 };
+
+const option = (text: string) =>
+  [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+    o.textContent?.includes(text),
+  );
 
 beforeEach(() => {
   steps.length = 0;
@@ -207,6 +216,54 @@ describe("switching workspace", () => {
     kept = 1;
     await changeWorkspace(host);
     expect(state.noteError).not.toHaveBeenCalled();
+  });
+});
+
+describe("the recent folders", () => {
+  it("opens from the rail, starts on the folder before this one, and switches on Enter", async () => {
+    const host = await mounted();
+    await act(async () => host.querySelector<HTMLButtonElement>(".rail-workspace")!.click());
+    await settle();
+    expect(option("project")?.textContent).toContain("open");
+    expect(option("older")?.getAttribute("aria-selected")).toBe("true");
+
+    const box = document.querySelector<HTMLInputElement>('[aria-label="Switch workspace"]')!;
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await settle();
+    expect(state.setWorkspace).toHaveBeenCalledWith("/tmp/older");
+    expect(document.querySelector('[aria-label="Switch workspace"]')).toBeNull();
+  });
+
+  it("opens on Control and R, but not from the terminal", async () => {
+    await mounted();
+    const press = async (on: EventTarget) =>
+      act(async () => {
+        on.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "r", ctrlKey: true, bubbles: true, cancelable: true }),
+        );
+      });
+    const shell = document.body.appendChild(document.createElement("div"));
+    shell.className = "xterm";
+    await press(shell);
+    await settle();
+    expect(document.querySelector('[aria-label="Switch workspace"]')).toBeNull();
+
+    await press(window);
+    await settle();
+    expect(document.querySelector('[aria-label="Switch workspace"]')).not.toBeNull();
+  });
+
+  it("takes a folder off the list without switching to it", async () => {
+    const host = await mounted();
+    await act(async () => host.querySelector<HTMLButtonElement>(".rail-workspace")!.click());
+    await settle();
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="Remove older from recent folders"]')!.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith("forget_workspace", { path: "/tmp/older" });
+    expect(state.setWorkspace).not.toHaveBeenCalled();
   });
 });
 

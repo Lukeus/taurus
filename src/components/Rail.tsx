@@ -1,6 +1,6 @@
 import { memo, useRef, type ReactNode } from "react";
 
-import { TERMINAL_SHORTCUT } from "../lib/keys";
+import { TERMINAL_SHORTCUT, SWITCH_SHORTCUT } from "../lib/keys";
 import type { SessionMeta, Theme } from "../lib/api";
 import { forkPlace } from "../lib/branches";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
@@ -390,7 +390,7 @@ export const Rail = memo(function Rail({
           data-tip={
             anyRunning
               ? "Stop the running turn before switching workspace"
-              : (workspace ?? "Choose a workspace")
+              : `${workspace ? `${workspace} · ` : ""}Switch workspace (${SWITCH_SHORTCUT})`
           }
           data-tip-side="bottom"
         >

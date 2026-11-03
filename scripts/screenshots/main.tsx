@@ -1004,6 +1004,14 @@ requestAnimationFrame(() => {
         typeInto(swap, "$1 try");
         await until(() => document.querySelector(".ink-hit.current"));
       },
+      // The recent folders, on ⌃R. Where the list sits and how a long path
+      // shortens beside a name are layout.
+      switcher: async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "r", ctrlKey: true, bubbles: true }),
+        );
+        await until(() => document.querySelector("#workspace-list .palette-row.on"));
+      },
       // The finder, part way through a search. Real keys rather than state,
       // because the shortcut and the ranking are what the picture is of.
       finder: async () => {

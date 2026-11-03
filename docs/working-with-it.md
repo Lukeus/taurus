@@ -79,6 +79,15 @@ A conversation belongs to the folder you started it in, so changing folders
 is a move, not a setting. Its transcript is filed under that workspace, its
 checkpoints are keyed by it, and every path it mentions describes that tree.
 
+To change folders, press the workspace name at the top of the rail, or ⌃R
+(Ctrl+R on Windows and Linux) from anywhere but the terminal. You get the
+folders you've opened before, newest first, and an empty box starts on the one
+before this, so ⌃R then Enter takes you back and forth between two projects.
+Type part of a name to narrow the list. **Open folder…** at the bottom opens
+the folder dialog. The ✕ on a row takes it off the list and leaves the folder
+alone. The list holds 10 folders and drops ones that have gone. Each one is in
+the command palette too, as **Switch to** and its name.
+
 Picking a new workspace closes the conversation on screen and opens what the
 new folder has, as launching there would: its most recent conversation, or a
 fresh one on the provider and model last used there. The one you left is in

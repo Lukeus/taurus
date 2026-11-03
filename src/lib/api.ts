@@ -393,6 +393,9 @@ export const getStatus = () => invoke<AppStatus>("get_status");
 export const setWorkspace = (path: string) =>
   invoke<WorkspaceOpened>("set_workspace", { path });
 
+/** Takes a folder off the recent ones. The folder itself is untouched. */
+export const forgetWorkspace = (path: string) => invoke<void>("forget_workspace", { path });
+
 /**
  * Whether this workspace's own config is being read, and what it holds.
  *

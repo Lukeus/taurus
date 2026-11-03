@@ -31,6 +31,14 @@ pub struct WorkspaceOpened {
     pub sessions: Vec<SessionMeta>,
 }
 
+/// Takes a folder off the recent ones the switcher offers.
+#[tauri::command]
+pub async fn forget_workspace(state: State<'_, Arc<AppState>>, path: String) -> CmdResult<()> {
+    state.host.forget_workspace(&path).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn set_workspace(
     state: State<'_, Arc<AppState>>,
