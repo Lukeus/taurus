@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { cutAtHits, findAll, findKey, hitFrom, lineAsked, MOST_HITS } from "./find";
+import {
+  cutAtHits,
+  findAll,
+  findKey,
+  findProblem,
+  hitFrom,
+  lineAsked,
+  MOST_HITS,
+  PLAIN,
+  replaceEvery,
+  replacementFor,
+} from "./find";
 import type { Ink } from "./ink";
 
 describe("findAll", () => {
@@ -109,5 +120,93 @@ describe("findKey", () => {
   });
   it("leaves other keys alone", () => {
     expect(findKey(press({ key: "f" }))).toBeNull();
+  });
+});
+
+describe("the find toggles", () => {
+  it("makes case matter on a lowercase query with match case", () => {
+    expect(findAll("Retry retry", "retry", { ...PLAIN, matchCase: true })).toEqual([
+      { from: 6, to: 11 },
+    ]);
+  });
+
+  it("finds only whole words, in any script", () => {
+    const whole = { ...PLAIN, wholeWord: true };
+    expect(findAll("cat concat cat_x cat.", "cat", whole)).toEqual([
+      { from: 0, to: 3 },
+      { from: 17, to: 20 },
+    ]);
+    expect(findAll("éte été", "été", whole)).toEqual([{ from: 4, to: 7 }]);
+  });
+
+  it("takes a query as a pattern, ignoring case unless asked", () => {
+    const regex = { ...PLAIN, regex: true };
+    expect(findAll("a1 B22 c", "[a-z]\\d+", regex)).toEqual([
+      { from: 0, to: 2 },
+      { from: 3, to: 6 },
+    ]);
+    expect(findAll("a1 B22", "[a-z]\\d+", { ...regex, matchCase: true })).toHaveLength(1);
+  });
+
+  it("treats pattern characters as text when the pattern toggle is off", () => {
+    expect(findAll("a.b axb", "a.b", { ...PLAIN, wholeWord: true })).toEqual([{ from: 0, to: 3 }]);
+  });
+
+  it("skips matches of nothing rather than looping on them", () => {
+    expect(findAll("abc", "x*", { ...PLAIN, regex: true })).toEqual([]);
+  });
+
+  it("says a broken pattern is broken, and finds nothing with it", () => {
+    const regex = { ...PLAIN, regex: true };
+    expect(findProblem("a(", regex)).toBe("Not a valid pattern");
+    expect(findAll("a(", "a(", regex)).toEqual([]);
+    expect(findProblem("a(", PLAIN)).toBeNull();
+  });
+});
+
+describe("replacing", () => {
+  const regex = { ...PLAIN, regex: true };
+
+  it("puts plain text in as typed, dollars and all", () => {
+    expect(replacementFor("a", "a", PLAIN, { from: 0, to: 1 }, "$1")).toBe("$1");
+  });
+
+  it("reads groups from the match where it sits", () => {
+    const text = "let x = 1; let y = 2;";
+    const [, second] = findAll(text, "let (\\w+)", regex);
+    expect(replacementFor(text, "let (\\w+)", regex, second, "const $1")).toBe("const y");
+    expect(replacementFor(text, "let (?<name>\\w+)", regex, second, "$<name>!")).toBe("y!");
+    expect(replacementFor(text, "let (\\w+)", regex, second, "$$ $& $9")).toBe("$ let y $9");
+  });
+
+  it("keeps a lookbehind's view of what is before the match", () => {
+    const text = "#a b #c";
+    const hits = findAll(text, "(?<=#)\\w", regex);
+    expect(hits).toHaveLength(2);
+    expect(replacementFor(text, "(?<=#)\\w", regex, hits[1], "[$&]")).toBe("[c]");
+  });
+
+  it("replaces every match as one edit spanning first to last", () => {
+    const text = "x retry y retry z";
+    expect(replaceEvery(text, "retry", PLAIN, "again")).toEqual({
+      from: 2,
+      to: 15,
+      insert: "again y again",
+      count: 2,
+    });
+    expect(replaceEvery(text, "nope", PLAIN, "again")).toBeNull();
+  });
+
+  it("replaces past the count's limit", () => {
+    const text = "a".repeat(MOST_HITS + 5);
+    expect(replaceEvery(text, "a", PLAIN, "b")?.count).toBe(MOST_HITS + 5);
+  });
+});
+
+describe("the replace key", () => {
+  const press = (init: Partial<KeyboardEvent>) => init as KeyboardEvent;
+  it("is Control and H off a Mac", () => {
+    expect(findKey(press({ key: "h", ctrlKey: true }))).toBe("replace");
+    expect(findKey(press({ key: "h", ctrlKey: true, shiftKey: true }))).toBeNull();
   });
 });

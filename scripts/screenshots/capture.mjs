@@ -134,6 +134,8 @@ const SHOTS = [
   { name: "canvas-tabs", shot: "canvas-tabs", theme: "dark" },
   { name: "finder", shot: "finder", theme: "dark" },
   { name: "canvas-find", shot: "canvas-find", theme: "dark" },
+  // Replace open, with a pattern: the bar's second row and its toggles.
+  { name: "canvas-replace", shot: "canvas-replace", theme: "dark" },
   // Colour read from the top of the file, not from the top of the screen.
   { name: "canvas-code", shot: "canvas-code", theme: "dark" },
   // The notebook: both scopes in the list, one note open in the editor that
@@ -155,6 +157,9 @@ const SHOTS = [
   // The note editor's block list, open under a slash mid-note. The only check
   // of where it lands — the editor wraps, so the caret is found by layout, and
   // jsdom has none.
+  // Find in a note: the bar pinned over a panel that scrolls, and the match
+  // brought into view though the lines wrap.
+  { name: "notes-find", shot: "notes-find", theme: "dark" },
   { name: "notes-complete", shot: "notes-complete", theme: "dark" },
   // A note in Write and Read side by side, with a ticked task and a note link
   // in the rendered half.

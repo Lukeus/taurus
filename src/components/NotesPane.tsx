@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { when } from "../lib/format";
+import { findKey, type FindKey } from "../lib/find";
 import { chord, isChord, isComposing } from "../lib/keys";
 import { toggleTask } from "../lib/prose";
 import { embedFor, pathOf, same, type Notebook, type NoteMode } from "../state/notebook";
@@ -226,11 +227,33 @@ export function NotesPane({
    * else, like the composer under the pane: a key there is for that box.
    */
   const isNote = page?.kind === "note";
+  /**
+   * The last find key pressed in the pane, for the editor's find bar, and the
+   * note it was pressed in. Each note mounts its own editor, which reads the key
+   * it is handed on mounting, so one left over from the last note would open
+   * the bar on this one.
+   */
+  const [findAsk, setFindAsk] = useState<{ key: FindKey; page: string } | null>(null);
+  const pageKey = page ? `${page.scope}:${page.name}` : "";
+  useEffect(() => setFindAsk(null), [pageKey]);
   useEffect(() => {
     if (!isNote) return;
     const onKey = (e: KeyboardEvent) => {
-      if (isComposing(e) || e.shiftKey) return;
+      if (isComposing(e)) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
+      // The canvas's find keys, with the canvas's bar. Only from inside the
+      // pane: with nothing focused, ⌘F is the canvas's, which listens for it.
+      const asked = findKey(e);
+      if (asked) {
+        if (!target || !pane.current?.contains(target)) return;
+        e.preventDefault();
+        // The bar is over the text being written, so Read gives way to it,
+        // as the canvas's rendered view gives way to its source.
+        if (mode === "read") switchTo("write");
+        setFindAsk({ key: asked, page: pageKey });
+        return;
+      }
+      if (e.shiftKey) return;
       const typing = target?.closest("input, textarea, [contenteditable='true']");
       if (typing && !pane.current?.contains(typing)) return;
       if (isChord(e, "e")) {
@@ -243,7 +266,7 @@ export function NotesPane({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isNote, mode, switchTo]);
+  }, [isNote, mode, switchTo, pageKey]);
 
   /*
    * What a note being read can do to the notebook — see `NoteHost`.
@@ -524,6 +547,7 @@ export function NotesPane({
                   label={page.name}
                   sketches={sketchNames}
                   notes={linkable}
+                  ask={findAsk?.page === `${page.scope}:${page.name}` ? findAsk : null}
                 />
               }
               preview={

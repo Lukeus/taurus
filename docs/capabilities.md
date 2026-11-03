@@ -843,6 +843,19 @@ Case only matters once your search has a capital in it, so `retry` finds `Retry`
 but `Retry` doesn't find `retry`. If a word is selected when you press ⌘F, that's
 what gets searched for. Searching a Markdown preview switches it to source.
 
+Three toggles sit beside the box. **Aa** makes case always matter. **W** finds
+whole words only. **.\*** reads your search as a regular expression. From the
+keyboard they're ⌥⌘C, ⌥⌘W and ⌥⌘R (Alt+C, Alt+W and Alt+R on Windows and Linux).
+A regular expression ignores case unless **Aa** is on, and the box says so when
+your pattern doesn't parse.
+
+To replace, press ⌥⌘F (Ctrl+H on Windows and Linux), or the ▸ at the start of
+the box. Type the replacement in the second box. Enter replaces the current
+match and moves to the next one. ⌘Enter (Ctrl+Enter) or **All** replaces every
+match, and the box says how many. ⌘Z takes back one replace, and it takes back a
+whole **All** in one step. With **.\*** on, `$1` in the replacement is the
+first group, `$<name>` a named one, `$&` the whole match and `$$` a dollar sign.
+
 To go to a line, press Control+G, or type a colon and a number in the box, like
 `:120`, then Enter.
 
@@ -919,9 +932,8 @@ touching every line in the file.
 
 ### What it does not do yet
 
-One file at a time: opening another replaces it. It opens text (source,
-Markdown, config) up to 4 MB. There's no folding, no in-editor find, and one
-cursor. A file changed outside a turn, like a `git checkout` in the dock, is
+It opens text (source, Markdown, config) up to 4 MB. There's no folding, and
+one cursor. A file changed outside a turn, like a `git checkout` in the dock, is
 noticed when you save, not when it happens. See `docs/known-gaps.md`.
 
 ## Notes
@@ -948,6 +960,11 @@ of the Mermaid library. Editing saves itself a moment after you stop typing
 and never overwrites a version it hasn't seen. If a turn writes the same note
 while you're typing in it, both versions stay on screen and neither is
 chosen. That's the canvas's rule, with the canvas's implementation.
+
+Find works in a note exactly as it does in [a canvas file](#finding-in-a-file):
+⌘F, the same box and toggles, ⌥⌘F to replace, and Control+G for a line.
+Pressing it in **Read** switches you to **Write**, since the box searches the
+source.
 
 A **sketch** is an Excalidraw drawing: a `.excalidraw` file in the same
 notebook, under the same rules, opened full-pane in the editor. A note draws

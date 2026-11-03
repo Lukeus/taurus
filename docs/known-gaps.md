@@ -1087,9 +1087,11 @@ the backlog, and they're the minority.
   join the earlier set, but the coloring is a shared scanner, not a parser. HTML
   gets comments and attribute values and not its tags, and a Lua `--[[` block
   comment colors only its first line.
-- **The editor folds nothing, replaces nothing, and has one cursor.** No code
-  folding, no find-and-replace, no regular expressions in find, no multiple
-  cursors, no bracket matching. Each is a feature in its own right. The canvas
+- **The editor folds nothing and has one cursor.** No code folding, no multiple
+  cursors, no bracket matching. Each is a feature in its own right. Find and
+  replace, with regular expressions, is built, and a pattern runs in the window
+  as you type, so one that backtracks badly on a large file stalls the window
+  until it finishes. The canvas
   shares its painted-textarea approach with the query box, so each would have to
   be built, not configured. That's the honest cost of not carrying a quarter of a
   megabyte of editor. If this list becomes the reason people don't use it, that's
