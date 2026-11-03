@@ -778,6 +778,35 @@ requestAnimationFrame(() => {
       // panel has no room below — and a scene runs on a page shorter than the
       // shot (see `docs/development.md`), so lower down it flips over room
       // the photograph then shows.
+      // Find in a note, scrolled to a match below the fold: the bar pinned to the
+      // panel's top, and the match brought into view, which the note finds by
+      // where it is painted because its lines wrap.
+      "notes-find": async () => {
+        (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
+        (await click(".notes-row b", (b) => b === "Auth redesign"))();
+        const area = (await until(() =>
+          document.querySelector(".prose-input"),
+        )) as HTMLTextAreaElement;
+        area.focus({ preventScroll: true });
+        area.setSelectionRange(0, 0);
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "f",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            bubbles: true,
+          }),
+        );
+        const box = (await until(() =>
+          document.querySelector(".doc-find-input"),
+        )) as HTMLInputElement;
+        typeInto(box, "token");
+        await until(() => document.querySelector(".prose-ink .ink-hit.current"));
+        // Back round to the last match, which is below the fold.
+        box.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }),
+        );
+        await until(() => document.querySelector(".doc-find-count")?.textContent?.startsWith("1 of") === false);
+      },
       "notes-complete": async () => {
         (await click(".pane-switch .seg", (b) => b.startsWith("Notes")))();
         (await click(".notes-row b", (b) => b === "Auth redesign"))();
@@ -945,6 +974,34 @@ requestAnimationFrame(() => {
           document.querySelector(".doc-find-input"),
         )) as HTMLInputElement;
         typeInto(box, "attempt");
+        await until(() => document.querySelector(".ink-hit.current"));
+      },
+      // Replace, with a pattern and a group: the bar's second row and its
+      // toggles, which only a real layout can show fitting over the file.
+      "canvas-replace": async () => {
+        const area = (await until(() =>
+          document.querySelector(".doc-input"),
+        )) as HTMLTextAreaElement;
+        area.focus();
+        area.setSelectionRange(0, 0);
+        area.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: APPLE ? "ƒ" : "h",
+            code: APPLE ? "KeyF" : "KeyH",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            altKey: APPLE,
+            bubbles: true,
+          }),
+        );
+        (await click(".doc-find-toggle", (t) => t === ".*"))();
+        const box = (await until(() =>
+          document.querySelector(".doc-find-input"),
+        )) as HTMLInputElement;
+        typeInto(box, "(\\w+) attempt");
+        const swap = (await until(() =>
+          document.querySelector(".doc-replace-input"),
+        )) as HTMLInputElement;
+        typeInto(swap, "$1 try");
         await until(() => document.querySelector(".ink-hit.current"));
       },
       // The recent folders, on ⌃R. Where the list sits and how a long path
