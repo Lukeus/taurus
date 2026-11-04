@@ -94,7 +94,7 @@ export function WorkspaceSwitcher({
             ref={box}
             className="palette-input"
             value={query}
-            placeholder="Switch to a recent folder"
+            placeholder="Switch to a recent workspace"
             aria-label="Switch workspace"
             role="combobox"
             aria-expanded
@@ -207,7 +207,7 @@ function FolderRow({
         <button
           type="button"
           className="workspace-forget"
-          aria-label={`Remove ${name} from recent folders`}
+          aria-label={`Remove ${name} from recent workspaces`}
           data-tip="Remove from this list. The folder isn't touched."
           onClick={onForget}
         >

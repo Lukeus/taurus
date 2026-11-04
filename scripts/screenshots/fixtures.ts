@@ -74,8 +74,15 @@ export const STATUS = {
       openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini-tts", voice: "alloy" },
     },
   },
-  skill_count: 12,
-  agent_count: 4,
+  // Read off the lists the drawers show, so the rail's count and the drawer
+  // it opens agree (they said 12 and 3). Getters, because those lists are
+  // declared further down and are not initialized yet when this one is.
+  get skill_count() {
+    return LIBRARY_SKILLS.length;
+  },
+  get agent_count() {
+    return LIBRARY_AGENTS.length;
+  },
   problems: [
     {
       source: "mcp",
@@ -137,8 +144,11 @@ export const PLUGINS = [
     hooks: ["no-force-push"],
     unsupported: [
       {
-        part: "commands/",
-        reason: "Taurus has no command files; a skill marked user-invocable is its /command",
+        // What the engine really says (`UNSUPPORTED_PATHS` in
+        // taurus-host's plugins.rs). It said commands/ once, which stopped
+        // being true when plugin commands became one-file skills.
+        part: "output-styles/",
+        reason: "Taurus has no output styles",
       },
     ],
     problems: [],
@@ -559,11 +569,7 @@ export const PROMPT = "Where is the build time going? Show me the shape of it.";
  * conversation is unmistakably two surfaces at once, where two columns of
  * monospace could be read as one wide pane.
  */
-export const DOCUMENT = {
-  path: "docs/retries.md",
-  lines: 34,
-  fingerprint: "1024-1",
-  text: `# Retries
+const DOCUMENT_TEXT = `# Retries
 
 Every provider call goes through one place, and it backs off exponentially
 rather than on a fixed interval.
@@ -586,7 +592,16 @@ gets rate-limited for the rest of the hour.
 Four attempts, then the error reaches the transcript in the provider's own
 words. A harness that retried forever would turn a typo in a model name into a
 window that never stops spinning.
-`,
+`;
+
+export const DOCUMENT = {
+  path: "docs/retries.md",
+  // Counted as the backend counts it, `str::lines()`: a trailing newline
+  // ends the last line rather than starting another. It was a literal 34
+  // over a file of 23, and the header said so.
+  lines: DOCUMENT_TEXT.replace(/\n$/, "").split("\n").length,
+  fingerprint: "1024-1",
+  text: DOCUMENT_TEXT,
 };
 
 /**

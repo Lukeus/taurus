@@ -672,9 +672,13 @@ code:where(:not(.excalidraw *)) {
   color: var(--text-dim);
   border-color: var(--accent);
 }
+/* The fill alone was a step of a few percent in the light theme, so the chosen
+   one of three pills was hard to pick out. An accent border, as a picked
+   question option has, says it in both themes. */
 .pill.on {
   background: var(--bg-active);
   color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .pill-row {
   display: flex;
@@ -3894,12 +3898,20 @@ body.resizing-y * {
   gap: 4px;
 }
 
+/* A wrapping row rather than an auto-fit grid. Three cards in a drawer two
+   wide left the third beside an empty cell, which read as a card that failed
+   to load. Wrapped, whatever lands on the last line grows to fill it. */
 .usage-totals,
 .usage-fixed {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin: 0 0 var(--usage-gap);
+}
+.usage-totals > .usage-total-row,
+.usage-fixed > .usage-total-row {
+  flex: 1 1 150px;
+  min-width: 0;
 }
 .usage-total-row {
   border: 1px solid var(--rule);
