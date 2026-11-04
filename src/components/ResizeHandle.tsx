@@ -16,10 +16,17 @@ export const TERMINAL_HEIGHT = { initial: 300, min: 120, max: 900 };
  * about ninety columns of the editor's font, which is where source stops
  * needing a horizontal scrollbar and prose stops being a column of three words.
  * The floor is the point below which it stops being an editor and becomes a
- * strip; the ceiling leaves the transcript readable, since the whole argument
- * for a split is that both halves are usable at once.
+ * strip.
+ *
+ * No ceiling of its own. What keeps the transcript readable is the slot's
+ * `max-width`, which leaves the conversation `--center-min-w` at any window
+ * size; a fixed 1000px on top of that only ever bit on a wide display, where
+ * it left half the screen to a transcript a few words wide.
  */
-export const CANVAS_WIDTH = { initial: 560, min: 380, max: 1000 };
+export const CANVAS_WIDTH = { initial: 560, min: 380, max: 4096 };
+
+/** How long a pane takes to ease to a toggled size: `--reveal`, in script. */
+const EASE_MS = 320;
 
 /**
  * Which way a pane is sized.
@@ -48,6 +55,18 @@ export interface Resizable {
    * rather than the one that was asked for — see `drawn`.
    */
   slot?: RefObject<HTMLDivElement | null>;
+  /**
+   * Widens the pane to all the room the centre's floor leaves it, or puts it
+   * back to the width it had before. Does nothing for a pane without a `slot`.
+   */
+  fill: () => void;
+  /** Whether `fill` widened it and nothing has moved the edge since. */
+  filled: boolean;
+  /**
+   * True for the moment a `fill` takes to settle, so the slot can ease to the
+   * new size. Never during a drag: the edge has to stay under the pointer.
+   */
+  easing: boolean;
 }
 
 /**
@@ -82,6 +101,9 @@ export function useResizable({
     clamp(remembered(storageKey) ?? initial, min, max),
   );
   const [dragging, setDragging] = useState(false);
+  // The width a `fill` widened from, to go back to. Gone once the edge moves.
+  const [back, setBack] = useState<number | null>(null);
+  const [easing, setEasing] = useState(false);
   // Where the pointer was, and how big the pane was, when the drag began.
   // Sizing from the delta rather than from the pointer's absolute position is
   // what keeps the edge under the cursor it was grabbed with.
@@ -91,16 +113,45 @@ export function useResizable({
   const start = useCallback(
     (client: number) => {
       from.current = { at: client, size: drawn(size, slot.current, axis) };
+      setBack(null);
       setDragging(true);
     },
     [size, axis],
   );
 
   const nudge = useCallback(
-    (steps: number) =>
-      setSize((s) => clamp(drawn(s, slot.current, axis) + steps * grow, min, max)),
+    (steps: number) => {
+      setBack(null);
+      setSize((s) => clamp(drawn(s, slot.current, axis) + steps * grow, min, max));
+    },
     [grow, min, max, axis],
   );
+
+  const fill = useCallback(() => {
+    const room = roomFor(slot.current, axis);
+    if (room === null) return;
+    const shown = drawn(size, slot.current, axis);
+    let next: number;
+    if (back !== null) {
+      next = back;
+      setBack(null);
+    } else if (shown >= room - 1) {
+      // Already as wide as it goes, from a drag or an earlier window: there is
+      // nothing remembered to go back to, so back to where it started.
+      next = initial;
+    } else {
+      next = room;
+      setBack(shown);
+    }
+    setEasing(true);
+    setSize(clamp(next, min, max));
+  }, [size, axis, back, initial, min, max]);
+
+  useEffect(() => {
+    if (!easing) return;
+    const done = setTimeout(() => setEasing(false), EASE_MS);
+    return () => clearTimeout(done);
+  }, [easing, size]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -132,7 +183,36 @@ export function useResizable({
     }
   }, [dragging, size, storageKey]);
 
-  return { size, dragging, min, max, axis, start, nudge, slot };
+  return {
+    size,
+    dragging,
+    min,
+    max,
+    axis,
+    start,
+    nudge,
+    slot,
+    fill,
+    filled: back !== null,
+    easing: easing && !dragging,
+  };
+}
+
+/**
+ * How wide a side pane can be drawn: its column, less the conversation's floor.
+ *
+ * The same arithmetic as `.side-slot`'s `max-width`, done here because a width
+ * that is only `calc()` inside CSS has no number to ease towards. Widths only;
+ * a dock has no `fill`.
+ */
+export function roomFor(slot: HTMLElement | null, axis: Axis): number | null {
+  const column = slot?.parentElement;
+  if (!slot || !column || axis !== "x") return null;
+  const box = getComputedStyle(column);
+  const inner =
+    column.clientWidth - (parseFloat(box.paddingLeft) || 0) - (parseFloat(box.paddingRight) || 0);
+  const floor = parseFloat(getComputedStyle(slot).getPropertyValue("--center-min-w")) || 0;
+  return inner > 0 ? Math.floor(inner - floor) : null;
 }
 
 /**
@@ -197,6 +277,7 @@ export function ResizeHandle({ pane, label }: { pane: Resizable; label: string }
       aria-valuemin={pane.min}
       aria-valuemax={pane.max}
       tabIndex={0}
+      onDoubleClick={pane.fill}
       onMouseDown={(e) => {
         // Without this the drag selects the transcript it passes over.
         e.preventDefault();
@@ -210,6 +291,8 @@ export function ResizeHandle({ pane, label }: { pane: Resizable; label: string }
         const forward = vertical ? "ArrowRight" : "ArrowDown";
         if (e.key === back) pane.nudge(-step);
         else if (e.key === forward) pane.nudge(step);
+        // Enter is what a window splitter answers to besides the arrows.
+        else if (e.key === "Enter") pane.fill();
         else return;
         e.preventDefault();
       }}

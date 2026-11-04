@@ -104,6 +104,36 @@ export function ListPaneIcon({ size }: { size?: number }) {
   );
 }
 
+/** Arrows pushing a pane's edges apart: give it all the room there is. */
+export function WidenIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M1.5 8h4.5M10 8h4.5M3.5 6 1.5 8l2 2M12.5 6l2 2-2 2M8 3v10"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Icon>
+  );
+}
+
+/** The same arrows turned in: back to the width it had. */
+export function NarrowIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M1.5 8h4.5M10 8h4.5M4 6l2 2-2 2M12 6l-2 2 2 2M8 3v10"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Icon>
+  );
+}
+
 /** Skills. The same four-point star the skill proposal card is marked with. */
 export function SparkIcon({ size }: { size?: number }) {
   return (

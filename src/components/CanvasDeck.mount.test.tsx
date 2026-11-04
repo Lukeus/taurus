@@ -20,7 +20,8 @@ import { useStore } from "../state/store";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {} } as never;
+const fill = vi.fn();
+const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {}, fill, filled: false, easing: false } as never;
 const flushRef: { current: (() => Promise<boolean>) | null } = { current: null };
 
 let saves: { path: string; text: string }[];
@@ -117,6 +118,23 @@ describe("a row of open files", () => {
   it("has no row at all for one file", async () => {
     await mount(openTab(null, "a.rs", null));
     expect(host.querySelector(".canvas-tabs")).toBeNull();
+  });
+
+  it("widens the column from the file's own header", async () => {
+    // The edge's double-click is the same thing, and nobody finds that alone.
+    await mount();
+    const widen = host.querySelector<HTMLButtonElement>(
+      '.canvas-panel:not([style*="hidden"]) [aria-label="Widen the editor"]',
+    );
+    expect(widen?.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => widen!.click());
+    expect(fill).toHaveBeenCalledTimes(1);
+  });
+
+  it("has one marker for the row, under the file on screen", async () => {
+    await mount();
+    expect(host.querySelectorAll(".canvas-tabs .glide")).toHaveLength(1);
+    expect(host.querySelector(".canvas-tabs")?.hasAttribute("data-glide")).toBe(true);
   });
 
   it("moves to the file a tab names", async () => {

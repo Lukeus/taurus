@@ -7,6 +7,7 @@ import { Markdown } from "./Markdown";
 import { ConflictBanner } from "./ConflictBanner";
 import type { SaveState } from "../state/notebook";
 import { onTabKeys } from "../lib/tabs";
+import { NarrowIcon, WidenIcon } from "./icons";
 import type { FindKey } from "../lib/find";
 
 /**
@@ -50,6 +51,7 @@ export function Canvas({
   onSelect,
   onAsk,
   onClose,
+  wide,
 }: {
   /** What is open, workspace-relative. `null` when nothing is. */
   path: string | null;
@@ -90,6 +92,11 @@ export function Canvas({
    */
   onAsk: (draft: string) => void;
   onClose: () => void;
+  /**
+   * Widens the column to all the room the conversation leaves it, and back.
+   * The same as double-clicking the edge, which nobody finds on their own.
+   */
+  wide?: { on: boolean; toggle: () => void };
 }) {
   const [mode, setMode] = useState<Mode>("source");
   const [selection, setSelection] = useState<Sel | null>(null);
@@ -203,6 +210,18 @@ export function Canvas({
               </button>
             ))}
           </div>
+        )}
+
+        {wide && (
+          <button
+            className="pane-toggle"
+            onClick={wide.toggle}
+            aria-pressed={wide.on}
+            aria-label="Widen the editor"
+            data-tip={wide.on ? "Back to the width it was" : "Widen the editor"}
+          >
+            {wide.on ? <NarrowIcon size={14} /> : <WidenIcon size={14} />}
+          </button>
         )}
 
         <button className="canvas-close" onClick={onClose} aria-label="Close this file">

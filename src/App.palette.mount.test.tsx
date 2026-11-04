@@ -171,3 +171,55 @@ describe("the command palette", () => {
     document.body.innerHTML = "";
   });
 });
+
+describe("the sidebar", () => {
+  it("is put away with Control-B or the topbar button, and stays put away", async () => {
+    localStorage.clear();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<App />);
+    });
+    await settle();
+    expect(host.querySelector(".rail")).not.toBeNull();
+
+    const chord = () =>
+      act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true }),
+        );
+      });
+    await chord();
+    expect(host.querySelector(".rail")).toBeNull();
+    // Its edge goes with it, or a handle would size a rail that isn't there.
+    expect(host.querySelector('[aria-label="Rail width"]')).toBeNull();
+    expect(localStorage.getItem("taurus.railShut")).toBe("1");
+
+    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Show the sidebar"]');
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => toggle!.click());
+    expect(host.querySelector(".rail")).not.toBeNull();
+    expect(localStorage.getItem("taurus.railShut")).toBe("0");
+
+    // The palette names the key, which is how anybody learns it.
+    await chord();
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }),
+      );
+    });
+    let row: HTMLElement | undefined;
+    for (let i = 0; i < 100 && !row; i += 1) {
+      await settle();
+      row = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+        o.textContent?.includes("Show the sidebar"),
+      );
+    }
+    expect(row, "the palette has no sidebar row").toBeDefined();
+
+    act(() => root.unmount());
+    document.body.innerHTML = "";
+    localStorage.clear();
+  });
+});

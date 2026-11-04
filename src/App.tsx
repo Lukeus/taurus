@@ -11,6 +11,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
+import { ListPaneIcon } from "./components/icons";
+import { useGlide } from "./lib/motion";
 import type { Action } from "./lib/palette";
 // Type only, so it's erased and Settings stays a lazily loaded chunk.
 import type { SettingsTab } from "./components/Settings";
@@ -268,6 +270,20 @@ export default function App() {
     })),
   );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
+  /*
+   * Whether the rail is put away. At a laptop's width it is the biggest thing
+   * beside the conversation, and with a file open the canvas wants that room
+   * more than the list of conversations does. Remembered, as its width is.
+   */
+  const [railShut, setRailShut] = useState(readRailShut);
+  const toggleRail = useCallback(
+    () =>
+      setRailShut((shut) => {
+        keepRailShut(!shut);
+        return !shut;
+      }),
+    [],
+  );
   const dock = useResizableHeight({
     storageKey: "taurus.terminalHeight",
     ...TERMINAL_HEIGHT,
@@ -578,6 +594,9 @@ export default function App() {
       } else if (isChord(e, "l")) {
         e.preventDefault();
         setFocusComposer((n) => n + 1);
+      } else if (isChord(e, "b") && !e.shiftKey) {
+        e.preventDefault();
+        toggleRail();
       } else if (isChord(e, "d") && e.shiftKey) {
         // With Shift, unlike the rest. Plain Ctrl+D is end-of-input to the
         // shell in the terminal dock on Windows and Linux, and a shortcut
@@ -588,7 +607,7 @@ export default function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, []);
+  }, [toggleRail]);
 
   /*
    * Re-asks the questions nothing can push, when the user comes back.
@@ -1013,6 +1032,14 @@ export default function App() {
         run: () => useAgentsView.getState().show(),
       },
       {
+        id: "sidebar",
+        label: railShut ? "Show the sidebar" : "Hide the sidebar",
+        group: "Panels",
+        keywords: "rail conversations list collapse fold room wider canvas",
+        shortcut: chord("B"),
+        run: toggleRail,
+      },
+      {
         id: "changes",
         label: "Changes",
         group: "Panels",
@@ -1107,7 +1134,7 @@ export default function App() {
     // start a conversation against the model list as it stood before the
     // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked],
+    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked, railShut, toggleRail],
   );
 
   /**
@@ -1412,6 +1439,15 @@ export default function App() {
   const railPlugins = useCallback(() => setPluginsOpen(true), []);
   const railUsage = useCallback(() => setUsageOpen(true), []);
   const railTraces = useCallback(() => setTracesOpen(true), []);
+  // The pane switch's marker, which moves when the view does. The counts are
+  // in the key because they widen the tabs before the one selected.
+  const paneSwitch = useRef<HTMLDivElement>(null);
+  useGlide(
+    paneSwitch,
+    `${pane}|${notebook.pages?.length ?? 0}|${store.datasets.length}`,
+    ".seg.on",
+  );
+
   const railMcpDrawer = useCallback(() => setMcpOpen(true), []);
   const railTerminal = useCallback(() => setTerminalOpen((open) => !open), []);
   const railSettings = useCallback(() => setSettingsOpen(true), []);
@@ -1420,6 +1456,7 @@ export default function App() {
 
   return (
     <div className="app">
+      {!railShut && (
       <Rail
         width={rail.size}
         workspace={workspace}
@@ -1452,11 +1489,21 @@ export default function App() {
         onTerminal={railTerminal}
         onSettings={railSettings}
       />
+      )}
 
-      <ResizeHandle pane={rail} label="Rail width" />
+      {!railShut && <ResizeHandle pane={rail} label="Rail width" />}
 
       <div className="pane">
         <header className="topbar">
+          <button
+            className="pane-toggle"
+            onClick={toggleRail}
+            aria-expanded={!railShut}
+            aria-label={railShut ? "Show the sidebar" : "Hide the sidebar"}
+            data-tip={`${railShut ? "Show the sidebar" : "Hide the sidebar"} (${chord("B")})`}
+          >
+            <ListPaneIcon size={14} />
+          </button>
           <ConversationTitle
             title={title}
             // Only once there is a transcript to write a name into, which there
@@ -1561,7 +1608,13 @@ export default function App() {
             MCP badge follow. A note needs nothing to have happened first: the
             tab *is* how you write the first one, and hiding it until one exists
             would hide the only door into the room. */}
-        <div className="pane-switch" role="tablist" aria-label="View" onKeyDown={onTabKeys}>
+        <div
+          className="pane-switch"
+          role="tablist"
+          aria-label="View"
+          onKeyDown={onTabKeys}
+          ref={paneSwitch}
+        >
           <button
             role="tab"
             aria-selected={pane === "conversation"}
@@ -1595,6 +1648,7 @@ export default function App() {
               <span className="count">{store.datasets.length}</span>
             </button>
           )}
+          <span className="glide" aria-hidden="true" />
         </div>
 
         <main>
@@ -1723,7 +1777,11 @@ export default function App() {
           {side === "changes" && store.session && (
             <>
               <ResizeHandle pane={changesPane} label="Changes width" />
-              <div className="side-slot" ref={changesPane.slot} style={{ width: changesPane.size }}>
+              <div
+                className={`side-slot${changesPane.easing ? " easing" : ""}`}
+                ref={changesPane.slot}
+                style={{ width: changesPane.size }}
+              >
                 <Suspense fallback={<aside className="drawer changes-pane" />}>
                   <ChangesDrawer
                     sessionId={store.session.id}
@@ -1754,7 +1812,11 @@ export default function App() {
           {side === "activity" && store.session && (
             <>
               <ResizeHandle pane={activityPane} label="Agent activity width" />
-              <div className="side-slot" ref={activityPane.slot} style={{ width: activityPane.size }}>
+              <div
+                className={`side-slot${activityPane.easing ? " easing" : ""}`}
+                ref={activityPane.slot}
+                style={{ width: activityPane.size }}
+              >
                 <Suspense fallback={<aside className="drawer agents-pane" />}>
                   <AgentsPanel
                     model={store.session.model}
@@ -2554,4 +2616,23 @@ export function lastActivity(entries: Entry[]): string | null {
     if (entry.kind === "tool") return entry.preview;
   }
   return null;
+}
+
+const RAIL_SHUT_KEY = "taurus.railShut";
+
+/** Whether the rail was left put away. Guarded the way `remembered` is. */
+function readRailShut(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(RAIL_SHUT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function keepRailShut(shut: boolean): void {
+  try {
+    localStorage.setItem(RAIL_SHUT_KEY, shut ? "1" : "0");
+  } catch {
+    // Storage turned off still hides it. It just forgets.
+  }
 }

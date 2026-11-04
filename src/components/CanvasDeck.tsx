@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type MutableR
 
 import type { Selection } from "../lib/api";
 import { tabLabels, type CanvasTabs } from "../lib/canvasTabs";
+import { useGlide } from "../lib/motion";
 import { onTabKeys } from "../lib/tabs";
 import { CanvasSlot, type TabMark } from "./CanvasSlot";
 import { ResizeHandle, type Resizable } from "./ResizeHandle";
@@ -105,6 +106,8 @@ export function CanvasDeck({
     for (const path of [...selections.current.keys()]) if (!open.has(path)) selections.current.delete(path);
   }, [tabs]);
 
+  const wide = useMemo(() => ({ on: pane.filled, toggle: pane.fill }), [pane.filled, pane.fill]);
+
   const labels = useMemo(() => tabLabels(tabs.map((tab) => tab.shown ?? tab.path)), [tabs]);
 
   const row = useRef<HTMLDivElement>(null);
@@ -112,12 +115,13 @@ export function CanvasDeck({
     // Absent in jsdom. A file opened off the end of the row has to come into view.
     row.current?.querySelector(".canvas-tab.on")?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
   }, [active, showing]);
+  useGlide(row, `${active}|${showing}|${[...labels.values()].join("|")}`, ".canvas-tab.on");
 
   return (
     <>
       {showing && <ResizeHandle pane={pane} label="Editor width" />}
       <div
-        className="side-slot canvas-deck"
+        className={`side-slot canvas-deck${pane.easing ? " easing" : ""}`}
         ref={pane.slot}
         onInput={onTyped}
         style={{ width: pane.size, display: showing ? undefined : "none" }}
@@ -170,6 +174,7 @@ export function CanvasDeck({
                 </div>
               );
             })}
+            <span className="glide" aria-hidden="true" />
           </div>
         )}
         <div className="canvas-stack">
@@ -187,6 +192,7 @@ export function CanvasDeck({
               onSelected={selected}
               onAsk={onAsk}
               onClose={onClose}
+              wide={wide}
             />
           ))}
         </div>
@@ -217,6 +223,7 @@ function TabSlot({
   onSelected: (path: string, selection: Selection | null) => void;
   onAsk: (text: string) => void;
   onClose: (path: string) => void;
+  wide: { on: boolean; toggle: () => void };
 }) {
   const named = useCallback((shown: string) => onNamed(path, shown), [path, onNamed]);
   const marked = useCallback((mark: TabMark) => onMark(path, mark), [path, onMark]);

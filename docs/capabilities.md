@@ -808,6 +808,19 @@ The conversation stays where it is. That's the whole point: you put a file on
 screen to talk about it while it's there. Drag the edge to give either side
 more room. Close it with the ✕ and the conversation takes the width back.
 
+When the file needs more room than the conversation does:
+
+- **Widen it:** press the arrows in the file's header, or double-click the edge
+  (Enter does the same once the edge has focus). The editor takes everything
+  except the 320px the conversation always keeps. Press again to go back to the
+  width you had.
+- **Put the sidebar away:** ⌘B on a Mac (Ctrl+B elsewhere), or the panel
+  button at the left of the top bar. It stays hidden until you bring it back,
+  across restarts too. Every conversation and panel is still a ⌘K away.
+
+![The sidebar put away and the editor widened, with the conversation kept
+beside it](screenshots/canvas-wide.png)
+
 Markdown opens on its rendered preview, with a **Source** switch for the
 asterisks. Source files open as source, colored by the same tokenizer the
 transcript uses.

@@ -73,6 +73,9 @@ describe("the handle", () => {
     max: 360,
     start: () => {},
     nudge: () => {},
+    fill: () => {},
+    filled: false,
+    easing: false,
     ...over,
   });
 

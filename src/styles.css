@@ -5543,7 +5543,10 @@ button.link:where(:not(.excalidraw *)):hover {
    no zoom controls, when its canvas is under 730px wide, or under 500px tall
    and under 1000px wide — and in a small window the list's 200px is often the
    difference. */
-.notes-fold {
+/* A square icon button that shows or hides a pane: the Notes list, the rail,
+   the canvas's extra width. */
+.notes-fold,
+.pane-toggle {
   flex: none;
   width: 24px;
   height: 24px;
@@ -5555,7 +5558,8 @@ button.link:where(:not(.excalidraw *)):hover {
   background: transparent;
   color: var(--text-faint);
 }
-.notes-fold:hover:not(:disabled) {
+.notes-fold:hover:not(:disabled),
+.pane-toggle:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
 }
@@ -7077,6 +7081,67 @@ button.link:where(:not(.excalidraw *)):hover {
   max-width: none;
   flex: 1;
   border-left: 1px solid var(--rule);
+  /* Brought in from the same edge the canvas is, for the same reason — see
+     `.canvas`. Changes and Agent activity used to simply be there. */
+  animation: canvas-in var(--reveal) var(--ease) both;
+}
+
+/* Eases to a width the widen toggle chose, and only then: during a drag the
+   edge has to stay under the pointer, and a transition would trail it. Width
+   rather than a transform, because the conversation beside it has to reflow
+   either way — and for the 320ms it takes, it is one reflow a frame. */
+.side-slot.easing {
+  transition: width var(--reveal) var(--ease);
+}
+
+/* ------------------------------------------------- the gliding tab marker
+
+   One marker per tab row that moves to the selected tab, rather than each
+   tab drawing its own and the line jumping. Placed by `useGlide`, which writes
+   the tab's box to the row; until it has, the tabs draw their own as before. */
+.pane-switch,
+.canvas-tabs {
+  position: relative;
+}
+.glide {
+  position: absolute;
+  left: 0;
+  width: var(--glide-w, 0);
+  height: 2px;
+  transform: translateX(var(--glide-x, 0));
+  background: var(--accent);
+  pointer-events: none;
+  opacity: 0;
+}
+[data-glide] > .glide {
+  opacity: 1;
+}
+[data-glide="on"] > .glide {
+  transition:
+    transform var(--hover) var(--ease),
+    width var(--hover) var(--ease);
+}
+/* Inside the selected tab's border, where its own inset line was. */
+.pane-switch > .glide {
+  top: calc(var(--glide-top, 0px) + 1px);
+  margin-left: 1px;
+  width: calc(var(--glide-w, 0px) - 2px);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+}
+.pane-switch[data-glide] .seg.on {
+  box-shadow: none;
+}
+.canvas-tabs > .glide {
+  bottom: 0;
+}
+.canvas-tabs[data-glide] .canvas-tab.on {
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-slot.easing,
+  [data-glide="on"] > .glide {
+    transition: none;
+  }
 }
 
 /* Tabs over a stack of open files, of which one shows. The others stay laid out
@@ -7704,6 +7769,7 @@ button.link:where(:not(.excalidraw *)):hover {
 
 @media (prefers-reduced-motion: reduce) {
   .canvas,
+  .side-slot .drawer,
   .canvas-ask,
   .canvas-conflict {
     animation: none;

@@ -341,6 +341,8 @@ conversation, not in place of it.
 Ask to see a file and it opens in an editor to the right of the transcript.
 "Show me where the retry logic is" opens the file with that passage selected.
 The model passes the lines it means, so it can point instead of quoting.
+When a file needs the room, ⌘B puts the sidebar away and the arrows in the
+file's header widen the editor to everything but the conversation's floor.
 
 ![A Markdown file open beside the conversation that asked for it, with the
 lines the model pointed at selected](docs/screenshots/canvas.png)
