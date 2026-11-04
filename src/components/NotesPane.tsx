@@ -719,7 +719,7 @@ function Group({
                   onClick={() => onChoose(p)}
                 >
                   <b>{p.name}</b>
-                  <span className="micro">
+                  <span className="micro verbatim">
                     {p.kind === "sketch" ? "sketch · " : ""}
                     {when(p.at)}
                     {/* A version of yours kept when this was left. Said in the

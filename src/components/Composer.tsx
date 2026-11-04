@@ -413,7 +413,7 @@ export function Composer({
           <span>
             asking about <b>{onScreen.data.dataset}</b>
           </span>
-          {onScreen.data.sql && <span className="micro">· and the query below</span>}
+          {onScreen.data.sql && <span className="micro verbatim">· and the query below</span>}
         </div>
       )}
       {/* The canvas's own chip, and it earns its place more than the dataset's
@@ -427,7 +427,7 @@ export function Composer({
             asking about <b>{onScreen.document.path.split("/").pop()}</b>
           </span>
           {onScreen.document.selection && (
-            <span className="micro">
+            <span className="micro verbatim">
               ·{" "}
               {onScreen.document.selection.from === onScreen.document.selection.to
                 ? `line ${onScreen.document.selection.from}`

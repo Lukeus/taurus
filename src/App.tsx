@@ -1588,6 +1588,7 @@ export default function App() {
               <select
                 className="provider-select"
                 aria-label="Provider"
+                data-tip={providerId ?? undefined}
                 value={providerId ?? ""}
                 disabled={store.busy || moving}
                 onChange={(e) => chooseProvider(e.target.value)}
@@ -1603,6 +1604,7 @@ export default function App() {
             <select
               className="model-select"
               aria-label="Model"
+              data-tip={available.find((m) => m.id === store.session?.model)?.display_name}
               value={store.session?.model ?? ""}
               disabled={store.busy || moving || !providerId}
               onChange={(e) => providerId && moveTo(providerId, e.target.value)}

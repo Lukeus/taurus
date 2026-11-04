@@ -226,7 +226,7 @@ export function ChangesDrawer({
 
           {repo?.repository && (
             <p className="drawer-intro">
-              <span className="tag">
+              <span className="tag verbatim">
                 {repo.branch ?? `detached at ${repo.head ?? "HEAD"}`}
               </span>{" "}
               {repo.branch
@@ -927,7 +927,7 @@ export function TurnDetail({
       {committed && (
         <section className="section">
           <p className="card-files">
-            <span className="tag">{committed.sha}</span> {committed.subject} —{" "}
+            <span className="tag verbatim">{committed.sha}</span> {committed.subject} —{" "}
             {plural(committed.files.length, "file")}
           </p>
           {/* A commit that quietly covered three of a turn's four files is
@@ -945,7 +945,7 @@ export function TurnDetail({
           survives closing the drawer and reopening the conversation. */}
       {turn.commit && !committed && (
         <p className="card-files">
-          <span className="tag">{turn.commit}</span> Already committed. Committing
+          <span className="tag verbatim">{turn.commit}</span> Already committed. Committing
           it again would take whatever these files hold now.
         </p>
       )}

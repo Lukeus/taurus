@@ -94,7 +94,7 @@ export function ChartCard({ view }: { view: ChartView }) {
       </div>
 
       <div className="view-foot">
-        <span className="micro">
+        <span className="micro verbatim">
           {format(total)}
           {active.unit} total · peak {labels[peak] ?? "—"}
         </span>

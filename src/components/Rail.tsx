@@ -23,6 +23,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { useArmed } from "../lib/armed";
+import { useMoreBelow } from "../lib/moreBelow";
 
 /*
  * The class lists more than one element wears.
@@ -206,6 +207,9 @@ export const Rail = memo(function Rail({
 
   /** Which sections are folded. Outlives the window — see `useSections`. */
   const sections = useSections();
+  /** The folds scroll when the rail is short; this says so. */
+  const folds = useRef<HTMLDivElement>(null);
+  useMoreBelow(folds);
 
   // Anything working anywhere, which is what the two controls that a turn
   // cannot survive have to obey. `busy` is the open conversation alone, and it
@@ -481,7 +485,7 @@ export const Rail = memo(function Rail({
           this box once, and on a window 840px tall they were scrolled out of
           view, which is the one place the way out of a state must never be.
       */}
-      <div className="rail-folds flex-initial shrink-[1000] min-h-[30%] overflow-y-auto border-t border-rule p-2 flex flex-col gap-px">
+      <div ref={folds} className="rail-folds flex-initial shrink-[1000] min-h-[30%] overflow-y-auto border-t border-rule p-2 flex flex-col gap-px">
         {/*
             The eight panels, in three folds rather than one.
 
