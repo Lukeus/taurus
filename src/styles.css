@@ -590,6 +590,20 @@ code:where(:not(.excalidraw *)) {
   color: var(--text-faint);
 }
 
+/*
+ * The same label, with the case left alone. For a micro-label or tag that
+ * holds a value rather than naming a region: a path, a branch, a commit, a
+ * time, a unit, a sentence. Uppercasing those changes what they say:
+ * `data/a.csv` is not `DATA/A.CSV` on a case-sensitive disk, "10m ago" read
+ * as "10M AGO" is months, and "0.1S" is not seconds. The tracking goes too,
+ * because it is there to open up capitals and lowercase does not need it.
+ */
+.micro.verbatim,
+.tag.verbatim {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 /* A status dot. Colour is the whole message, so it never carries text. */
 .dot {
   width: 6px;
@@ -848,9 +862,16 @@ body.resizing-y * {
   white-space: nowrap;
   flex: none;
 }
+/* A fixed width, not a cap. With `max-width` the select sized itself to the
+   chosen option, so picking a model with a shorter or longer name moved every
+   chip to its left and the select itself out from under the pointer. A name
+   too long for the box is clipped with an ellipsis, and the full name is in
+   the tip and in the open list. */
 .model-select,
 .provider-select {
-  max-width: 220px;
+  width: 220px;
+  flex: none;
+  text-overflow: ellipsis;
   border-radius: var(--r);
   background: transparent;
   color: var(--text-dim);
@@ -860,7 +881,7 @@ body.resizing-y * {
 /* Narrower, and monospaced: a provider id is a config key the user typed,
    not a product name, and it reads as one next to the model beside it. */
 .provider-select {
-  max-width: 150px;
+  width: 150px;
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -1247,11 +1268,10 @@ body.resizing-y * {
 .run.open .run-head {
   border-bottom: 1px solid var(--rule);
 }
+/* Not uppercased: it ends in a duration, and "0.1S" is a different unit. */
 .run-steps {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
   color: var(--text-dim);
 }
 .run-breakdown {
@@ -1698,6 +1718,15 @@ body.resizing-y * {
   margin: 2px 6px 4px 20px;
   border-radius: 2px;
   background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+/* Where the bars below start and end, at their edges: see `AgentsPanel`.
+   Inset by what a bar is inset by inside the tree — the tree's rule and
+   padding, the node's padding, the bar's own margin — so 0s sits over the
+   bars' left end and not over the branch lines. */
+.agents-clock {
+  display: flex;
+  justify-content: space-between;
+  margin: 2px 6px 0 calc(1px + 10px + 12px + 20px);
 }
 .agents-bar span {
   position: absolute;
@@ -7413,11 +7442,39 @@ button.link:where(:not(.excalidraw *)):hover {
 .doc-editor {
   flex: 1;
   min-height: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   position: relative;
 }
-/* Over the file's top corner, and outside `.doc-scroll`, whose right edge fades. */
+.doc-gutter,
+.doc-scroll {
+  grid-row: 2;
+}
+/*
+ * A row of its own across the top of the file, not a box over its corner.
+ *
+ * It was floated over the text, and it covered the first lines — which is
+ * where a match lands when it is near the top of the file, since the box
+ * cannot scroll above line 1 to get it out from under. Taking its own row
+ * moves the file down by the bar's height while it is open, and in exchange
+ * no match can ever be hidden behind the thing that found it. The row is
+ * empty, and so takes no height, when the bar is shut.
+ */
+.doc-editor > .doc-find {
+  position: static;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  align-items: flex-end;
+  max-width: none;
+  min-width: 0;
+  padding: 4px 8px;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+}
+/* The box itself, as a note's find bar floats it: see `.prose-find-dock`. */
 .doc-find {
   position: absolute;
   top: 8px;
@@ -7510,6 +7567,12 @@ button.link:where(:not(.excalidraw *)):hover {
   flex: 1;
   min-width: 0;
   position: relative;
+}
+/* The rail's folds have more below than fits: see `useMoreBelow`. The last
+   row fades out rather than stopping at the footer's rule as if it were the
+   end of the list. */
+.rail-folds[data-more] {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent);
 }
 /* Lines run on past the edge: see `DocumentEditor`. */
 .doc-scroll[data-more] {
@@ -7741,20 +7804,22 @@ button.link:where(:not(.excalidraw *)):hover {
 
    The one gesture that makes the canvas a place to work rather than a place to
    read. Anchored to the panel rather than following the pointer: a popover
-   that chases a drag is in the way of the drag. */
+   that chases a drag is in the way of the drag.
+
+   A strip along the panel's foot, in the flow, rather than a card floated over
+   its corner. Floated, it sat on the code in the bottom-right: the ends of
+   long lines, and in the conflict view the side being compared. In the flow
+   it takes a row from the bottom of the editor instead, and the lines above —
+   the selection among them — stay exactly where they were. */
 .canvas-ask {
-  position: absolute;
-  right: 16px;
-  bottom: 16px;
-  z-index: 2;
+  flex: none;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-  padding: 6px 8px 6px 12px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--rule);
+  padding: 6px 12px;
+  border-top: 1px solid var(--rule);
   background: var(--bg-elevated);
-  box-shadow: var(--shadow-pop, 0 6px 20px rgb(0 0 0 / 0.22));
   animation: canvas-ask-in var(--reveal) var(--ease) both;
 }
 @keyframes canvas-ask-in {
@@ -7770,8 +7835,6 @@ button.link:where(:not(.excalidraw *)):hover {
 .canvas-ask-where {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
   color: var(--text-faint);
   white-space: nowrap;
 }

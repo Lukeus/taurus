@@ -126,10 +126,21 @@ describe("the memory drawer", () => {
 
     invoke.mockResolvedValueOnce([note("b", "second"), note("c", "written since")]);
     await click(buttonSaying(host, "Forget"));
+    await click(buttonSaying(host, "Forget it"));
 
     expect(invoke).toHaveBeenLastCalledWith("forget_note", { id: "a" });
     expect(host.textContent).not.toContain("first");
     expect(host.textContent).toContain("written since");
+  });
+
+  it("asks twice before forgetting", async () => {
+    // Forgetting rewrites the notes file; one stray click should not be enough.
+    invoke.mockResolvedValueOnce([note("a", "first")]);
+    const { host, click } = await mount({ onClose: () => {} });
+
+    await click(buttonSaying(host, "Forget"));
+    expect(invoke).not.toHaveBeenCalledWith("forget_note", expect.anything());
+    expect(buttonSaying(host, "Forget it")?.className).toBe("danger");
   });
 
   it("reports a failure to forget rather than pretending it worked", async () => {
@@ -138,6 +149,7 @@ describe("the memory drawer", () => {
 
     invoke.mockRejectedValueOnce("the notes file is read-only");
     await click(buttonSaying(host, "Forget"));
+    await click(buttonSaying(host, "Forget it"));
 
     expect(host.textContent).toContain("read-only");
     expect(host.textContent).toContain("first");

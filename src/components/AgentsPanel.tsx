@@ -139,6 +139,19 @@ export function AgentsView({
                     .join(" · ")}
                 </span>
               </div>
+              {/* The bars' axis. Without one, a delegate that has run the
+                  whole time drew a full bar, and under "round trip 6 of 20"
+                  a full bar reads as nearly done. Saying where the clock
+                  starts and ends makes it a timeline. */}
+              {span && (
+                <div className="micro verbatim agents-clock" aria-hidden="true">
+                  <span>0s</span>
+                  <span>
+                    {duration(span.to - span.from)}
+                    {latest && busy ? " so far" : ""}
+                  </span>
+                </div>
+              )}
               <ul className="agents-tree">
                 {group.calls.map((call) => (
                   <AgentNode
@@ -411,8 +424,15 @@ function Bar({
 }) {
   const width = span.to - span.from;
   const at = (t: number) => `${((t - span.from) / width) * 100}%`;
+  const tip = [
+    started > from ? `waited ${duration(started - from)}` : null,
+    `started ${duration(started - span.from)} in`,
+    `ran ${duration(to - started)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <div className="agents-bar" aria-hidden="true">
+    <div className="agents-bar" aria-hidden="true" data-tip={tip}>
       {started > from && (
         <span
           className="agents-bar-wait"

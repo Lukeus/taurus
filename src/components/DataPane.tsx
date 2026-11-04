@@ -158,7 +158,7 @@ export function DataPane({
 
         <div className="spacer" />
 
-        <span className="micro data-source" data-tip={dataset.path}>
+        <span className="micro verbatim data-source" data-tip={dataset.path}>
           {dataset.path} · {FORMAT_LABEL[dataset.format]}
         </span>
         {/* Unarmed, unlike deleting a conversation. Forgetting a dataset
@@ -1043,7 +1043,7 @@ function RecipeCard({
           <span className="recipe-caret">{open ? "▾" : "▸"}</span>
           <b>{recipe.name}</b>
         </button>
-        <span className="micro recipe-flow">
+        <span className="micro verbatim recipe-flow">
           {recipe.source} → {recipe.output}
         </span>
         <div className="spacer" />
@@ -1158,7 +1158,7 @@ function RunReport({ run, output }: { run: DataRun; output: string }) {
           <span className="recipe-run-ms">{step.took_ms.toLocaleString()} ms</span>
         </div>
       ))}
-      <p className="micro recipe-run-foot">
+      <p className="micro verbatim recipe-run-foot">
         Wrote <b>{run.rows.toLocaleString()}</b> rows ×{" "}
         {run.columns.length.toLocaleString()} columns to <code>{output}</code> ·{" "}
         {size(run.bytes)} · {run.took_ms.toLocaleString()} ms

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import * as api from "../lib/api";
 import type { Note } from "../lib/api";
+import { useArmed } from "../lib/armed";
 import { when } from "../lib/format";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
@@ -36,6 +37,8 @@ export function MemoryDrawer({
   /** The note being changed, and its text so far. One at a time. */
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  /** The note whose Forget has been pressed once. */
+  const { armed, arm, disarm } = useArmed<string>();
 
   useEffect(() => {
     api
@@ -62,7 +65,13 @@ export function MemoryDrawer({
     }
   };
 
-  const forget = (id: string) => change(() => api.forgetNote(id));
+  /** Two presses, as Delete is in Skills: a forgotten note is gone from the
+   *  file, and the next conversation starts without it. */
+  const forget = (id: string) => {
+    if (armed !== id) return arm(id);
+    disarm();
+    return change(() => api.forgetNote(id));
+  };
 
   const add = async () => {
     if (await change(() => api.addNote(draft))) setDraft("");
@@ -133,7 +142,7 @@ export function MemoryDrawer({
                     <div className="card-title">{note.text}</div>
                   )}
                   <div className="card-row">
-                    <span className="micro">{when(note.at)}</span>
+                    <span className="micro verbatim">{when(note.at)}</span>
                     {yours && <span className="tag">by you</span>}
                     {onOpenSession && !yours && (
                       <button
@@ -168,10 +177,11 @@ export function MemoryDrawer({
                           Edit
                         </button>
                         <button
+                          className={armed === note.id ? "danger" : "quiet"}
                           data-tip="Stop carrying this into new conversations"
                           onClick={() => forget(note.id)}
                         >
-                          Forget
+                          {armed === note.id ? "Forget it" : "Forget"}
                         </button>
                       </>
                     )}
@@ -184,7 +194,8 @@ export function MemoryDrawer({
       )}
 
       <p className="drawer-foot">
-        {notes?.length === 1 ? "1 memory" : `${notes?.length ?? 0} memories`} · also `taurus memory list`
+        {notes?.length === 1 ? "1 memory" : `${notes?.length ?? 0} memories`} · also{" "}
+        <code>taurus memory list</code>
       </p>
     </Drawer>
   );

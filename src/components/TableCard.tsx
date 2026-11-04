@@ -97,7 +97,7 @@ export function TableCard({ view }: { view: TableView }) {
       </div>
 
       <div className="view-foot">
-        <span className="micro">
+        <span className="micro verbatim">
           {sort
             ? `sorted by ${columns[sort.column]?.label.toLowerCase() ?? ""}`
             : "click a column to sort"}

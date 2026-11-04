@@ -154,7 +154,7 @@ export function QuestionsCard({
 
       {live ? (
         <div className="questions-foot">
-          <span className="micro">
+          <span className="micro verbatim">
             {answered === questions.length
               ? "all answered"
               : `${questions.length - answered} left — optional`}
