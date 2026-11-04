@@ -7,7 +7,7 @@ import * as api from "../../lib/api";
 import { useStore } from "../../state/store";
 import { DEFAULT_TERMINAL_FONT_SIZE } from "../../lib/limits";
 import { bare, families, fixedPitch } from "../../lib/fixedPitch";
-import { Problem } from "../Problem";
+import { Caution, Problem } from "../Problem";
 import { Field, FromProject } from "./Field";
 
 const MIN_SIZE = 9;
@@ -177,12 +177,12 @@ export function TerminalTab() {
       {/* Said, not left to be found: the switch is on, the shell opens, and
           nothing is marked, which looks like the switch is broken. */}
       {integration && opens?.marks === false && (
-        <Problem>
+        <Caution>
           {opens.name} doesn't mark commands yet, so this does nothing there.
           The terminal still works, but neither the model nor the dock's Ask
           about this button can see the commands you run. Choose zsh or bash
           above to use it.
-        </Problem>
+        </Caution>
       )}
 
       {error && <Problem>{error}</Problem>}

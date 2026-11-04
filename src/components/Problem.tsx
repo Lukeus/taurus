@@ -24,6 +24,16 @@ export function Problem({ children }: { children: ReactNode }) {
 }
 
 /**
+ * Something that works, but not the way it looks like it should — in the warning
+ * colour, not the error one. A setting that is valid and saved and has no effect
+ * in one case is not a failure, and red said it was: the terminal's note that
+ * fish marks no commands read as the shell being refused.
+ */
+export function Caution({ children }: { children: ReactNode }) {
+  return <p className="caution m-0 text-12-5 text-warn">{children}</p>;
+}
+
+/**
  * A run of them under a label, for a read that came back with a list.
  *
  * Renders nothing when the list is empty, which is what every caller was

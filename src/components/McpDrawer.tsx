@@ -369,13 +369,16 @@ function ServerCard({
           </span>
           {server.plugin && (
             <span className="tag" tabIndex={0} data-tip="Switching it off here writes a toggle to your own mcp.json">
-              plugin {server.plugin}
+              plugin · <span className="verbatim">{server.plugin}</span>
             </span>
           )}
           {server.disabled && <span className="tag warn">off</span>}
           {/* The other states have a line of their own below; without this,
               green was the only thing saying a server is up. */}
           {state.tone === "ok" && <span className="tag ok">connected</span>}
+          {/* And the same for a server that would not start, which was the one
+              card with no word in its head — the state that most needs one. */}
+          {state.tone === "error" && <span className="tag error">failed</span>}
           {/* Only where a browser flow is possible at all. A stdio server takes
               its credentials from the environment — the MCP authorization
               specification says so explicitly — so a sign-in state there would
@@ -454,12 +457,17 @@ function ServerCard({
           </>
         )}
 
+        {/* Quiet, as a card's actions are in Skills, Agents, Plugins and
+            Memory: the weight is kept for the one that needs pressing — Sign in
+            on a server that can't work without it — and for the red of a
+            Delete once it has been asked for. */}
         <div className="card-actions">
           {/* First, because on a server that wants an account it is the only
               thing that will make anything else work. */}
           {!stdio &&
             (server.signed_in ? (
               <button
+                className="quiet"
                 disabled={busy}
                 onClick={onSignOut}
                 data-tip="Forgets Taurus's copy. The grant stays until you remove it at the provider."
@@ -472,7 +480,7 @@ function ServerCard({
                 // work. A server already connected on a token can still be
                 // signed in to, and a blue button on a working row would be
                 // urging something nobody needs.
-                className={server.status?.connected ? "" : "primary"}
+                className={server.status?.connected ? "quiet" : "primary"}
                 disabled={busy || signingIn}
                 onClick={onSignIn}
                 data-tip="Opens your browser to authorize Taurus"
@@ -484,11 +492,11 @@ function ServerCard({
               off here, which writes a toggle to your own file, and changed or
               removed only by changing the plugin. */}
           {!server.plugin && (
-            <button disabled={busy} onClick={onEdit}>
+            <button className="quiet" disabled={busy} onClick={onEdit}>
               Edit
             </button>
           )}
-          <button disabled={busy} onClick={onToggle}>
+          <button className="quiet" disabled={busy} onClick={onToggle}>
             {server.disabled ? "Enable" : "Disable"}
           </button>
           {server.plugin ? null : arming ? (
@@ -503,12 +511,12 @@ function ServerCard({
               >
                 Remove from mcp.json
               </button>
-              <button disabled={busy} onClick={disarm}>
+              <button className="quiet" disabled={busy} onClick={disarm}>
                 Keep
               </button>
             </>
           ) : (
-            <button disabled={busy} onClick={() => arm(true)}>
+            <button className="quiet" disabled={busy} onClick={() => arm(true)}>
               Delete
             </button>
           )}

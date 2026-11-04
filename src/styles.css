@@ -599,7 +599,9 @@ code:where(:not(.excalidraw *)) {
  * because it is there to open up capitals and lowercase does not need it.
  */
 .micro.verbatim,
-.tag.verbatim {
+.tag.verbatim,
+.micro .verbatim,
+.tag .verbatim {
   text-transform: none;
   letter-spacing: normal;
 }
@@ -649,6 +651,11 @@ code:where(:not(.excalidraw *)) {
 .tag.ok {
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+/* Something that did not work: a server that would not start. */
+.tag.error {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
 }
 
 /* A pill is a toggle that reads as a filter, not a command. */
@@ -5721,8 +5728,11 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 /* Where the file is, dimmed. The name is what anybody is looking for; the path
    is what says whether this one gets committed. */
+/* Its own width, shrinking from there — not `1 1 0`, which grew it from
+   nothing alongside the spacer beside it, so the two split the free space
+   and the path was cut to ".taurus/note…" with half the header empty. */
 .notes-where {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   font-family: var(--mono);
   font-size: 10.5px;
@@ -8145,19 +8155,23 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .branch-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 4px 0;
   min-width: 0;
+}
+.branch-what {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .branch-row .card-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-}
-.branch-row .card-files {
-  flex: none;
 }
 .comparison {
   display: flex;
