@@ -67,7 +67,7 @@ export function ProfileTab() {
     <>
       <Field
         label="Your name"
-        hint="What you'd like to be called. It stays on this computer unless you turn on the switch below."
+        hint="What you'd like to be called. It stays on this computer unless you tick “Tell the model your name” below."
       >
         <input
           aria-label="Your name"

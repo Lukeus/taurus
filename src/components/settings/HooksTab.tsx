@@ -1,6 +1,6 @@
 // The Hooks tab: every hook from every layer, and a way to switch one off.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import * as api from "../../lib/api";
 import { hooksFileIn } from "../../lib/hooksFile";
@@ -183,9 +183,17 @@ export function HooksTab({ onOpenFile }: { onOpenFile?: (path: string) => void }
   );
 }
 
-/** Where a hook was defined, as its tag says it. */
-function from(layer: HookLayer): string {
-  if (layer.kind === "plugin") return `plugin ${layer.name}`;
+/** Where a hook was defined, as its tag says it. A plugin's name is a value,
+ *  so it keeps its case and is set apart: "PLUGIN SECRETS" read as one
+ *  phrase, and not as the plugin called secrets. */
+function from(layer: HookLayer): ReactNode {
+  if (layer.kind === "plugin") {
+    return (
+      <>
+        plugin · <span className="verbatim">{layer.name}</span>
+      </>
+    );
+  }
   return layer.kind === "workspace" ? "this project" : "yours";
 }
 

@@ -91,7 +91,7 @@ describe("the hooks tab", () => {
     expect(guard.textContent).toContain("./scripts/no-force-push.sh");
     expect(guard.textContent).toContain("yours");
     expect(card(host, "fmt").textContent).toContain("this project");
-    expect(card(host, "lint:check").textContent).toContain("plugin lint");
+    expect(card(host, "lint:check").textContent).toContain("plugin · lint");
   });
 
   it("asks where before switching off one of yours in a trusted project", async () => {
