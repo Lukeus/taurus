@@ -483,11 +483,17 @@ function Branches({
       <ul className="branch-list">
         {branches.map((branch) => (
           <li key={branch.id} className="branch-row">
-            <span className="card-title">{branch.title || branch.id}</span>
-            <span className="card-files">
-              {branchLabel(branch)} · {when(branch.updated)}
-            </span>
-            <div className="spacer" />
+            {/* The title over its facts rather than beside them: side by side,
+                "fork at turn 2 · just now" took the room and the title, the
+                part that says which branch this is, was cut to three words. */}
+            <div className="branch-what">
+              <span className="card-title" title={branch.title || branch.id}>
+                {branch.title || branch.id}
+              </span>
+              <span className="card-files">
+                {branchLabel(branch)} · {when(branch.updated)}
+              </span>
+            </div>
             <button
               className="quiet"
               aria-expanded={other === branch.id}

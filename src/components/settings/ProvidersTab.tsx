@@ -279,7 +279,10 @@ export function ProviderForm({
             data-tip={problems.join(" ")}
           />
         )}
-        <button className="danger" onClick={onRemove}>
+        {/* Quiet, not red: it takes the provider out of the draft, and nothing
+            is gone until Save — so it is a card action like any other, and
+            red stays the colour of the press that cannot be taken back. */}
+        <button className="quiet" onClick={onRemove}>
           Remove
         </button>
       </div>
@@ -309,11 +312,37 @@ export function ProviderForm({
             : "Which one a new conversation starts on. Optional."
         }
       >
-        <input
-          value={provider.default_model ?? ""}
-          placeholder="optional"
-          onChange={(e) => onChange({ default_model: blank(e.target.value) })}
-        />
+        {/* A choice among the models above once there are any. Typed, it
+            could name a model the list doesn't have — a typo that only
+            shows up as a failed first turn. Free text only while the list
+            is empty and the endpoint is asked what it serves. */}
+        {compatible && provider.models.some((m) => m.id.trim()) ? (
+          <select
+            value={provider.default_model ?? ""}
+            onChange={(e) => onChange({ default_model: blank(e.target.value) })}
+          >
+            <option value="">First in the list</option>
+            {provider.models
+              .filter((m) => m.id.trim())
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id}
+                </option>
+              ))}
+            {provider.default_model &&
+              !provider.models.some((m) => m.id === provider.default_model) && (
+                <option value={provider.default_model}>
+                  {provider.default_model} (not in the list)
+                </option>
+              )}
+          </select>
+        ) : (
+          <input
+            value={provider.default_model ?? ""}
+            placeholder="optional"
+            onChange={(e) => onChange({ default_model: blank(e.target.value) })}
+          />
+        )}
       </Field>
 
       {fields.key && (
@@ -589,7 +618,7 @@ export function ModelList({
                   inputMode="numeric"
                   aria-label={`Context length for ${model.id || `model ${i + 1}`}`}
                   value={model.context_length ?? ""}
-                  placeholder="from below"
+                  placeholder="inherit"
                   onChange={(e) =>
                     patch(i, {
                       context_length: parseContextLength(
@@ -608,7 +637,7 @@ export function ModelList({
                   patch(i, { native_tools: fromTriState(e.target.value) })
                 }
               >
-                <option value="auto">Tools: as below</option>
+                <option value="auto">Tools: inherit</option>
                 <option value="yes">Tools: native</option>
                 <option value="no">Tools: prompted</option>
               </select>
@@ -617,7 +646,7 @@ export function ModelList({
                 value={triState(model.vision ?? null)}
                 onChange={(e) => patch(i, { vision: fromTriState(e.target.value) })}
               >
-                <option value="auto">Images: as below</option>
+                <option value="auto">Images: inherit</option>
                 <option value="yes">Images: readable</option>
                 <option value="no">Images: text only</option>
               </select>
@@ -629,7 +658,7 @@ export function ModelList({
       <span className="hint">
         {models.length === 0
           ? "None named, so Taurus asks this endpoint what it serves. Add one to decide the menu yourself — the only option on a gateway with no /v1/models route."
-          : "These replace whatever the endpoint would list. Left blank, a model inherits the context length and tool calling set below."}
+          : "These replace whatever the endpoint would list. Left blank, a model takes the provider's context length, tool calling and images settings."}
       </span>
     </div>
   );
