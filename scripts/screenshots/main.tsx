@@ -1040,6 +1040,24 @@ requestAnimationFrame(() => {
         }
         scrollTo(transcript, document.querySelector(".document-card"));
       },
+      // The rail put away and the editor widened, which is the most room a
+      // file gets at the size this is drawn at. Real keys and the header's own
+      // button, because the toggle and the width it lands on are the picture.
+      "canvas-wide": async () => {
+        await until(() => document.querySelector(".doc-input"));
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "b",
+            [APPLE ? "metaKey" : "ctrlKey"]: true,
+            bubbles: true,
+          }),
+        );
+        await until(() => (document.querySelector(".rail") ? null : true));
+        (await click('.canvas-head [aria-label="Widen the editor"]', () => true))();
+        await until(() => document.querySelector('.canvas-head [aria-pressed="true"]'));
+        await until(() => document.querySelector(".canvas-deck:not(.easing)"));
+        scrollTo(transcript, document.querySelector(".document-card"));
+      },
       // The other half, taken the way somebody takes it: press the card's own
       // button and photograph where it lands. Async because the grid does not
       // exist until the pane has mounted and the query has come back — which

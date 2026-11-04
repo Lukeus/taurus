@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import type { Selection } from "../lib/api";
 import { tabLabels, type CanvasTabs } from "../lib/canvasTabs";
+import { useGlide } from "../lib/motion";
 import { onTabKeys } from "../lib/tabs";
+import { useStore } from "../state/store";
 import { CanvasSlot, type TabMark } from "./CanvasSlot";
 import { ResizeHandle, type Resizable } from "./ResizeHandle";
 
@@ -105,6 +107,26 @@ export function CanvasDeck({
     for (const path of [...selections.current.keys()]) if (!open.has(path)) selections.current.delete(path);
   }, [tabs]);
 
+  /*
+   * Tabs behind the one on screen that the turn just wrote, so their tab can
+   * catch the eye once. The file on screen already shows what moved; one behind
+   * it changed with nothing on screen saying so. Keyed by the write, so a
+   * second write to the same file pulses again.
+   */
+  const wrote = useStore((s) => s.wrote);
+  const [touched, setTouched] = useState<{ paths: Set<string>; at: number } | null>(null);
+  useEffect(() => {
+    if (!wrote) return;
+    const hit = tabs
+      .filter((tab) => tab.path !== active && wrote.paths.includes(tab.shown ?? tab.path))
+      .map((tab) => tab.path);
+    if (hit.length > 0) setTouched({ paths: new Set(hit), at: wrote.at });
+    // Only the write. A tab opening or switching is not a write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wrote?.at]);
+
+  const wide = useMemo(() => ({ on: pane.filled, toggle: pane.fill }), [pane.filled, pane.fill]);
+
   const labels = useMemo(() => tabLabels(tabs.map((tab) => tab.shown ?? tab.path)), [tabs]);
 
   const row = useRef<HTMLDivElement>(null);
@@ -112,12 +134,13 @@ export function CanvasDeck({
     // Absent in jsdom. A file opened off the end of the row has to come into view.
     row.current?.querySelector(".canvas-tab.on")?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
   }, [active, showing]);
+  useGlide(row, `${active}|${showing}|${[...labels.values()].join("|")}`, ".canvas-tab.on");
 
   return (
     <>
       {showing && <ResizeHandle pane={pane} label="Editor width" />}
       <div
-        className="side-slot canvas-deck"
+        className={`side-slot canvas-deck${pane.easing ? " easing" : ""}`}
         ref={pane.slot}
         onInput={onTyped}
         style={{ width: pane.size, display: showing ? undefined : "none" }}
@@ -167,9 +190,13 @@ export function CanvasDeck({
                   >
                     ✕
                   </button>
+                  {touched?.paths.has(tab.path) && !on && (
+                    <span key={touched.at} className="canvas-tab-pulse" aria-hidden="true" />
+                  )}
                 </div>
               );
             })}
+            <span className="glide" aria-hidden="true" />
           </div>
         )}
         <div className="canvas-stack">
@@ -187,6 +214,8 @@ export function CanvasDeck({
               onSelected={selected}
               onAsk={onAsk}
               onClose={onClose}
+              wide={wide}
+              tabbed={tabs.length > 1}
             />
           ))}
         </div>
@@ -217,6 +246,8 @@ function TabSlot({
   onSelected: (path: string, selection: Selection | null) => void;
   onAsk: (text: string) => void;
   onClose: (path: string) => void;
+  wide: { on: boolean; toggle: () => void };
+  tabbed: boolean;
 }) {
   const named = useCallback((shown: string) => onNamed(path, shown), [path, onNamed]);
   const marked = useCallback((mark: TabMark) => onMark(path, mark), [path, onMark]);

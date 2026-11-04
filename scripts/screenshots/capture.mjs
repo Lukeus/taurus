@@ -132,6 +132,9 @@ const SHOTS = [
   // Several files open, with a clash of names and a save pending: the row of
   // tabs is laid out by the browser, which jsdom doesn't do.
   { name: "canvas-tabs", shot: "canvas-tabs", theme: "dark" },
+  // The rail put away (⌘B) and the editor widened from its header: the room
+  // the canvas has at this size once it takes everything it can.
+  { name: "canvas-wide", shot: "canvas-wide", theme: "dark" },
   { name: "finder", shot: "finder", theme: "dark" },
   { name: "canvas-find", shot: "canvas-find", theme: "dark" },
   // Replace open, with a pattern: the bar's second row and its toggles.

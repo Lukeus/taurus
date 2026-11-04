@@ -3299,6 +3299,30 @@ body.resizing-y * {
   align-items: center;
   justify-content: center;
   z-index: 50;
+  animation: fade-in var(--hover) var(--ease) both;
+}
+/* What a scrim holds arrives with it: a dialog or the palette grows the last
+   2% into place, and a drawer comes in from the edge it lives on. Enough to
+   say "this is new and on top", short enough not to stand between a key and
+   typing into what it opened. */
+.scrim > :not(.drawer) {
+  animation: dialog-in var(--hover) var(--ease) both;
+}
+.palette-scrim > * {
+  transform-origin: top center;
+}
+.scrim > .drawer {
+  animation: canvas-in var(--reveal) var(--ease) both;
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .dialog {
@@ -5543,7 +5567,10 @@ button.link:where(:not(.excalidraw *)):hover {
    no zoom controls, when its canvas is under 730px wide, or under 500px tall
    and under 1000px wide — and in a small window the list's 200px is often the
    difference. */
-.notes-fold {
+/* A square icon button that shows or hides a pane: the Notes list, the rail,
+   the canvas's extra width. */
+.notes-fold,
+.pane-toggle {
   flex: none;
   width: 24px;
   height: 24px;
@@ -5555,7 +5582,8 @@ button.link:where(:not(.excalidraw *)):hover {
   background: transparent;
   color: var(--text-faint);
 }
-.notes-fold:hover:not(:disabled) {
+.notes-fold:hover:not(:disabled),
+.pane-toggle:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
 }
@@ -6895,6 +6923,9 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 
 .composer-context {
+  /* Fades in when there starts to be something to carry, rather than shoving
+     the box down without a word. */
+  animation: fade-in var(--hover) var(--ease) both;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -7077,6 +7108,107 @@ button.link:where(:not(.excalidraw *)):hover {
   max-width: none;
   flex: 1;
   border-left: 1px solid var(--rule);
+  /* Brought in from the same edge the canvas is, for the same reason — see
+     `.canvas`. Changes and Agent activity used to simply be there. */
+  animation: canvas-in var(--reveal) var(--ease) both;
+}
+
+/* Eases to a width the widen toggle chose, and only then: during a drag the
+   edge has to stay under the pointer, and a transition would trail it. Width
+   rather than a transform, because the conversation beside it has to reflow
+   either way — and for the 320ms it takes, it is one reflow a frame. */
+.side-slot.easing {
+  transition: width var(--reveal) var(--ease);
+}
+
+/* ------------------------------------------------- the gliding tab marker
+
+   One marker per tab row that moves to the selected tab, rather than each
+   tab drawing its own and the line jumping. Placed by `useGlide`, which writes
+   the tab's box to the row; until it has, the tabs draw their own as before. */
+.pane-switch,
+.canvas-tabs {
+  position: relative;
+}
+.glide {
+  position: absolute;
+  left: 0;
+  width: var(--glide-w, 0);
+  height: 2px;
+  transform: translateX(var(--glide-x, 0));
+  background: var(--accent);
+  pointer-events: none;
+  opacity: 0;
+}
+[data-glide] > .glide {
+  opacity: 1;
+}
+[data-glide="on"] > .glide {
+  transition:
+    transform var(--hover) var(--ease),
+    width var(--hover) var(--ease);
+}
+/* Inside the selected tab's border, where its own inset line was. */
+.pane-switch > .glide {
+  top: calc(var(--glide-top, 0px) + 1px);
+  margin-left: 1px;
+  width: calc(var(--glide-w, 0px) - 2px);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+}
+.pane-switch[data-glide] .seg.on {
+  box-shadow: none;
+}
+.canvas-tabs > .glide {
+  bottom: 0;
+}
+.canvas-tabs[data-glide] .canvas-tab.on {
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-slot.easing,
+  [data-glide="on"] > .glide,
+  .rail-caret {
+    transition: none;
+  }
+  .rail-fold-body.unfolding,
+  .canvas-tab-pulse {
+    animation: none;
+  }
+  /* Arrivals keep the fade and lose the travel, as elsewhere. */
+  .scrim > :not(.drawer),
+  .scrim > .drawer {
+    animation-name: fade-in;
+  }
+  /* The tint still says which tab, held rather than faded, and cleared with
+     the next write or the tab being opened. */
+  .canvas-tab-pulse {
+    opacity: 0.6;
+  }
+}
+
+/* --------------------------------------------- the rail's folds, turning
+
+   One caret turned rather than two glyphs swapped, and the rows a click opened
+   arriving rather than appearing. Only a click: see `Section`. */
+.rail-caret {
+  display: inline-block;
+  transition: transform var(--hover) var(--ease);
+}
+.rail-group[data-shut] .rail-caret {
+  transform: rotate(-90deg);
+}
+.rail-fold-body.unfolding {
+  animation: fold-in var(--reveal) var(--ease) both;
+}
+@keyframes fold-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* Tabs over a stack of open files, of which one shows. The others stay laid out
@@ -7105,6 +7237,8 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .canvas-tab {
   flex: none;
+  /* For the pulse laid over it. */
+  position: relative;
   max-width: 200px;
   display: flex;
   align-items: center;
@@ -7133,6 +7267,24 @@ button.link:where(:not(.excalidraw *)):hover {
 .canvas-tab-mark.trouble {
   color: var(--warn);
   font-weight: 700;
+}
+/* Laid over the tab rather than drawn by it, so it can be remounted to play
+   again for a second write to the same file. Opacity only. */
+.canvas-tab-pulse {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  pointer-events: none;
+  animation: tab-pulse 1.8s var(--ease) both;
+}
+@keyframes tab-pulse {
+  0%,
+  20% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 .canvas-tab-close {
   margin-right: 4px;
@@ -7182,6 +7334,14 @@ button.link:where(:not(.excalidraw *)):hover {
   gap: 8px;
   padding: 0 12px;
   border-bottom: 1px solid var(--rule);
+}
+/* Under a row of tabs it is a toolbar for the file the tab names, not a second
+   title for it, and takes less height to say so. */
+.canvas-head.tabbed {
+  height: 34px;
+}
+.canvas-head.tabbed .canvas-where {
+  direction: ltr;
 }
 .canvas-name {
   font-size: 13px;
@@ -7704,6 +7864,7 @@ button.link:where(:not(.excalidraw *)):hover {
 
 @media (prefers-reduced-motion: reduce) {
   .canvas,
+  .side-slot .drawer,
   .canvas-ask,
   .canvas-conflict {
     animation: none;

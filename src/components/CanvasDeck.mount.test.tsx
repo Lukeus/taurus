@@ -20,7 +20,8 @@ import { useStore } from "../state/store";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {} } as never;
+const fill = vi.fn();
+const pane = { size: 400, dragging: false, min: 200, max: 800, start() {}, nudge() {}, fill, filled: false, easing: false } as never;
 const flushRef: { current: (() => Promise<boolean>) | null } = { current: null };
 
 let saves: { path: string; text: string }[];
@@ -117,6 +118,64 @@ describe("a row of open files", () => {
   it("has no row at all for one file", async () => {
     await mount(openTab(null, "a.rs", null));
     expect(host.querySelector(".canvas-tabs")).toBeNull();
+  });
+
+  it("widens the column from the file's own header", async () => {
+    // The edge's double-click is the same thing, and nobody finds that alone.
+    await mount();
+    const widen = host.querySelector<HTMLButtonElement>(
+      '.canvas-panel:not([style*="hidden"]) [aria-label="Widen the editor"]',
+    );
+    expect(widen?.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => widen!.click());
+    expect(fill).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the file and drops its own ✕ under a row of tabs, which has both", async () => {
+    await mount();
+    const head = host.querySelector('.canvas-panel:not([style*="hidden"]) .canvas-head')!;
+    expect(head.classList.contains("tabbed")).toBe(true);
+    expect(head.querySelector(".canvas-name")).toBeNull();
+    expect(head.querySelector('[aria-label="Close this file"]')).toBeNull();
+    expect(head.querySelector(".canvas-where")?.textContent).toBe("b.rs");
+  });
+
+  it("keeps its name and ✕ with one file and no row", async () => {
+    await mount(openTab(null, "a.rs", null));
+    expect(host.querySelector(".canvas-name")?.textContent).toBe("a.rs");
+    expect(host.querySelector('[aria-label="Close this file"]')).not.toBeNull();
+  });
+
+  it("pulses a tab behind the one on screen when the turn writes its file", async () => {
+    await mount();
+    const pulse = () => host.querySelectorAll(".canvas-tab-pulse");
+    await act(async () => useStore.setState({ wrote: { paths: ["a.rs"], at: 1 } }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(pulse()).toHaveLength(1);
+    expect(pulse()[0].closest(".canvas-tab")?.textContent).toContain("a.rs");
+
+    const first = pulse()[0];
+
+    // The file on screen shows what moved itself; its own tab doesn't pulse.
+    await act(async () => useStore.setState({ wrote: { paths: ["b.rs"], at: 2 } }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(host.querySelector(".canvas-tab.on .canvas-tab-pulse")).toBeNull();
+
+    // A second write to the same file plays it again, from a fresh element.
+    await act(async () => useStore.setState({ wrote: { paths: ["a.rs"], at: 3 } }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(pulse()).toHaveLength(1);
+    expect(pulse()[0]).not.toBe(first);
+
+    // Looking at it is what it was asking for.
+    await act(async () => tab("a.rs").click());
+    expect(pulse()).toHaveLength(0);
+  });
+
+  it("has one marker for the row, under the file on screen", async () => {
+    await mount();
+    expect(host.querySelectorAll(".canvas-tabs .glide")).toHaveLength(1);
+    expect(host.querySelector(".canvas-tabs")?.hasAttribute("data-glide")).toBe(true);
   });
 
   it("moves to the file a tab names", async () => {

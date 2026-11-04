@@ -7,6 +7,8 @@ import { Markdown } from "./Markdown";
 import { ConflictBanner } from "./ConflictBanner";
 import type { SaveState } from "../state/notebook";
 import { onTabKeys } from "../lib/tabs";
+import { NarrowIcon, WidenIcon } from "./icons";
+import { folderOf, LinkBase } from "../lib/links";
 import type { FindKey } from "../lib/find";
 
 /**
@@ -50,6 +52,8 @@ export function Canvas({
   onSelect,
   onAsk,
   onClose,
+  wide,
+  tabbed = false,
 }: {
   /** What is open, workspace-relative. `null` when nothing is. */
   path: string | null;
@@ -90,6 +94,16 @@ export function Canvas({
    */
   onAsk: (draft: string) => void;
   onClose: () => void;
+  /**
+   * Widens the column to all the room the conversation leaves it, and back.
+   * The same as double-clicking the edge, which nobody finds on their own.
+   */
+  wide?: { on: boolean; toggle: () => void };
+  /**
+   * Whether a row of tabs is drawn above. The tab already says the file's name
+   * and has its own ✕, so the header gives up both and says where the file is.
+   */
+  tabbed?: boolean;
 }) {
   const [mode, setMode] = useState<Mode>("source");
   const [selection, setSelection] = useState<Sel | null>(null);
@@ -135,14 +149,22 @@ export function Canvas({
 
   return (
     <section className="canvas" aria-label={`Editor: ${path}`}>
-      <header className="canvas-head">
-        <span className="canvas-name" title={path}>
-          {name}
-        </span>
-        {/* The rest of the path, dimmed. The filename is what anybody is
-            looking for and the folder is what tells two of them apart. */}
-        {path.includes("/") && (
-          <span className="canvas-where">{path.slice(0, path.lastIndexOf("/"))}</span>
+      <header className={`canvas-head${tabbed ? " tabbed" : ""}`}>
+        {tabbed ? (
+          <span className="canvas-where" title={path}>
+            {path}
+          </span>
+        ) : (
+          <>
+            <span className="canvas-name" title={path}>
+              {name}
+            </span>
+            {/* The rest of the path, dimmed. The filename is what anybody is
+                looking for and the folder is what tells two of them apart. */}
+            {path.includes("/") && (
+              <span className="canvas-where">{path.slice(0, path.lastIndexOf("/"))}</span>
+            )}
+          </>
         )}
 
         <div className="spacer" />
@@ -205,9 +227,23 @@ export function Canvas({
           </div>
         )}
 
-        <button className="canvas-close" onClick={onClose} aria-label="Close this file">
-          ✕
-        </button>
+        {wide && (
+          <button
+            className="pane-toggle"
+            onClick={wide.toggle}
+            aria-pressed={wide.on}
+            aria-label="Widen the editor"
+            data-tip={wide.on ? "Back to the width it was" : "Widen the editor"}
+          >
+            {wide.on ? <NarrowIcon size={14} /> : <WidenIcon size={14} />}
+          </button>
+        )}
+
+        {!tabbed && (
+          <button className="canvas-close" onClick={onClose} aria-label="Close this file">
+            ✕
+          </button>
+        )}
       </header>
 
       {/* Somebody else wrote the file while there was typing in the editor.
@@ -234,7 +270,11 @@ export function Canvas({
           {/* The draft, not what was read: a preview showing the version on
               disk while the editor holds a newer one would be two answers to
               the same question on the same screen. */}
-          <Markdown text={draft} streaming={false} />
+          {/* Its links are read from its own folder, as they are wherever
+              else it is rendered. */}
+          <LinkBase.Provider value={folderOf(path)}>
+            <Markdown text={draft} streaming={false} />
+          </LinkBase.Provider>
         </div>
       ) : (
         <DocumentEditor

@@ -11,6 +11,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
+import { ListPaneIcon } from "./components/icons";
+import { useGlide } from "./lib/motion";
+import { FileLinks } from "./lib/links";
 import type { Action } from "./lib/palette";
 // Type only, so it's erased and Settings stays a lazily loaded chunk.
 import type { SettingsTab } from "./components/Settings";
@@ -268,6 +271,20 @@ export default function App() {
     })),
   );
   const rail = useResizableWidth({ storageKey: "taurus.railWidth", ...RAIL_WIDTH });
+  /*
+   * Whether the rail is put away. At a laptop's width it is the biggest thing
+   * beside the conversation, and with a file open the canvas wants that room
+   * more than the list of conversations does. Remembered, as its width is.
+   */
+  const [railShut, setRailShut] = useState(readRailShut);
+  const toggleRail = useCallback(
+    () =>
+      setRailShut((shut) => {
+        keepRailShut(!shut);
+        return !shut;
+      }),
+    [],
+  );
   const dock = useResizableHeight({
     storageKey: "taurus.terminalHeight",
     ...TERMINAL_HEIGHT,
@@ -578,6 +595,9 @@ export default function App() {
       } else if (isChord(e, "l")) {
         e.preventDefault();
         setFocusComposer((n) => n + 1);
+      } else if (isChord(e, "b") && !e.shiftKey) {
+        e.preventDefault();
+        toggleRail();
       } else if (isChord(e, "d") && e.shiftKey) {
         // With Shift, unlike the rest. Plain Ctrl+D is end-of-input to the
         // shell in the terminal dock on Windows and Linux, and a shortcut
@@ -588,7 +608,7 @@ export default function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, []);
+  }, [toggleRail]);
 
   /*
    * Re-asks the questions nothing can push, when the user comes back.
@@ -1013,6 +1033,14 @@ export default function App() {
         run: () => useAgentsView.getState().show(),
       },
       {
+        id: "sidebar",
+        label: railShut ? "Show the sidebar" : "Hide the sidebar",
+        group: "Panels",
+        keywords: "rail conversations list collapse fold room wider canvas",
+        shortcut: chord("B"),
+        run: toggleRail,
+      },
+      {
         id: "changes",
         label: "Changes",
         group: "Panels",
@@ -1107,7 +1135,7 @@ export default function App() {
     // start a conversation against the model list as it stood before the
     // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked],
+    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked, railShut, toggleRail],
   );
 
   /**
@@ -1179,6 +1207,26 @@ export default function App() {
       }),
     );
   };
+
+  /*
+   * A link to a file, from an answer, a README in the canvas or anything else
+   * drawn from Markdown. The same trip as the finder's: whatever had the side
+   * column gives it to the canvas, because the file is what was asked for.
+   * Through a ref so the context's value never changes and no block of
+   * Markdown re-renders because App did.
+   */
+  const linkTo = useRef<(path: string, lines: LineRange | null) => void>(() => {});
+  linkTo.current = (path, lines) => {
+    setSkillsOpen(false);
+    setAgentsOpen(false);
+    setChangesOpen(false);
+    useAgentsView.getState().close();
+    showDocument(path, lines);
+  };
+  const openFromLink = useCallback(
+    (path: string, lines: LineRange | null) => linkTo.current(path, lines),
+    [],
+  );
 
   const closeDocument = useCallback((path: string) => {
     setCanvas((now) => now && closeTab(now, path));
@@ -1412,6 +1460,15 @@ export default function App() {
   const railPlugins = useCallback(() => setPluginsOpen(true), []);
   const railUsage = useCallback(() => setUsageOpen(true), []);
   const railTraces = useCallback(() => setTracesOpen(true), []);
+  // The pane switch's marker, which moves when the view does. The counts are
+  // in the key because they widen the tabs before the one selected.
+  const paneSwitch = useRef<HTMLDivElement>(null);
+  useGlide(
+    paneSwitch,
+    `${pane}|${notebook.pages?.length ?? 0}|${store.datasets.length}`,
+    ".seg.on",
+  );
+
   const railMcpDrawer = useCallback(() => setMcpOpen(true), []);
   const railTerminal = useCallback(() => setTerminalOpen((open) => !open), []);
   const railSettings = useCallback(() => setSettingsOpen(true), []);
@@ -1419,636 +1476,664 @@ export default function App() {
   const forgetDataset = (name: string) => void store.forgetDataset(name);
 
   return (
-    <div className="app">
-      <Rail
-        width={rail.size}
-        workspace={workspace}
-        sessions={store.sessions}
-        running={store.running}
-        currentId={store.session?.id}
-        changedCount={store.changed.length}
-        branch={store.status?.branch ?? null}
-        busy={store.busy}
-        skillCount={store.status?.skill_count ?? null}
-        agentCount={store.status?.agent_count ?? null}
-        noteCount={store.status?.note_count ?? null}
-        mcp={railMcp}
-        health={railHealth}
-        theme={theme ?? "system"}
-        brand={railBrand}
-        onPickWorkspace={railPickWorkspace}
-        onNew={railNew}
-        onOpen={store.openConversation}
-        onDelete={store.remove}
-        onTheme={railTheme}
-        onSkills={railSkills}
-        onAgents={railAgents}
-        onMemory={railMemory}
-        onPlugins={railPlugins}
-        onUsage={railUsage}
-        onTraces={railTraces}
-        onMcp={railMcpDrawer}
-        jobsRunning={railJobs}
-        onTerminal={railTerminal}
-        onSettings={railSettings}
-      />
-
-      <ResizeHandle pane={rail} label="Rail width" />
-
-      <div className="pane">
-        <header className="topbar">
-          <ConversationTitle
-            title={title}
-            // Only once there is a transcript to write a name into, which there
-            // is from the moment the first question is asked.
-            renamable={listed !== undefined}
-            onRename={(next) => listed && store.rename(listed.id, next)}
+    <FileLinks.Provider value={openFromLink}>
+      <div className="app">
+        {!railShut && (
+          <Rail
+            width={rail.size}
+            workspace={workspace}
+            sessions={store.sessions}
+            running={store.running}
+            currentId={store.session?.id}
+            changedCount={store.changed.length}
+            branch={store.status?.branch ?? null}
+            busy={store.busy}
+            skillCount={store.status?.skill_count ?? null}
+            agentCount={store.status?.agent_count ?? null}
+            noteCount={store.status?.note_count ?? null}
+            mcp={railMcp}
+            health={railHealth}
+            theme={theme ?? "system"}
+            brand={railBrand}
+            onPickWorkspace={railPickWorkspace}
+            onNew={railNew}
+            onOpen={store.openConversation}
+            onDelete={store.remove}
+            onTheme={railTheme}
+            onSkills={railSkills}
+            onAgents={railAgents}
+            onMemory={railMemory}
+            onPlugins={railPlugins}
+            onUsage={railUsage}
+            onTraces={railTraces}
+            onMcp={railMcpDrawer}
+            jobsRunning={railJobs}
+            onTerminal={railTerminal}
+            onSettings={railSettings}
           />
+        )}
 
-          {store.session && !store.session.native_tools && (
-            <span
-              className="tag warn"
-              tabIndex={0}
-              data-tip="This model has no built-in tool calling; Taurus prompts for it instead."
+        {!railShut && <ResizeHandle pane={rail} label="Rail width" />}
+
+        <div className="pane">
+          <header className="topbar">
+            <button
+              className="pane-toggle"
+              onClick={toggleRail}
+              aria-expanded={!railShut}
+              aria-label={railShut ? "Show the sidebar" : "Hide the sidebar"}
+              data-tip={`${railShut ? "Show the sidebar" : "Hide the sidebar"} (${chord("B")})`}
             >
-              prompted tools
-            </span>
-          )}
+              <ListPaneIcon size={14} />
+            </button>
+            <ConversationTitle
+              title={title}
+              // Only once there is a transcript to write a name into, which there
+              // is from the moment the first question is asked.
+              renamable={listed !== undefined}
+              onRename={(next) => listed && store.rename(listed.id, next)}
+            />
 
-          <div className="spacer" />
+            {store.session && !store.session.native_tools && (
+              <span
+                className="tag warn"
+                tabIndex={0}
+                data-tip="This model has no built-in tool calling; Taurus prompts for it instead."
+              >
+                prompted tools
+              </span>
+            )}
 
-          <button
-            className="chip"
-            data-tip={`Find a file in this workspace (${chord("P")})`}
-            onClick={() => setFinderOpen(true)}
-          >
-            Go to file
-          </button>
+            <div className="spacer" />
 
-          {/* Only while there's something to watch. Delegates working in the
-              background, or two side by side, are otherwise one line each
-              inside a folded run of tool calls. */}
-          {store.session && agentsWorking > 0 && (
             <button
               className="chip"
-              data-tip="What each delegate is doing"
-              onClick={() => agentsView.show()}
+              data-tip={`Find a file in this workspace (${chord("P")})`}
+              onClick={() => setFinderOpen(true)}
             >
-              <span className="dot warn" />
-              {agentsWorking === 1 ? "1 agent working" : `${agentsWorking} agents working`}
+              Go to file
             </button>
-          )}
 
-          {store.session && (
-            <button
-              className="chip"
-              data-tip="Files this conversation changed, and the way back"
-              onClick={openChanges}
-            >
-              <span className={`dot${store.changed.length > 0 ? " accent" : ""}`} />
-              {store.changed.length > 0
-                ? `${plural(store.changed.length, "file")} changed`
-                : "No file changes"}
-            </button>
-          )}
+            {/* Only while there's something to watch. Delegates working in the
+                background, or two side by side, are otherwise one line each
+                inside a folded run of tool calls. */}
+            {store.session && agentsWorking > 0 && (
+              <button
+                className="chip"
+                data-tip="What each delegate is doing"
+                onClick={() => agentsView.show()}
+              >
+                <span className="dot warn" />
+                {agentsWorking === 1 ? "1 agent working" : `${agentsWorking} agents working`}
+              </button>
+            )}
 
-          {/* Only worth a control when there is a choice to make. One provider
-              is the common case and the picker would be a dropdown that can
-              only ever say what the model list already implies. */}
-          {providers.length > 1 && (
+            {store.session && (
+              <button
+                className="chip"
+                data-tip="Files this conversation changed, and the way back"
+                onClick={openChanges}
+              >
+                <span className={`dot${store.changed.length > 0 ? " accent" : ""}`} />
+                {store.changed.length > 0
+                  ? `${plural(store.changed.length, "file")} changed`
+                  : "No file changes"}
+              </button>
+            )}
+
+            {/* Only worth a control when there is a choice to make. One provider
+                is the common case and the picker would be a dropdown that can
+                only ever say what the model list already implies. */}
+            {providers.length > 1 && (
+              <select
+                className="provider-select"
+                aria-label="Provider"
+                value={providerId ?? ""}
+                disabled={store.busy || moving}
+                onChange={(e) => chooseProvider(e.target.value)}
+              >
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <select
-              className="provider-select"
-              aria-label="Provider"
-              value={providerId ?? ""}
-              disabled={store.busy || moving}
-              onChange={(e) => chooseProvider(e.target.value)}
+              className="model-select"
+              aria-label="Model"
+              value={store.session?.model ?? ""}
+              disabled={store.busy || moving || !providerId}
+              onChange={(e) => providerId && moveTo(providerId, e.target.value)}
             >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.id}
+              {available.length === 0 && <option value="">no models</option>}
+              {/* `available` already carries the running session's model even
+                  when nothing listed it, so the select can always show what the
+                  conversation is actually on. */}
+              {available.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.display_name}
                 </option>
               ))}
             </select>
-          )}
+          </header>
 
-          <select
-            className="model-select"
-            aria-label="Model"
-            value={store.session?.model ?? ""}
-            disabled={store.busy || moving || !providerId}
-            onChange={(e) => providerId && moveTo(providerId, e.target.value)}
-          >
-            {available.length === 0 && <option value="">no models</option>}
-            {/* `available` already carries the running session's model even
-                when nothing listed it, so the select can always show what the
-                conversation is actually on. */}
-            {available.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.display_name}
-              </option>
-            ))}
-          </select>
-        </header>
+          {/* Drawn above the pane rather than in the topbar: the topbar names the
+              conversation and the model, and neither of those changes when the
+              centre column does.
 
-        {/* Drawn above the pane rather than in the topbar: the topbar names the
-            conversation and the model, and neither of those changes when the
-            centre column does.
-
-            Notes is always here and Data only once a dataset is loaded, and the
-            difference is not an inconsistency. A dataset arrives because a tool
-            put it there, so before that happens the Data tab is a tab with
-            nothing behind it — the rule the composer's `/` hint and the rail's
-            MCP badge follow. A note needs nothing to have happened first: the
-            tab *is* how you write the first one, and hiding it until one exists
-            would hide the only door into the room. */}
-        <div className="pane-switch" role="tablist" aria-label="View" onKeyDown={onTabKeys}>
-          <button
-            role="tab"
-            aria-selected={pane === "conversation"}
-            tabIndex={pane === "conversation" ? 0 : -1}
-            className={`seg${pane === "conversation" ? " on" : ""}`}
-            onClick={() => setPane("conversation")}
+              Notes is always here and Data only once a dataset is loaded, and the
+              difference is not an inconsistency. A dataset arrives because a tool
+              put it there, so before that happens the Data tab is a tab with
+              nothing behind it — the rule the composer's `/` hint and the rail's
+              MCP badge follow. A note needs nothing to have happened first: the
+              tab *is* how you write the first one, and hiding it until one exists
+              would hide the only door into the room. */}
+          <div
+            className="pane-switch"
+            role="tablist"
+            aria-label="View"
+            onKeyDown={onTabKeys}
+            ref={paneSwitch}
           >
-            Conversation
-          </button>
-          <button
-            role="tab"
-            aria-selected={pane === "notes"}
-            tabIndex={pane === "notes" ? 0 : -1}
-            className={`seg${pane === "notes" ? " on" : ""}`}
-            onClick={() => setPane("notes")}
-          >
-            Notes
-            {notebook.pages !== null && notebook.pages.length > 0 && (
-              <span className="count">{notebook.pages.length}</span>
-            )}
-          </button>
-          {store.datasets.length > 0 && (
             <button
               role="tab"
-              aria-selected={pane === "data"}
-              tabIndex={pane === "data" ? 0 : -1}
-              className={`seg${pane === "data" ? " on" : ""}`}
-              onClick={() => setPane("data")}
+              aria-selected={pane === "conversation"}
+              tabIndex={pane === "conversation" ? 0 : -1}
+              className={`seg${pane === "conversation" ? " on" : ""}`}
+              onClick={() => setPane("conversation")}
             >
-              Data
-              <span className="count">{store.datasets.length}</span>
+              Conversation
             </button>
+            <button
+              role="tab"
+              aria-selected={pane === "notes"}
+              tabIndex={pane === "notes" ? 0 : -1}
+              className={`seg${pane === "notes" ? " on" : ""}`}
+              onClick={() => setPane("notes")}
+            >
+              Notes
+              {notebook.pages !== null && notebook.pages.length > 0 && (
+                <span className="count">{notebook.pages.length}</span>
+              )}
+            </button>
+            {store.datasets.length > 0 && (
+              <button
+                role="tab"
+                aria-selected={pane === "data"}
+                tabIndex={pane === "data" ? 0 : -1}
+                className={`seg${pane === "data" ? " on" : ""}`}
+                onClick={() => setPane("data")}
+              >
+                Data
+                <span className="count">{store.datasets.length}</span>
+              </button>
+            )}
+            <span className="glide" aria-hidden="true" />
+          </div>
+
+          <main>
+            {/* The centre column, which the canvas sits beside rather than over.
+                A split and not a third tab: see `Canvas`, and see the Data pane
+                above for the experiment that argued it. */}
+            <div className="pane-split">
+            {pane === "notes" ? (
+              <NotesPane
+                notebook={notebook}
+                onAsk={ask}
+                hasWorkspace={!!workspace}
+              />
+            ) : pane === "data" ? (
+              <Suspense fallback={<div className="data-pane" />}>
+                <DataPane
+                  datasets={store.datasets}
+                  selected={dataset}
+                  onSelect={setDataset}
+                  onForget={forgetDataset}
+                  onRan={() => void store.refreshDatasets()}
+                  tab={tab}
+                  onTab={setTab}
+                  sql={sql}
+                  onSql={setSql}
+                  pending={pendingQuery}
+                  onPendingRun={() => setPendingQuery(null)}
+                  onAsk={ask}
+                />
+              </Suspense>
+            ) : (
+              <TranscriptPane
+                conversationId={store.session?.id}
+                busy={store.busy}
+                stopping={store.stopping}
+                pending={store.resuming}
+                onAnswer={store.answerQuestions}
+                onOpenDelegate={setDelegate}
+                onOpenDataset={showDataset}
+                onOpenDocument={showDocument}
+                onOpenNote={showNote}
+                onRunQuery={showQuery}
+                find={find}
+                onRetry={async () => {
+                  await canvasFlush.current?.();
+                  await store.retry();
+                }}
+                // Not an edit in place — see the prop. It arrives in the box the
+                // way every other offered sentence does, added to whatever is
+                // already there rather than replacing it.
+                onEditPrompt={ask}
+                // The edit that rewrites nothing: a new conversation from just
+                // before the question, with the question in its box. Not under
+                // a running turn, and not from a branch whose files are set
+                // aside, both of which the backend refuses.
+                onForkPrompt={
+                  store.busy || store.away
+                    ? undefined
+                    : async (turn, text) => {
+                        try {
+                          await store.forkBefore(store.session!.id, turn);
+                          setDraft({ text });
+                        } catch (e) {
+                          useStore.setState({ error: String(e) });
+                        }
+                      }
+                }
+                empty={
+                  <FirstRun
+                    workspace={workspace}
+                    ready={!!store.session}
+                    health={health(store.status?.providers.length, providerId, models)}
+                    onPickWorkspace={pickWorkspace}
+                    onSettings={() => setSettingsOpen(true)}
+                  />
+                }
+              />
+            )}
+
+            {/* Kept out of the Data pane. A proposal is about the conversation
+                that raised it, and answering one from a screen that does not
+                show it would be approving something you cannot read. */}
+            {pane === "conversation" &&
+              (store.proposals.length > 0 ||
+              store.agentProposals.length > 0) && (
+              <div className="proposals">
+                {store.proposals.map((p) => (
+                  <SkillProposalCard
+                    key={p.id}
+                    proposal={p}
+                    onResolve={(approve, target, edited) =>
+                      store.resolveProposal(p.id, approve, target, edited)
+                    }
+                  />
+                ))}
+                {store.agentProposals.map((p) => (
+                  <AgentProposalCard
+                    key={p.id}
+                    proposal={p}
+                    onResolve={(approve, target, edited) =>
+                      store.resolveAgentProposal(p.id, approve, target, edited)
+                    }
+                  />
+                ))}
+              </div>
+            )}
+            </div>
+
+            {/*
+              * One column beside the conversation, and two things that want it.
+              *
+              * Changes wins while it is open, and the canvas is hidden rather
+              * than closed — every piece of state a file being edited has lives
+              * in `CanvasSlot`, which stays mounted while the file is open, so it
+              * comes back with its unsaved typing and
+              * its scroll position when Changes is shut again. Closing it for
+              * real would be the app throwing away work to make room for a
+              * panel.
+              *
+              * Not a third column. At the width this window is drawn for, the
+              * transcript is already giving up half of itself to whichever of
+              * these is open; giving up the other half would leave three
+              * columns, none of them readable, which is exactly the outcome the
+              * Data pane experiment argued against.
+              */}
+            {side === "changes" && store.session && (
+              <>
+                <ResizeHandle pane={changesPane} label="Changes width" />
+                <div
+                  className={`side-slot${changesPane.easing ? " easing" : ""}`}
+                  ref={changesPane.slot}
+                  style={{ width: changesPane.size }}
+                >
+                  <Suspense fallback={<aside className="drawer changes-pane" />}>
+                    <ChangesDrawer
+                      sessionId={store.session.id}
+                      busy={store.busy}
+                      away={store.away}
+                      onClose={() => setChangesOpen(false)}
+                      // The new conversation opens with the question it was
+                      // forked before, ready to be asked again or differently.
+                      // From a review finding, the question carries what the
+                      // review found, for the second attempt to take in.
+                      // Read from the rail's listing, which already knows every
+                      // conversation's parent.
+                      branches={branchesOf(store.sessions, store.session.id)}
+                      onOpenBranch={(id) => void store.openConversation(id)}
+                      onFork={async (turn, finding) => {
+                        const forked = await store.fork(store.session!.id, turn);
+                        setDraft({
+                          text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
+                        });
+                        return forked;
+                      }}
+                    />
+                  </Suspense>
+                </div>
+              </>
+            )}
+
+            {side === "activity" && store.session && (
+              <>
+                <ResizeHandle pane={activityPane} label="Agent activity width" />
+                <div
+                  className={`side-slot${activityPane.easing ? " easing" : ""}`}
+                  ref={activityPane.slot}
+                  style={{ width: activityPane.size }}
+                >
+                  <Suspense fallback={<aside className="drawer agents-pane" />}>
+                    <AgentsPanel
+                      model={store.session.model}
+                      busy={store.busy}
+                      focus={agentsView.focus}
+                      onClose={agentsView.close}
+                      onOpenTranscript={setDelegate}
+                    />
+                  </Suspense>
+                </div>
+              </>
+            )}
+
+            {/* Mounted while a file is open, whichever panel has the column.
+                While Changes has it this draws nothing and keeps the documents.
+                See `CanvasDeck`. */}
+            {canvas && (
+              <CanvasDeck
+                canvas={canvas}
+                marks={canvasMarks}
+                workspace={workspace}
+                showing={side === "canvas"}
+                pane={canvasPane}
+                onShow={showTabOf}
+                onClose={closeDocument}
+                onNamed={nameDocument}
+                onMark={markDocument}
+                onTyped={canvasTyped}
+                onSelect={setSelection}
+                onAsk={ask}
+                flushRef={canvasFlush}
+              />
+            )}
+          </main>
+
+          {/* Only away from the conversation, and only while something is
+              happening. On the transcript itself all of this is already being
+              said, and a strip repeating it would be the app talking twice. */}
+          {pane !== "conversation" && store.busy && (
+            <TurnStrip onOpen={() => setPane("conversation")} />
+          )}
+
+          {/* Above the error banner, because it is about the state the whole
+              session is running in rather than about something that just went
+              wrong. Dismissed per workspace, so switching folders asks again
+              about the new one rather than inheriting an answer about the old. */}
+          {store.trust && !trustDismissed.includes(store.trust.workspace) && (
+            <TrustBanner
+              trust={store.trust}
+              onTrust={() => void store.decideTrust(true)}
+              onDismiss={() =>
+                setTrustDismissed((seen) => [...seen, store.trust!.workspace])
+              }
+            />
+          )}
+
+          {store.error && (
+            // An alert, like the conflict banner: the trust banner and the
+            // composer's notices are announced, and this one, the banner that
+            // reports failures, wasn't.
+            <div className="banner error" role="alert">
+              {/* A slow pulse on a dot, and nothing else. The motion spec is
+                  explicit about this one: no shake, no flash — a banner that
+                  flinches trains the reader to stop reading banners. The pulse
+                  is there so an error that arrives while you are looking
+                  somewhere else is catchable out of the corner of an eye. */}
+              <span className="banner-dot" />
+              {store.error}
+              <div className="spacer" />
+              <button onClick={store.dismissError}>Dismiss</button>
+            </div>
+          )}
+
+          {/* Between the error banner and the composer, so its position does not
+              move when an error arrives and clears. The plan is the thing you
+              look at while typing the next message; it belongs against the box
+              you type in. */}
+          <PinnedPlan />
+
+          <Composer
+            // Keyed on the conversation, so a half-written question never
+            // follows a click in the rail into another one. What was typed is
+            // handed back through `onPark` on the way out and restored through
+            // `parked` on the way in — see both.
+            key={sessionKey}
+            sessionKey={sessionKey}
+            parked={parked[sessionKey] ?? null}
+            onPark={park}
+            queued={store.queued}
+            interrupted={store.interrupted}
+            onContinue={store.continueInterrupted}
+            away={store.away}
+            onSwitch={store.switchHere}
+            onSendQueued={sendQueued}
+            onUnqueue={store.unqueue}
+            focus={focusComposer}
+            dictate={dictate}
+            busy={store.busy}
+            unattended={store.unattended}
+            onUnattended={setUnattended}
+            stopping={store.stopping}
+            ready={!!store.session}
+            vision={store.session?.vision ?? false}
+            workspace={workspace}
+            onPickWorkspace={pickWorkspace}
+            library={library}
+            onScreen={onScreen}
+            draft={draft}
+            // Also the moment the mark stops being what you are looking at:
+            // asking something is the end of having been sent here.
+            onSend={async (text, images, onScreen) => {
+              setFind(null);
+              // What was typed in the canvas a moment ago, on disk before the turn
+              // starts. A fixed hooks file has to be there for this message to get
+              // past it. Written, it's no longer unsaved, whatever the chip said.
+              const written = (await canvasFlush.current?.()) ?? false;
+              return store.send(
+                text,
+                images,
+                written && onScreen?.document?.unsaved
+                  ? { ...onScreen, document: { ...onScreen.document, unsaved: false } }
+                  : onScreen,
+              );
+            }}
+            onStop={store.stop}
+            onUsage={() => setUsageOpen(true)}
+          />
+
+          {/* Below the composer rather than between it and the transcript: the
+              box you type in belongs to the conversation above it, and a
+              terminal wedged between the two would separate a message from the
+              thread it is being written into. Mounted only while it is showing
+              — see `terminalOpen`. */}
+          {terminalOpen && (
+            <>
+              <ResizeHandle pane={dock} label="Terminal height" />
+              <Suspense fallback={<div className="dock-loading" />}>
+                <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
+                  <TerminalDock
+                    // A new folder is a new shell. Keyed rather than handled
+                    // inside, so the old one is torn down by the same path that
+                    // closes the dock instead of a second one that has to agree
+                    // with it.
+                    key={workspace ?? "none"}
+                    workspace={workspace}
+                    jobs={jobs}
+                    watching={watching}
+                    output={jobOutput}
+                    onWatch={setWatching}
+                    onStop={api.stopBackground}
+                    onClose={() => setTerminalOpen(false)}
+                    onAsk={ask}
+                  />
+                </div>
+              </Suspense>
+            </>
           )}
         </div>
 
-        <main>
-          {/* The centre column, which the canvas sits beside rather than over.
-              A split and not a third tab: see `Canvas`, and see the Data pane
-              above for the experiment that argued it. */}
-          <div className="pane-split">
-          {pane === "notes" ? (
-            <NotesPane
-              notebook={notebook}
-              onAsk={ask}
-              hasWorkspace={!!workspace}
+        {store.permission && (
+          <PermissionDialog
+            request={store.permission}
+            askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
+            onDecide={store.answerPermission}
+          />
+        )}
+
+        {store.leaving && (
+          <LeavingDialog
+            rules={store.leaving}
+            onGrant={store.grantLeaving}
+            onClose={store.dismissLeaving}
+          />
+        )}
+
+        {/* Renders nothing. Mounted here because it is about the window rather
+            than about anything in it. */}
+        <Attention />
+
+        {/* One boundary for all of them: they are mutually exclusive in practice
+            and none is ever nested inside another, so a boundary each would be
+            seven of the same thing. `null` rather than a spinner because by the
+            time a drawer is opened its module is almost always already in hand —
+            see `warmPanels` — and a flash of skeleton for a frame that usually
+            does not happen reads worse than the drawer simply appearing. */}
+        <Suspense fallback={null}>
+          {switcherOpen && (
+            <WorkspaceSwitcher
+              current={workspace}
+              recent={recentFolders}
+              blocked={switchBlocked}
+              onSwitch={(path) => void switchWorkspace(path)}
+              onBrowse={() => void pickWorkspace()}
+              onForget={(path) =>
+                void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
+              }
+              onClose={() => setSwitcherOpen(false)}
             />
-          ) : pane === "data" ? (
-            <Suspense fallback={<div className="data-pane" />}>
-              <DataPane
-                datasets={store.datasets}
-                selected={dataset}
-                onSelect={setDataset}
-                onForget={forgetDataset}
-                onRan={() => void store.refreshDatasets()}
-                tab={tab}
-                onTab={setTab}
-                sql={sql}
-                onSql={setSql}
-                pending={pendingQuery}
-                onPendingRun={() => setPendingQuery(null)}
-                onAsk={ask}
-              />
-            </Suspense>
-          ) : (
-            <TranscriptPane
-              conversationId={store.session?.id}
-              busy={store.busy}
-              stopping={store.stopping}
-              pending={store.resuming}
-              onAnswer={store.answerQuestions}
-              onOpenDelegate={setDelegate}
-              onOpenDataset={showDataset}
-              onOpenDocument={showDocument}
-              onOpenNote={showNote}
-              onRunQuery={showQuery}
-              find={find}
-              onRetry={async () => {
-                await canvasFlush.current?.();
-                await store.retry();
+          )}
+          {finderOpen && (
+            <FileFinder
+              open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
+              onOpen={(path) => {
+                setSkillsOpen(false);
+                setAgentsOpen(false);
+                setChangesOpen(false);
+                useAgentsView.getState().close();
+                showDocument(path, null);
               }}
-              // Not an edit in place — see the prop. It arrives in the box the
-              // way every other offered sentence does, added to whatever is
-              // already there rather than replacing it.
-              onEditPrompt={ask}
-              // The edit that rewrites nothing: a new conversation from just
-              // before the question, with the question in its box. Not under
-              // a running turn, and not from a branch whose files are set
-              // aside, both of which the backend refuses.
-              onForkPrompt={
-                store.busy || store.away
+              onClose={() => setFinderOpen(false)}
+            />
+          )}
+          {paletteOpen && (
+            <CommandPalette
+              actions={actions}
+              sessions={store.sessions}
+              onOpenSession={openFound}
+              onClose={() => setPaletteOpen(false)}
+            />
+          )}
+
+          {usageOpen && (
+            <UsagePanel
+              sessionId={store.session?.id ?? null}
+              onClose={() => setUsageOpen(false)}
+              onOpenTools={() => openSettingsAt("tools")}
+            />
+          )}
+
+          {tracesOpen && (
+            <TracePanel
+              sessionId={store.session?.id ?? null}
+              onClose={() => setTracesOpen(false)}
+              onOpenTracing={() => openSettingsAt("tracing")}
+            />
+          )}
+
+          {memoryOpen && (
+            <MemoryDrawer
+              onClose={() => setMemoryOpen(false)}
+              // Not offered mid-turn: switching conversations under a running one
+              // is not something the rail offers either.
+              onOpenSession={
+                store.busy
                   ? undefined
-                  : async (turn, text) => {
-                      try {
-                        await store.forkBefore(store.session!.id, turn);
-                        setDraft({ text });
-                      } catch (e) {
-                        useStore.setState({ error: String(e) });
-                      }
+                  : (id) => {
+                      setMemoryOpen(false);
+                      void store.openConversation(id);
                     }
               }
-              empty={
-                <FirstRun
-                  workspace={workspace}
-                  ready={!!store.session}
-                  health={health(store.status?.providers.length, providerId, models)}
-                  onPickWorkspace={pickWorkspace}
-                  onSettings={() => setSettingsOpen(true)}
-                />
-              }
             />
           )}
 
-          {/* Kept out of the Data pane. A proposal is about the conversation
-              that raised it, and answering one from a screen that does not
-              show it would be approving something you cannot read. */}
-          {pane === "conversation" &&
-            (store.proposals.length > 0 ||
-            store.agentProposals.length > 0) && (
-            <div className="proposals">
-              {store.proposals.map((p) => (
-                <SkillProposalCard
-                  key={p.id}
-                  proposal={p}
-                  onResolve={(approve, target, edited) =>
-                    store.resolveProposal(p.id, approve, target, edited)
-                  }
-                />
-              ))}
-              {store.agentProposals.map((p) => (
-                <AgentProposalCard
-                  key={p.id}
-                  proposal={p}
-                  onResolve={(approve, target, edited) =>
-                    store.resolveAgentProposal(p.id, approve, target, edited)
-                  }
-                />
-              ))}
-            </div>
-          )}
-          </div>
-
-          {/*
-            * One column beside the conversation, and two things that want it.
-            *
-            * Changes wins while it is open, and the canvas is hidden rather
-            * than closed — every piece of state a file being edited has lives
-            * in `CanvasSlot`, which stays mounted while the file is open, so it
-            * comes back with its unsaved typing and
-            * its scroll position when Changes is shut again. Closing it for
-            * real would be the app throwing away work to make room for a
-            * panel.
-            *
-            * Not a third column. At the width this window is drawn for, the
-            * transcript is already giving up half of itself to whichever of
-            * these is open; giving up the other half would leave three
-            * columns, none of them readable, which is exactly the outcome the
-            * Data pane experiment argued against.
-            */}
-          {side === "changes" && store.session && (
-            <>
-              <ResizeHandle pane={changesPane} label="Changes width" />
-              <div className="side-slot" ref={changesPane.slot} style={{ width: changesPane.size }}>
-                <Suspense fallback={<aside className="drawer changes-pane" />}>
-                  <ChangesDrawer
-                    sessionId={store.session.id}
-                    busy={store.busy}
-                    away={store.away}
-                    onClose={() => setChangesOpen(false)}
-                    // The new conversation opens with the question it was
-                    // forked before, ready to be asked again or differently.
-                    // From a review finding, the question carries what the
-                    // review found, for the second attempt to take in.
-                    // Read from the rail's listing, which already knows every
-                    // conversation's parent.
-                    branches={branchesOf(store.sessions, store.session.id)}
-                    onOpenBranch={(id) => void store.openConversation(id)}
-                    onFork={async (turn, finding) => {
-                      const forked = await store.fork(store.session!.id, turn);
-                      setDraft({
-                        text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
-                      });
-                      return forked;
-                    }}
-                  />
-                </Suspense>
-              </div>
-            </>
-          )}
-
-          {side === "activity" && store.session && (
-            <>
-              <ResizeHandle pane={activityPane} label="Agent activity width" />
-              <div className="side-slot" ref={activityPane.slot} style={{ width: activityPane.size }}>
-                <Suspense fallback={<aside className="drawer agents-pane" />}>
-                  <AgentsPanel
-                    model={store.session.model}
-                    busy={store.busy}
-                    focus={agentsView.focus}
-                    onClose={agentsView.close}
-                    onOpenTranscript={setDelegate}
-                  />
-                </Suspense>
-              </div>
-            </>
-          )}
-
-          {/* Mounted while a file is open, whichever panel has the column.
-              While Changes has it this draws nothing and keeps the documents.
-              See `CanvasDeck`. */}
-          {canvas && (
-            <CanvasDeck
-              canvas={canvas}
-              marks={canvasMarks}
-              workspace={workspace}
-              showing={side === "canvas"}
-              pane={canvasPane}
-              onShow={showTabOf}
-              onClose={closeDocument}
-              onNamed={nameDocument}
-              onMark={markDocument}
-              onTyped={canvasTyped}
-              onSelect={setSelection}
-              onAsk={ask}
-              flushRef={canvasFlush}
+          {delegate && store.session && (
+            <DelegateTranscript
+              sessionId={store.session.id}
+              subagentId={delegate.session}
+              agent={delegate.agent}
+              onClose={() => setDelegate(null)}
             />
           )}
-        </main>
+          {skillsOpen && (
+            <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
+          )}
+          {agentsOpen && (
+            <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
+          )}
+          {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
 
-        {/* Only away from the conversation, and only while something is
-            happening. On the transcript itself all of this is already being
-            said, and a strip repeating it would be the app talking twice. */}
-        {pane !== "conversation" && store.busy && (
-          <TurnStrip onOpen={() => setPane("conversation")} />
-        )}
+          {pluginsOpen && (
+            <PluginsDrawer
+              busy={store.busy}
+              trusted={store.trust?.trusted ?? true}
+              onClose={() => setPluginsOpen(false)}
+            />
+          )}
+          {settingsOpen && (
+            <Settings
+              initialTab={settingsTab}
+              onOpenFile={openLibraryFile}
+              onClose={() => {
+                setSettingsOpen(false);
+                setSettingsTab(undefined);
+              }}
+            />
+          )}
+        </Suspense>
 
-        {/* Above the error banner, because it is about the state the whole
-            session is running in rather than about something that just went
-            wrong. Dismissed per workspace, so switching folders asks again
-            about the new one rather than inheriting an answer about the old. */}
-        {store.trust && !trustDismissed.includes(store.trust.workspace) && (
-          <TrustBanner
-            trust={store.trust}
-            onTrust={() => void store.decideTrust(true)}
-            onDismiss={() =>
-              setTrustDismissed((seen) => [...seen, store.trust!.workspace])
-            }
-          />
-        )}
-
-        {store.error && (
-          // An alert, like the conflict banner: the trust banner and the
-          // composer's notices are announced, and this one, the banner that
-          // reports failures, wasn't.
-          <div className="banner error" role="alert">
-            {/* A slow pulse on a dot, and nothing else. The motion spec is
-                explicit about this one: no shake, no flash — a banner that
-                flinches trains the reader to stop reading banners. The pulse
-                is there so an error that arrives while you are looking
-                somewhere else is catchable out of the corner of an eye. */}
-            <span className="banner-dot" />
-            {store.error}
-            <div className="spacer" />
-            <button onClick={store.dismissError}>Dismiss</button>
-          </div>
-        )}
-
-        {/* Between the error banner and the composer, so its position does not
-            move when an error arrives and clears. The plan is the thing you
-            look at while typing the next message; it belongs against the box
-            you type in. */}
-        <PinnedPlan />
-
-        <Composer
-          // Keyed on the conversation, so a half-written question never
-          // follows a click in the rail into another one. What was typed is
-          // handed back through `onPark` on the way out and restored through
-          // `parked` on the way in — see both.
-          key={sessionKey}
-          sessionKey={sessionKey}
-          parked={parked[sessionKey] ?? null}
-          onPark={park}
-          queued={store.queued}
-          interrupted={store.interrupted}
-          onContinue={store.continueInterrupted}
-          away={store.away}
-          onSwitch={store.switchHere}
-          onSendQueued={sendQueued}
-          onUnqueue={store.unqueue}
-          focus={focusComposer}
-          dictate={dictate}
-          busy={store.busy}
-          unattended={store.unattended}
-          onUnattended={setUnattended}
-          stopping={store.stopping}
-          ready={!!store.session}
-          vision={store.session?.vision ?? false}
-          workspace={workspace}
-          onPickWorkspace={pickWorkspace}
-          library={library}
-          onScreen={onScreen}
-          draft={draft}
-          // Also the moment the mark stops being what you are looking at:
-          // asking something is the end of having been sent here.
-          onSend={async (text, images, onScreen) => {
-            setFind(null);
-            // What was typed in the canvas a moment ago, on disk before the turn
-            // starts. A fixed hooks file has to be there for this message to get
-            // past it. Written, it's no longer unsaved, whatever the chip said.
-            const written = (await canvasFlush.current?.()) ?? false;
-            return store.send(
-              text,
-              images,
-              written && onScreen?.document?.unsaved
-                ? { ...onScreen, document: { ...onScreen.document, unsaved: false } }
-                : onScreen,
-            );
-          }}
-          onStop={store.stop}
-          onUsage={() => setUsageOpen(true)}
-        />
-
-        {/* Below the composer rather than between it and the transcript: the
-            box you type in belongs to the conversation above it, and a
-            terminal wedged between the two would separate a message from the
-            thread it is being written into. Mounted only while it is showing
-            — see `terminalOpen`. */}
-        {terminalOpen && (
-          <>
-            <ResizeHandle pane={dock} label="Terminal height" />
-            <Suspense fallback={<div className="dock-loading" />}>
-              <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
-                <TerminalDock
-                  // A new folder is a new shell. Keyed rather than handled
-                  // inside, so the old one is torn down by the same path that
-                  // closes the dock instead of a second one that has to agree
-                  // with it.
-                  key={workspace ?? "none"}
-                  workspace={workspace}
-                  jobs={jobs}
-                  watching={watching}
-                  output={jobOutput}
-                  onWatch={setWatching}
-                  onStop={api.stopBackground}
-                  onClose={() => setTerminalOpen(false)}
-                  onAsk={ask}
-                />
-              </div>
-            </Suspense>
-          </>
-        )}
+        {/* Last, so it paints over the drawers and dialogs above it without
+            needing a z-index that has to be kept ahead of theirs. One layer for
+            the whole window — every tip in the app is an attribute, and this is
+            the only thing that renders one. */}
+        <TipLayer />
       </div>
-
-      {store.permission && (
-        <PermissionDialog
-          request={store.permission}
-          askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
-          onDecide={store.answerPermission}
-        />
-      )}
-
-      {store.leaving && (
-        <LeavingDialog
-          rules={store.leaving}
-          onGrant={store.grantLeaving}
-          onClose={store.dismissLeaving}
-        />
-      )}
-
-      {/* Renders nothing. Mounted here because it is about the window rather
-          than about anything in it. */}
-      <Attention />
-
-      {/* One boundary for all of them: they are mutually exclusive in practice
-          and none is ever nested inside another, so a boundary each would be
-          seven of the same thing. `null` rather than a spinner because by the
-          time a drawer is opened its module is almost always already in hand —
-          see `warmPanels` — and a flash of skeleton for a frame that usually
-          does not happen reads worse than the drawer simply appearing. */}
-      <Suspense fallback={null}>
-        {switcherOpen && (
-          <WorkspaceSwitcher
-            current={workspace}
-            recent={recentFolders}
-            blocked={switchBlocked}
-            onSwitch={(path) => void switchWorkspace(path)}
-            onBrowse={() => void pickWorkspace()}
-            onForget={(path) =>
-              void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
-            }
-            onClose={() => setSwitcherOpen(false)}
-          />
-        )}
-        {finderOpen && (
-          <FileFinder
-            open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
-            onOpen={(path) => {
-              setSkillsOpen(false);
-              setAgentsOpen(false);
-              setChangesOpen(false);
-              useAgentsView.getState().close();
-              showDocument(path, null);
-            }}
-            onClose={() => setFinderOpen(false)}
-          />
-        )}
-        {paletteOpen && (
-          <CommandPalette
-            actions={actions}
-            sessions={store.sessions}
-            onOpenSession={openFound}
-            onClose={() => setPaletteOpen(false)}
-          />
-        )}
-
-        {usageOpen && (
-          <UsagePanel
-            sessionId={store.session?.id ?? null}
-            onClose={() => setUsageOpen(false)}
-            onOpenTools={() => openSettingsAt("tools")}
-          />
-        )}
-
-        {tracesOpen && (
-          <TracePanel
-            sessionId={store.session?.id ?? null}
-            onClose={() => setTracesOpen(false)}
-            onOpenTracing={() => openSettingsAt("tracing")}
-          />
-        )}
-
-        {memoryOpen && (
-          <MemoryDrawer
-            onClose={() => setMemoryOpen(false)}
-            // Not offered mid-turn: switching conversations under a running one
-            // is not something the rail offers either.
-            onOpenSession={
-              store.busy
-                ? undefined
-                : (id) => {
-                    setMemoryOpen(false);
-                    void store.openConversation(id);
-                  }
-            }
-          />
-        )}
-
-        {delegate && store.session && (
-          <DelegateTranscript
-            sessionId={store.session.id}
-            subagentId={delegate.session}
-            agent={delegate.agent}
-            onClose={() => setDelegate(null)}
-          />
-        )}
-        {skillsOpen && (
-          <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
-        )}
-        {agentsOpen && (
-          <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
-        )}
-        {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
-
-        {pluginsOpen && (
-          <PluginsDrawer
-            busy={store.busy}
-            trusted={store.trust?.trusted ?? true}
-            onClose={() => setPluginsOpen(false)}
-          />
-        )}
-        {settingsOpen && (
-          <Settings
-            initialTab={settingsTab}
-            onOpenFile={openLibraryFile}
-            onClose={() => {
-              setSettingsOpen(false);
-              setSettingsTab(undefined);
-            }}
-          />
-        )}
-      </Suspense>
-
-      {/* Last, so it paints over the drawers and dialogs above it without
-          needing a z-index that has to be kept ahead of theirs. One layer for
-          the whole window — every tip in the app is an attribute, and this is
-          the only thing that renders one. */}
-      <TipLayer />
-    </div>
+    </FileLinks.Provider>
   );
 }
 
@@ -2554,4 +2639,23 @@ export function lastActivity(entries: Entry[]): string | null {
     if (entry.kind === "tool") return entry.preview;
   }
   return null;
+}
+
+const RAIL_SHUT_KEY = "taurus.railShut";
+
+/** Whether the rail was left put away. Guarded the way `remembered` is. */
+function readRailShut(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(RAIL_SHUT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function keepRailShut(shut: boolean): void {
+  try {
+    localStorage.setItem(RAIL_SHUT_KEY, shut ? "1" : "0");
+  } catch {
+    // Storage turned off still hides it. It just forgets.
+  }
 }

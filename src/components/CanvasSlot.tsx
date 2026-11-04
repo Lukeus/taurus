@@ -65,6 +65,8 @@ export function CanvasSlot({
   onAsk,
   onClose,
   flushRef,
+  wide,
+  tabbed,
 }: {
   path: string;
   reveal: { from: number; to: number } | null;
@@ -89,6 +91,10 @@ export function CanvasSlot({
    * for that message to see it. Answers whether the disk now has what's typed.
    */
   flushRef?: MutableRefObject<(() => Promise<boolean>) | null>;
+  /** See `Canvas`. */
+  wide?: { on: boolean; toggle: () => void };
+  /** See `Canvas`. */
+  tabbed?: boolean;
 }) {
   const noteError = useStore((s) => s.noteError);
   const wrote = useStore((s) => s.wrote);
@@ -549,6 +555,8 @@ export function CanvasSlot({
         onSelect={onSelect}
         onAsk={onAsk}
         onClose={onClose}
+        wide={wide}
+        tabbed={tabbed}
       />
     </div>
   );

@@ -808,6 +808,19 @@ The conversation stays where it is. That's the whole point: you put a file on
 screen to talk about it while it's there. Drag the edge to give either side
 more room. Close it with the ✕ and the conversation takes the width back.
 
+When the file needs more room than the conversation does:
+
+- **Widen it:** press the arrows in the file's header, or double-click the edge
+  (Enter does the same once the edge has focus). The editor takes everything
+  except the 320px the conversation always keeps. Press again to go back to the
+  width you had.
+- **Put the sidebar away:** ⌘B on a Mac (Ctrl+B elsewhere), or the panel
+  button at the left of the top bar. It stays hidden until you bring it back,
+  across restarts too. Every conversation and panel is still a ⌘K away.
+
+![The sidebar put away and the editor widened, with the conversation kept
+beside it](screenshots/canvas-wide.png)
+
 Markdown opens on its rendered preview, with a **Source** switch for the
 asterisks. Source files open as source, colored by the same tokenizer the
 transcript uses.
@@ -873,6 +886,26 @@ you already have open come first.
 Enter opens the file in a tab. If Changes or Agent activity has the column, it
 gives way. The list follows the same rules as the `grep` and `glob` tools: hidden
 files are in, `.git` and anything in `.gitignore` are out.
+
+### Following a link
+
+A link to a file opens it in a tab, wherever the link is: in an answer, in a
+README previewed in the canvas, in Changes or an agent's report. Hover one to
+see where it goes.
+
+- **Relative links** are read from the folder of the file they're in, so
+  `./configuration.md` in `docs/README.md` opens `docs/configuration.md`. In an
+  answer, they're read from the workspace root.
+- **Lines** come from `#L42` or `#L42-L51`, the form editors and code hosts
+  write, or from `:42` on the end of the path, the form compilers print. The
+  file opens with those lines selected.
+- **Headings:** a link that's only `#some-heading` scrolls to that heading on the
+  same page.
+- **Everything with a scheme** (`https:`, `mailto:`) opens in your browser, as
+  before.
+
+The model is told about the first form, so an answer that points at code can
+link straight to it: `[retry.rs](src/retry.rs#L40-L52)`.
 
 ### Asking about a passage
 
