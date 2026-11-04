@@ -166,8 +166,16 @@ const changeWorkspace = async (host: HTMLElement) => {
   expect(button, host.innerHTML.slice(0, 400)).toBeDefined();
   await act(async () => button!.click());
   await settle();
-  // The rail opens the recent folders; the dialog is their last row.
-  await act(async () => option("Open folder…")!.click());
+  // The rail opens the recent folders; the dialog is their last row. Waited
+  // for rather than assumed after one settle: under a full parallel run the
+  // switcher can take longer than 20ms to land.
+  let row = option("Open folder…");
+  for (let i = 0; i < 50 && !row; i += 1) {
+    await settle();
+    row = option("Open folder…");
+  }
+  expect(row, "the recent folders never opened").toBeDefined();
+  await act(async () => row!.click());
   await settle();
 };
 

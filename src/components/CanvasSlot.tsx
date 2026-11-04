@@ -66,6 +66,7 @@ export function CanvasSlot({
   onClose,
   flushRef,
   wide,
+  tabbed,
 }: {
   path: string;
   reveal: { from: number; to: number } | null;
@@ -92,6 +93,8 @@ export function CanvasSlot({
   flushRef?: MutableRefObject<(() => Promise<boolean>) | null>;
   /** See `Canvas`. */
   wide?: { on: boolean; toggle: () => void };
+  /** See `Canvas`. */
+  tabbed?: boolean;
 }) {
   const noteError = useStore((s) => s.noteError);
   const wrote = useStore((s) => s.wrote);
@@ -553,6 +556,7 @@ export function CanvasSlot({
         onAsk={onAsk}
         onClose={onClose}
         wide={wide}
+        tabbed={tabbed}
       />
     </div>
   );

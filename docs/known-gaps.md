@@ -1057,6 +1057,11 @@ the backlog, and they're the minority.
   split inside the canvas, so comparing two side by side is still the terminal
   dock's job. Open tabs last as long as the window, and aren't restored when
   it reopens.
+- **Only a link is a link.** A path written as plain text or in backticks,
+  like `src/retry.rs:40`, isn't clickable; only a Markdown link opens the canvas.
+  Turning every path-shaped word into a link would also catch ones that aren't
+  paths. A link to a folder, or to a file outside the workspace, opens a tab
+  that says it can't be read, because the canvas only opens workspace files.
 - **The file finder lists at most 50,000 files.** The list crosses to the
   frontend as one message, so the walk stops at that count or after 5 seconds,
   and the finder says when it did. It matches names, not contents, and it only

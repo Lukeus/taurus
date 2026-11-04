@@ -3299,6 +3299,30 @@ body.resizing-y * {
   align-items: center;
   justify-content: center;
   z-index: 50;
+  animation: fade-in var(--hover) var(--ease) both;
+}
+/* What a scrim holds arrives with it: a dialog or the palette grows the last
+   2% into place, and a drawer comes in from the edge it lives on. Enough to
+   say "this is new and on top", short enough not to stand between a key and
+   typing into what it opened. */
+.scrim > :not(.drawer) {
+  animation: dialog-in var(--hover) var(--ease) both;
+}
+.palette-scrim > * {
+  transform-origin: top center;
+}
+.scrim > .drawer {
+  animation: canvas-in var(--reveal) var(--ease) both;
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .dialog {
@@ -6899,6 +6923,9 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 
 .composer-context {
+  /* Fades in when there starts to be something to carry, rather than shoving
+     the box down without a word. */
+  animation: fade-in var(--hover) var(--ease) both;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -7139,8 +7166,48 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 @media (prefers-reduced-motion: reduce) {
   .side-slot.easing,
-  [data-glide="on"] > .glide {
+  [data-glide="on"] > .glide,
+  .rail-caret {
     transition: none;
+  }
+  .rail-fold-body.unfolding,
+  .canvas-tab-pulse {
+    animation: none;
+  }
+  /* Arrivals keep the fade and lose the travel, as elsewhere. */
+  .scrim > :not(.drawer),
+  .scrim > .drawer {
+    animation-name: fade-in;
+  }
+  /* The tint still says which tab, held rather than faded, and cleared with
+     the next write or the tab being opened. */
+  .canvas-tab-pulse {
+    opacity: 0.6;
+  }
+}
+
+/* --------------------------------------------- the rail's folds, turning
+
+   One caret turned rather than two glyphs swapped, and the rows a click opened
+   arriving rather than appearing. Only a click: see `Section`. */
+.rail-caret {
+  display: inline-block;
+  transition: transform var(--hover) var(--ease);
+}
+.rail-group[data-shut] .rail-caret {
+  transform: rotate(-90deg);
+}
+.rail-fold-body.unfolding {
+  animation: fold-in var(--reveal) var(--ease) both;
+}
+@keyframes fold-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -7170,6 +7237,8 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .canvas-tab {
   flex: none;
+  /* For the pulse laid over it. */
+  position: relative;
   max-width: 200px;
   display: flex;
   align-items: center;
@@ -7198,6 +7267,24 @@ button.link:where(:not(.excalidraw *)):hover {
 .canvas-tab-mark.trouble {
   color: var(--warn);
   font-weight: 700;
+}
+/* Laid over the tab rather than drawn by it, so it can be remounted to play
+   again for a second write to the same file. Opacity only. */
+.canvas-tab-pulse {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  pointer-events: none;
+  animation: tab-pulse 1.8s var(--ease) both;
+}
+@keyframes tab-pulse {
+  0%,
+  20% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 .canvas-tab-close {
   margin-right: 4px;
@@ -7247,6 +7334,14 @@ button.link:where(:not(.excalidraw *)):hover {
   gap: 8px;
   padding: 0 12px;
   border-bottom: 1px solid var(--rule);
+}
+/* Under a row of tabs it is a toolbar for the file the tab names, not a second
+   title for it, and takes less height to say so. */
+.canvas-head.tabbed {
+  height: 34px;
+}
+.canvas-head.tabbed .canvas-where {
+  direction: ltr;
 }
 .canvas-name {
   font-size: 13px;

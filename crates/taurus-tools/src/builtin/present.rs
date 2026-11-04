@@ -852,7 +852,9 @@ impl Tool for OpenFile {
          — pass `lines` and the editor opens on that passage with it selected. \
          This does not give *you* the contents: use `read_file` for that, and use this as well \
          when the answer is somewhere the person should be looking. Text files only — source, \
-         Markdown, config. It is not a way to show output you generated; say that in your reply."
+         Markdown, config. It is not a way to show output you generated; say that in your reply. \
+         A workspace path linked in your reply, as `[retry.rs](src/retry.rs#L40-L52)`, opens here \
+         too when it is clicked."
     }
 
     fn input_schema(&self) -> serde_json::Value {

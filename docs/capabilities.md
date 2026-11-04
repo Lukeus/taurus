@@ -887,6 +887,26 @@ Enter opens the file in a tab. If Changes or Agent activity has the column, it
 gives way. The list follows the same rules as the `grep` and `glob` tools: hidden
 files are in, `.git` and anything in `.gitignore` are out.
 
+### Following a link
+
+A link to a file opens it in a tab, wherever the link is: in an answer, in a
+README previewed in the canvas, in Changes or an agent's report. Hover one to
+see where it goes.
+
+- **Relative links** are read from the folder of the file they're in, so
+  `./configuration.md` in `docs/README.md` opens `docs/configuration.md`. In an
+  answer, they're read from the workspace root.
+- **Lines** come from `#L42` or `#L42-L51`, the form editors and code hosts
+  write, or from `:42` on the end of the path, the form compilers print. The
+  file opens with those lines selected.
+- **Headings:** a link that's only `#some-heading` scrolls to that heading on the
+  same page.
+- **Everything with a scheme** (`https:`, `mailto:`) opens in your browser, as
+  before.
+
+The model is told about the first form, so an answer that points at code can
+link straight to it: `[retry.rs](src/retry.rs#L40-L52)`.
+
 ### Asking about a passage
 
 Select some text and **Ask about this** appears. It puts the start of a

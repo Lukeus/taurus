@@ -1,4 +1,4 @@
-import { memo, useRef, type ReactNode } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 
 import { TERMINAL_SHORTCUT, SWITCH_SHORTCUT } from "../lib/keys";
 import type { SessionMeta, Theme } from "../lib/api";
@@ -734,6 +734,10 @@ function Section({
   children: ReactNode;
 }) {
   const shut = sections.collapsed(name);
+  // Opened by a click in this window, rather than open since it was drawn: only
+  // the first is something happening, and only it unfolds. A rail whose open
+  // sections all faded in at every launch would be motion about nothing.
+  const [unfolding, setUnfolding] = useState(false);
   const counted = count !== undefined || (live !== undefined && live > 0);
   return (
     <>
@@ -763,12 +767,15 @@ function Section({
         data-shut={shut || undefined}
         aria-expanded={!shut}
         data-tip={warn ?? tip}
-        onClick={() => sections.toggle(name)}
+        onClick={() => {
+          setUnfolding(shut);
+          sections.toggle(name);
+        }}
       >
-        {/* Fixed width, so the label does not shift sideways as the caret
-            changes glyph. */}
+        {/* One glyph, turned rather than swapped, so the fold is seen to
+            turn. Fixed width, so the label doesn't shift as it does. */}
         <span className="rail-caret w-2 flex-none text-[8.5px] leading-none text-faint group-data-shut:text-dim">
-          {shut ? "▸" : "▾"}
+          ▾
         </span>
         <b className="font-normal">{label}</b>
         {/* Only while it is shut. Open, the rows are right there to be counted,
@@ -787,7 +794,13 @@ function Section({
           <span className={`dot warn ${counted ? "ml-1.5" : "ml-auto"}`} />
         )}
       </button>
-      {!shut && children}
+      {/* The same column the rows sat in before, so a box around them changes
+          nothing but what can be animated. */}
+      {!shut && (
+        <div className={`rail-fold-body flex flex-col gap-px${unfolding ? " unfolding" : ""}`}>
+          {children}
+        </div>
+      )}
     </>
   );
 }
