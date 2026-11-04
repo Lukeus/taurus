@@ -268,7 +268,7 @@ describe("the recent folders", () => {
     await act(async () => host.querySelector<HTMLButtonElement>(".rail-workspace")!.click());
     await settle();
     await act(async () =>
-      document.querySelector<HTMLButtonElement>('[aria-label="Remove older from recent folders"]')!.click(),
+      document.querySelector<HTMLButtonElement>('[aria-label="Remove older from recent workspaces"]')!.click(),
     );
     expect(invoke).toHaveBeenCalledWith("forget_workspace", { path: "/tmp/older" });
     expect(state.setWorkspace).not.toHaveBeenCalled();

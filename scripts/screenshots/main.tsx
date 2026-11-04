@@ -1038,6 +1038,12 @@ requestAnimationFrame(() => {
           useStore.setState({ opening: { path, lines: null, at: i + 2 } as never });
           await until(() => document.querySelectorAll(".canvas-tab").length === i + 2 || null);
         }
+        // Back to the first tab, the markdown file the turn opened. Every tab
+        // here is served that file's text (see `open_document` above), so
+        // ending on the last one drew retries.md under a tab named App.tsx,
+        // painted as TSX.
+        document.querySelector<HTMLElement>(".canvas-tab .canvas-tab-name")?.click();
+        await until(() => document.querySelector(".canvas-tab:first-child.on"));
         scrollTo(transcript, document.querySelector(".document-card"));
       },
       // The rail put away and the editor widened, which is the most room a

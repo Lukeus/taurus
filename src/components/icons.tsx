@@ -59,18 +59,16 @@ export function Logo({ size = 16 }: { size?: number }) {
   );
 }
 
-/** Two arrows chasing each other: swap this workspace for another. */
-export function SwapIcon({ size }: { size?: number }) {
+/**
+ * A chevron up over a chevron down: this opens a list to pick another one from,
+ * the mark a select carries. It was two arrows chasing each other, which reads
+ * as reload — and pressing it reloaded nothing.
+ */
+export function PickIcon({ size }: { size?: number }) {
   return (
     <Icon size={size}>
       <path
-        d="M3 6a5 5 0 0 1 8.5-3.2M13 10a5 5 0 0 1-8.5 3.2"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      <path
-        d="M11 1v3h-3M5 15v-3h3"
+        d="M5 6l3-3 3 3M5 10l3 3 3-3"
         stroke="currentColor"
         strokeWidth="1.5"
         strokeLinecap="round"

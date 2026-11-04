@@ -18,7 +18,7 @@ import {
   PackageIcon,
   SparkIcon,
   SunIcon,
-  SwapIcon,
+  PickIcon,
   TerminalIcon,
   TrashIcon,
 } from "./icons";
@@ -49,7 +49,14 @@ const GLYPH = "glyph w-3.5 flex-none inline-flex items-center";
  */
 const DELETE =
   "rail-delete flex-none inline-flex items-center justify-center border-0 rounded-sm bg-transparent min-w-7 min-h-7 hover:not-disabled:text-danger hover:not-disabled:bg-danger/12";
-const DELETE_ICON = `${DELETE} p-1.5 text-faint`;
+/*
+ * Shown on the row being pointed at, the open one, and wherever focus is — not
+ * on every row at rest, where a column of trash cans down the rail read as the
+ * thing the list was for. Faded rather than removed, so the row keeps its width
+ * and the target is exactly where it was when the pointer arrives. A touch
+ * screen has no hover to reveal it with, so there it stays.
+ */
+const DELETE_ICON = `${DELETE} p-1.5 text-faint opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-data-current:opacity-100 pointer-coarse:opacity-100 transition-opacity`;
 const DELETE_CONFIRM = `${DELETE} py-1 px-2 font-mono text-11 text-danger`;
 
 /** How the provider behind the current session is actually doing. */
@@ -408,7 +415,7 @@ export const Rail = memo(function Rail({
             </span>
           </span>
           <span className="rail-workspace-swap flex-none inline-flex text-faint">
-            <SwapIcon size={12} />
+            <PickIcon size={12} />
           </span>
         </button>
       </div>
