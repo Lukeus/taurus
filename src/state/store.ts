@@ -36,6 +36,7 @@ import type {
   PlanEditMark,
   PlanEdited,
   RunningTurn,
+  UnattendedMark,
   SessionMeta,
   AgentProposal,
   Attachment,
@@ -1027,6 +1028,7 @@ export const useStore = create<Store>((set, get) => ({
         messages,
         switches,
         plan_edits: planEdits,
+        unattended: unattendedMarks = [],
         turns,
         interrupted,
         delegates = [],
@@ -1054,8 +1056,10 @@ export const useStore = create<Store>((set, get) => ({
         away: away ?? null,
         entries: linkDelegates(
           interrupted
-            ? unknownOutcomes(entriesFromMessages(messages, switches, turns, planEdits))
-            : entriesFromMessages(messages, switches, turns, planEdits),
+            ? unknownOutcomes(
+                entriesFromMessages(messages, switches, turns, planEdits, unattendedMarks),
+              )
+            : entriesFromMessages(messages, switches, turns, planEdits, unattendedMarks),
           delegates,
         ),
         interrupted: interrupted ?? null,
@@ -1449,7 +1453,12 @@ export const useStore = create<Store>((set, get) => ({
     // refuses everything would be worse than the banner.
     set({ unattended });
     try {
-      await api.setUnattended(session.id, unattended);
+      const mark = await api.setUnattended(session.id, unattended);
+      // Only when the setting actually changed and the transcript took it, so
+      // the line on screen is the line a reopen will draw.
+      if (mark && get().session?.id === session.id) {
+        set((s) => ({ entries: [...s.entries, unattendedNotice(mark)] }));
+      }
     } catch (e) {
       set({ unattended: !unattended, error: String(e) });
       return;
@@ -1949,6 +1958,7 @@ export function entriesFromMessages(
   switches: Switch[] = [],
   turns: TurnMark[] = [],
   planEdits: PlanEditMark[] = [],
+  unattended: UnattendedMark[] = [],
 ): Entry[] {
   const entries: Entry[] = [];
   /** Card ids in use, so a repeated id gets one of its own. */
@@ -1966,6 +1976,9 @@ export function entriesFromMessages(
     }
     for (const edit of planEdits.filter((e) => e.after === index)) {
       entries.push(planEditNotice(edit));
+    }
+    for (const mark of unattended.filter((m) => m.after === index)) {
+      entries.push(unattendedNotice(mark));
     }
 
     if (message.role === "user") {
@@ -2109,6 +2122,9 @@ export function entriesFromMessages(
   for (const edit of planEdits.filter((e) => e.after >= messages.length)) {
     entries.push(planEditNotice(edit));
   }
+  for (const mark of unattended.filter((m) => m.after >= messages.length)) {
+    entries.push(unattendedNotice(mark));
+  }
 
   // Applied once at the end rather than per call: the rule is about the whole
   // conversation, and a resumed transcript has every update in it at once.
@@ -2182,6 +2198,30 @@ function switchNotice(moved: {
  * the composer is where the steps are read, and a line quoting three of them
  * would be a second copy of the plan in the transcript.
  */
+/**
+ * The hairline drawn where a conversation was left to run unattended, or came
+ * back. One function for the live switch and the reopened transcript, for the
+ * reason `switchNotice` is: so a turn that refused its own tools says why,
+ * whether you watched it happen or read it back a week later.
+ */
+export function unattendedNotice(mark: Pick<UnattendedMark, "on">): Entry {
+  return mark.on
+    ? {
+        kind: "notice",
+        id: nextId(),
+        tone: "info",
+        text: "Left to run unattended. Anything that would have asked for permission is refused instead.",
+        rule: { label: "Unattended", note: "asks nothing, refuses instead" },
+      }
+    : {
+        kind: "notice",
+        id: nextId(),
+        tone: "info",
+        text: "Back to asking. Tools that need permission ask before they run.",
+        rule: { label: "Attended", note: "asks you again" },
+      };
+}
+
 export function planEditNotice(mark: PlanEditMark): Entry {
   const parts = [
     mark.added.length > 0 && `${mark.added.length} added`,

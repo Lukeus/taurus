@@ -32,6 +32,7 @@ fn open(model: &str) -> SessionEntry {
         released: AtomicBool::new(false),
         switches: Mutex::new(Vec::new()),
         plan_edits: Mutex::new(Vec::new()),
+        unattended_marks: Mutex::new(Vec::new()),
     }
 }
 

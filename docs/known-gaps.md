@@ -1233,13 +1233,6 @@ the backlog, and they're the minority.
   alternative is a shell parser, and a parser that is wrong lets something
   through, where a tokenizer that gives up asks. See
   [Permissions](safety.md#permissions).
-- **A turn running unattended doesn't say so in its transcript.** The refusals
-  do: each one reads "nobody is there to allow this" where the call would have
-  been. But the switch itself leaves no line, so a conversation read back a
-  week later shows a turn that refused its own tools with nothing saying why
-  that was the arrangement. It's a per-conversation setting rather than
-  anything the transcript records, and it isn't saved, so reopening the
-  conversation shows the refusals and no trace of the decision behind them.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.**
   Any tool call that draws a view is left out of the folded run header.
   That's what stops a table getting filed under "6 steps · 11s" behind a

@@ -56,6 +56,7 @@ pub use search::{Match, SearchResults, SessionHit};
 pub use secrets::KeyStatus;
 pub use sessions::{
     ForkedFrom, PlanEditMark, SessionLog, SessionMeta, SubagentLogs, Switch, TurnMark,
+    UnattendedMark,
 };
 pub use taurus_tools::{Checkpoint, Restored, Rewind, TurnChange};
 pub use theme::{CustomTheme, ThemeFile, ThemeModes};

@@ -126,6 +126,7 @@ import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { Skipped } from "../bindings/Skipped";
 import type { PlanEditMark } from "../bindings/PlanEditMark";
+import type { UnattendedMark } from "../bindings/UnattendedMark";
 import type { PlanEdited } from "../bindings/PlanEdited";
 import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
@@ -312,6 +313,7 @@ export type {
   Skipped,
   PlanEditMark,
   PlanEdited,
+  UnattendedMark,
   Step,
   StepState,
   Switch,
@@ -467,7 +469,7 @@ export function sendMessage(
  * Not persisted. A conversation reopened in a new window asks again.
  */
 export const setUnattended = (sessionId: string, unattended: boolean) =>
-  invoke<void>("set_unattended", { sessionId, unattended });
+  invoke<UnattendedMark | null>("set_unattended", { sessionId, unattended });
 
 /**
  * Which conversations have a turn running in them.
