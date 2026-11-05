@@ -1065,13 +1065,15 @@ the backlog, and they're the minority.
   a file during a conflict or after a failed save keeps your text and brings it
   back when you reopen the file, but it's held in memory. Closing the window
   loses it.
-- **A file changing outside a turn goes unnoticed until you look at it.** The
-  canvas reloads when the running turn writes the file (`files_changed` says so
-  on the turn's own event stream), when its tab comes to the front, and when the
-  window regains focus. A `git checkout` in the terminal dock changes nothing on
-  screen until one of those happens, because the window never lost focus. Saving
-  is still safe: it compares fingerprints and refuses instead of overwriting.
-  Watching the filesystem properly is a dependency and a lifetime to get right.
+- **A file changing outside a turn goes unnoticed until something says to
+  look.** The canvas reloads when the running turn writes the file
+  (`files_changed` says so on the turn's own event stream), when its tab comes
+  to the front, when the window regains focus, and when a command in the
+  terminal dock finishes, so a `git checkout` there shows up as it ends. A
+  change made in the background while you stay in Taurus, by a build watcher
+  or a sync client, waits for the next of them. Saving is still
+  safe: it compares fingerprints and refuses instead of overwriting. Watching
+  the filesystem properly is a dependency and a lifetime to get right.
 - **Colors can be wrong in a file over 1 MB.** Up to that size the editor reads
   the whole file for every edit, so a comment or string that opens above the
   screen colors correctly. A larger file would lag on each keystroke (about 130 ms
