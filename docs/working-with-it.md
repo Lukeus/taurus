@@ -992,7 +992,9 @@ is never matched, and the nudge's way out covers it. A plan carried over from
 an earlier turn isn't held to its checks unless this turn changed files.
 
 It fires once per turn, with a way out, so a documentation edit costs one
-round trip, not an argument. `verify_changes` in `AgentConfig` turns it off.
+round trip, not an argument. **Ask the model to check its work** in
+**Settings › Behavior** turns it off, and so does `"verify_changes": false` in
+a project's `settings.json`, for a project with nothing worth running.
 It reads the checkpoint log to tell whether anything changed, so it's exactly
 as accurate as the log. A command that only touched files in an ignored
 directory reads as having changed nothing.

@@ -147,11 +147,6 @@ the backlog, and they're the minority.
   one writes the conversation into the cache again, at a quarter over the
   normal input price. An hour-long lifetime costs twice the normal price to
   write, and isn't offered.
-- **The check-your-work nudge has no switch in Settings.** When a turn changed
-  files and ran nothing afterwards, the model is asked once to check, which
-  is one more request with the whole conversation in it. `verify_changes` in
-  `AgentConfig` turns it off for code that embeds the agent, but the app
-  doesn't expose it.
 - **A hook can refuse a tool call but can't approve one.** There's no `allow`
   verdict, so a hook can't skip a permission prompt the way hooks in some
   other harnesses can. That rules out "approve every `git status` for me", and

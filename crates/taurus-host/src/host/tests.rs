@@ -4602,3 +4602,72 @@ async fn a_skill_saved_into_a_project_plugin_under_a_running_command_stands() {
         "{said}"
     );
 }
+
+/// Runs a turn that writes a file and stops without running anything, under
+/// the given project settings, and says whether the model was asked to check.
+async fn asked_to_check_with(settings: &str) -> bool {
+    use taurus_core::testing::{FakeProvider, ScriptedTurn};
+
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    write_settings(&workspace, settings);
+    std::fs::write(
+        workspace.join(".taurus/permissions.json"),
+        r#"{"allowed":["write_file"]}"#,
+    )
+    .unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+
+    // The third answer is there for the nudge to spend. Without one, a turn
+    // that wasn't asked simply leaves it unread.
+    let provider = FakeProvider::new(vec![
+        ScriptedTurn::tool_call(
+            "w1",
+            "write_file",
+            serde_json::json!({ "path": "a.txt", "content": "new\n" }),
+        ),
+        ScriptedTurn::text("Wrote a.txt."),
+        ScriptedTurn::text("Nothing to run against a text file."),
+    ]);
+    let agent = host
+        .build_agent(
+            provider,
+            "fake",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "conversation1",
+                prompt: "write a.txt",
+                unattended: None,
+            },
+        )
+        .await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut session = taurus_core::Session::new("fake");
+    session.id = "conversation1".into();
+    agent
+        .run_turn(
+            &mut session,
+            taurus_provider::Message::user("write a.txt"),
+            tx,
+        )
+        .await
+        .expect("the turn should finish");
+    drain.await.unwrap();
+    session
+        .messages
+        .iter()
+        .any(|m| m.text().contains("have not run anything since"))
+}
+
+/// The Settings switch reaches the agent: the default asks, and
+/// `verify_changes: false` stops the ask, and with it the extra request.
+#[tokio::test]
+async fn the_check_your_work_nudge_follows_the_setting() {
+    assert!(asked_to_check_with("{}").await, "on by default");
+    assert!(
+        !asked_to_check_with(r#"{"verify_changes": false}"#).await,
+        "switched off, a turn that wrote and ran nothing just ends"
+    );
+}

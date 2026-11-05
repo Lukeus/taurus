@@ -52,6 +52,7 @@ impl Host {
                 max_iterations: settings.max_iterations,
                 context_strategy: settings.context_strategy,
                 context_limit: (settings.context_limit > 0).then_some(settings.context_limit),
+                verify_changes: settings.verify_changes,
                 capture: if settings.otlp_capture_content {
                     taurus_core::Capture::Content
                 } else {

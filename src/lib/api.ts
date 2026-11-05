@@ -1106,6 +1106,7 @@ export const setOtlpEndpoint = (endpoint: string) =>
 
 /** Whether a turn finishing while you're elsewhere sends a notification. */
 export const setNotifyWhenDone = (on: boolean) => invoke<void>("set_notify_when_done", { on });
+export const setVerifyChanges = (on: boolean) => invoke<void>("set_verify_changes", { on });
 
 /** How large the interface is drawn, in percent; applied to the window at once. */
 export const setUiScale = (percent: number) => invoke<void>("set_ui_scale", { percent });

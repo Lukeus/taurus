@@ -374,6 +374,7 @@ pub fn run() {
             commands::hook_list,
             commands::set_hook,
             commands::set_notify_when_done,
+            commands::set_verify_changes,
             commands::set_ui_scale,
             commands::set_routes,
             commands::set_terminal_shell,
