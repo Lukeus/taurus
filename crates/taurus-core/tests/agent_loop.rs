@@ -3735,6 +3735,33 @@ async fn an_id_taken_by_compacted_history_stays_taken() {
 }
 
 #[tokio::test]
+async fn an_id_compacted_away_stays_taken_by_the_next_turns_agent() {
+    // The app builds an agent per turn, so whatever a turn's agent remembers
+    // is gone by the next one. The conversation has to carry it.
+    let first = harness(vec![
+        ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "a" })),
+        ScriptedTurn::text("done"),
+    ]);
+    let mut session = Session::new("fake");
+    run(&first, &mut session, "first").await.0.unwrap();
+    let count = session.messages.len();
+    session.summarize_front(count, Message::user("Summary."));
+
+    let second = harness(vec![
+        ScriptedTurn::tool_call("x", "read_file", serde_json::json!({ "path": "b" })),
+        ScriptedTurn::text("done"),
+    ]);
+    run(&second, &mut session, "second").await.0.unwrap();
+
+    let calls = calls_in(&session);
+    assert_eq!(calls.len(), 1);
+    assert_ne!(
+        calls[0].0, "x",
+        "x names the first turn's call in the transcript and its spill"
+    );
+}
+
+#[tokio::test]
 async fn a_retry_after_a_partial_call_keeps_the_arguments_on_one_new_id() {
     // Cut off inside its arguments, with no close: nothing to keep.
     let partial = vec![

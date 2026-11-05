@@ -468,11 +468,6 @@ pub struct Agent {
     /// answering it means rendering every tool schema to a string. See
     /// [`Agent::request_overhead`].
     overhead: std::sync::OnceLock<u32>,
-    /// Every tool id this agent has stored, which can outlive the messages
-    /// holding them: compaction and a relay drop those, and an id they took is
-    /// still in the transcript. Lasts as long as the agent, which in the app is
-    /// a turn. See [`ToolIds`].
-    tool_ids: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// What a completed turn produced.
@@ -498,7 +493,6 @@ impl Agent {
             plan: None,
             recorder: None,
             overhead: std::sync::OnceLock::new(),
-            tool_ids: std::sync::Mutex::default(),
         }
     }
 
@@ -1281,7 +1275,9 @@ impl Agent {
                 .iter()
                 .flat_map(Message::tool_uses)
                 .map(|(id, _, _)| id.to_string())
-                .chain(self.stored_tool_ids().iter().cloned()),
+                // Ids a compaction or relay dropped, this turn or an earlier
+                // one. See `Session::retired_tool_ids`.
+                .chain(session.retired_tool_ids.iter().cloned()),
         );
         let mut acc = StreamAccumulator::new();
         // Tool-use deltas do not count: they are accumulated, not displayed, so
@@ -1364,9 +1360,6 @@ impl Agent {
         if !malformed.is_empty() {
             warn!(?malformed, "model produced unparseable tool input");
         }
-        self.stored_tool_ids()
-            .extend(message.tool_uses().map(|(id, _, _)| id.to_string()));
-
         span.record("gen_ai.response.model", session.model.as_str());
         span.record(
             "gen_ai.response.finish_reasons",
@@ -1380,10 +1373,6 @@ impl Agent {
         }
 
         Ok((message, usage, stop))
-    }
-
-    fn stored_tool_ids(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
-        self.tool_ids.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The tools every request of this turn advertises.

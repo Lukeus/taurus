@@ -1177,6 +1177,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             summarized_away: 0,
             owed,
             interrupted,
+            retired_tool_ids: Default::default(),
         },
         switches,
         plan_edits,

@@ -1,6 +1,6 @@
 //! Conversation state and the context-window budget.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use taurus_provider::{ContentBlock, Message, Role, Spend, TokenUsage};
@@ -54,6 +54,16 @@ pub struct Session {
     /// as the transcript tells it. Cleared by the next turn to start.
     #[serde(skip)]
     pub interrupted: Option<Interrupted>,
+    /// The ids of tool calls a compaction or a relay took out of `messages`.
+    ///
+    /// Gone from the conversation, still in the transcript, and still the
+    /// name of a spill file. So a provider that hands one out again in a
+    /// later turn has to get a fresh one, which needs the set to outlive the
+    /// turn that dropped them: the agent lasts a turn, and this lasts as long
+    /// as the conversation is open. Not saved, because a conversation loaded
+    /// from disk has every message, and every id with it.
+    #[serde(skip)]
+    pub retired_tool_ids: HashSet<String>,
 }
 
 /// How many turns one request gets, counting the one that was interrupted and
@@ -263,6 +273,7 @@ impl Session {
             summarized_away: 0,
             owed: Vec::new(),
             interrupted: None,
+            retired_tool_ids: HashSet::new(),
         }
     }
 
@@ -278,6 +289,12 @@ impl Session {
     pub fn summarize_front(&mut self, drop: usize, summary: Message) {
         let drop = drop.min(self.messages.len());
         let rest = self.messages.split_off(drop);
+        self.retired_tool_ids.extend(
+            self.messages
+                .iter()
+                .flat_map(Message::tool_uses)
+                .map(|(id, _, _)| id.to_string()),
+        );
         self.messages.clear();
         self.messages.push(summary);
         self.messages.extend(rest);

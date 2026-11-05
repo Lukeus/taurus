@@ -1159,12 +1159,6 @@ the backlog, and they're the minority.
   the harness classifying tools by something other than effect. Effect is
   what the categories exist to capture, and it's what the run header counts.
   The shape is a useful hint about the kind of work, not a readout.
-- **An id compaction dropped can come back in a later turn.** A tool call whose
-  id is already used gets a fresh one, but the list of used ids is what's in the
-  conversation plus what this turn has stored. If compaction dropped a call and a
-  provider reuses its id in a later turn, the id counts as free. Delegations can't
-  collide this way, since background work stops when a turn ends, but a spill file
-  with the same id and label can be overwritten.
 - **A turn dies with the process.** It survives everything inside the window —
   a reload, a switch to another conversation, the conversation being closed —
   because the turn belongs to the conversation rather than to the call that
