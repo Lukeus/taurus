@@ -421,10 +421,6 @@ the backlog, and they're the minority.
   build appended to may already hold a torn fragment and a whole record on one
   line, and that line is dropped on load like any other it can't parse. Getting
   the record back would mean guessing where the fragment stops, and nothing does.
-- **The CLI and the app can still overwrite each other's memory notes.** Writes
-  are serialized inside one process, and each is an atomic replace, so the file
-  never tears. But a `taurus run` beside the window can read the notes, then
-  replace a note the window added in between. Covering it takes a lock file.
 - **A cut command's output can be swept away while the transcript still points
   at it.** When a stream outruns what the model's window has room for, the
   whole of it is written to `~/.taurus/output/<workspace-key>/`, and the gap
