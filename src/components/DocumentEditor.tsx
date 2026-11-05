@@ -70,7 +70,7 @@ import { InkLayer } from "./InkLayer";
  *
  * # What is deliberately not here
  *
- * Folding, multiple cursors, bracket matching, and replace. Each is a
+ * Folding, multiple cursors, and bracket matching. Each is a
  * feature in its own right rather than a detail of this one, and the honest
  * shape of that decision is a list rather than a half-built version of each.
  * See `docs/known-gaps.md`.
