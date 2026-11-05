@@ -1341,14 +1341,14 @@ the backlog, and they're the minority.
   `tables:` block for anything it joins against). That's what lets a
   committed recipe run on a fresh clone. A recipe that names loaded datasets
   instead doesn't, and nothing warns you which kind you've written.
-- **A profile is a full scan every time, and it can't be canceled.** Its
-  result isn't cached. A dataset entry points at a file anything can rewrite,
-  and a remembered profile is the kind of answer that's right for a week and
-  then quietly wrong. So opening the pane on a multi-gigabyte file reads it
-  again, and clicking away leaves that read running to completion. Caching it
-  properly means invalidating on the file's length and modification time,
-  which is how a page's row count is kept. Canceling means threading a token
-  through the engine trait. Neither is written for the profile.
+- **A profile can't be canceled, and it's read again whenever the file
+  changes.** Once a file has been profiled, the result is kept against its
+  length and modification time, the rule a page's row count follows, so going
+  back to an unchanged file costs nothing. A changed one is read end to end
+  again, and clicking away while that runs leaves it running to completion.
+  Canceling means threading a token through the engine trait, which isn't
+  written. A rewrite that keeps both the length and the time is missed, the
+  blind spot every fingerprint here shares.
 
   What keeps this bearable is that a profile is the one thing that has to
   read everything. Loading reads a header, and paging counts a file once per
