@@ -1513,7 +1513,8 @@ pub struct Settings {
     #[serde(default)]
     pub routes: ModelRoutes,
     /// The speech model the composer's mic transcribes with, by the name
-    /// Settings › Voice lists: `tiny.en`, `base.en`, `small.en`, or `base`.
+    /// Settings › Voice lists: `tiny.en`, `base.en`, `small.en`, `base`, or
+    /// (on macOS) `large-v3-turbo`.
     ///
     /// Naming a model doesn't download it. The file is fetched the first time
     /// the mic is pressed, after asking, and kept under `~/.taurus/models/`.
@@ -1521,6 +1522,16 @@ pub struct Settings {
     /// the list it does.
     #[serde(default = "default_voice_model")]
     pub voice_model: String,
+    /// The language the multilingual speech models expect, as a code such as
+    /// `en`, `de` or `ja`, or `auto` (the default) to work it out on every
+    /// dictation. Naming it skips that pass, which is most of what the larger
+    /// models spend on a short sentence. The `.en` models ignore it.
+    ///
+    /// Global, like the model. A code whisper.cpp doesn't know is refused
+    /// when Settings saves it; a hand-edited one is logged and treated as
+    /// `auto`.
+    #[serde(default = "default_voice_language")]
+    pub voice_language: String,
     /// Reading replies aloud: whether to, and in whose voice. See
     /// [`SpeechSettings`].
     #[serde(default)]
@@ -1590,6 +1601,10 @@ fn default_context_limit() -> u32 {
 
 fn default_voice_model() -> String {
     DEFAULT_VOICE_MODEL.to_string()
+}
+
+fn default_voice_language() -> String {
+    "auto".to_string()
 }
 
 fn default_ui_scale() -> u32 {
@@ -1820,6 +1835,7 @@ impl Default for Settings {
             context_limit: default_context_limit(),
             routes: ModelRoutes::default(),
             voice_model: default_voice_model(),
+            voice_language: default_voice_language(),
             speech: SpeechSettings::default(),
             plugins: BTreeMap::new(),
             notify_when_done: true,
@@ -1907,6 +1923,9 @@ pub struct StoredSettings {
     /// See [`Settings::voice_model`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_model: Option<String>,
+    /// See [`Settings::voice_language`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_language: Option<String>,
     /// See [`Settings::speech`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speech: Option<SpeechSettings>,
@@ -1964,6 +1983,7 @@ impl StoredSettings {
         // where work goes.
         self.routes = other.routes.or(self.routes.take());
         self.voice_model = other.voice_model.or(self.voice_model.take());
+        self.voice_language = other.voice_language.or(self.voice_language.take());
         // Whole, like the rest: a voice is chosen as a set of fields that
         // belong together, and half of one project's ElevenLabs settings over
         // the user's would be a voice nobody picked.
@@ -2037,6 +2057,11 @@ impl StoredSettings {
                 .voice_model
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or(defaults.voice_model),
+            // Empty is "auto", for the same reason.
+            voice_language: self
+                .voice_language
+                .filter(|l| !l.trim().is_empty())
+                .unwrap_or(defaults.voice_language),
             speech: self.speech.unwrap_or(defaults.speech),
             plugins: self.plugins.unwrap_or(defaults.plugins),
             notify_when_done: self.notify_when_done.unwrap_or(defaults.notify_when_done),
@@ -2524,6 +2549,7 @@ mod tests {
                 ..Default::default()
             }),
             voice_model: Some("small.en".into()),
+            voice_language: Some("de".into()),
             speech: Some(SpeechSettings {
                 read_aloud: true,
                 engine: SpeechEngine::ElevenLabs,
@@ -3363,6 +3389,17 @@ mod tests {
             assert_eq!(load_settings(None).voice_model, "small.en");
             write(home.join("settings.json"), r#"{"voice_model": "  "}"#);
             assert_eq!(load_settings(None).voice_model, DEFAULT_VOICE_MODEL);
+        });
+    }
+
+    #[test]
+    fn the_voice_language_defaults_to_auto_and_an_empty_one_means_auto() {
+        with_home(|home| {
+            assert_eq!(load_settings(None).voice_language, "auto");
+            write(home.join("settings.json"), r#"{"voice_language": "de"}"#);
+            assert_eq!(load_settings(None).voice_language, "de");
+            write(home.join("settings.json"), r#"{"voice_language": ""}"#);
+            assert_eq!(load_settings(None).voice_language, "auto");
         });
     }
 

@@ -514,11 +514,31 @@ path, so you can fetch the file yourself and drop it in place.
 | `base.en` | 60 MB | The default. Fast and accurate for English. |
 | `small.en` | 190 MB | More accurate English. Slower without a GPU. |
 | `base` | 60 MB | Other languages. Detects which one you're speaking. |
+| `large-v3-turbo` | 574 MB | macOS only. Most accurate, in any language. About a second per sentence. |
 
 The `.en` models only understand English. On an M-series Mac, whisper.cpp
-runs on the GPU through Metal: a 6.4-second sentence took 70–85 ms to
-transcribe with `base.en`, plus about 60 ms to load the model the first time.
-Windows and Linux run it on the CPU.
+runs on the GPU through Metal. On an M4 Max, sentences of 4 to 23 seconds took
+these times to transcribe once the model was loaded (loading it the first time
+adds 60–200 ms):
+
+| Model | 4 s | 23 s |
+| --- | --- | --- |
+| `base.en` | 58 ms | 132 ms |
+| `small.en` | 121 ms | 270 ms |
+| `large-v3-turbo` | 662 ms | 759 ms |
+
+Windows and Linux run it on the CPU. That's why `large-v3-turbo` isn't offered
+there: on the same Mac's CPU it took 8–9 seconds per sentence.
+
+`large-v3-turbo` is worth its wait when the smaller models mishear you: an
+accent, a noisy room, or a language other than English. On clean, clearly
+spoken English it heard about the same words as `small.en`.
+
+**Language**, under the models, tells `base` and `large-v3-turbo` which
+language you speak. Left on **Detect it each time**, they work it out on every
+dictation, and that pass costs as much as the rest: forced to English,
+`large-v3-turbo` took 350–450 ms on the same sentences instead of 660–760 ms.
+The `.en` models only hear English and ignore it.
 
 ### Your project's words
 

@@ -5,11 +5,12 @@ import { useArmed } from "../../lib/armed";
 import { megabytes, useVoice } from "../../state/voice";
 import { DICTATE_SHORTCUT } from "../Mic";
 import { Problem } from "../Problem";
+import { Field } from "./Field";
 import { SpeechSection } from "./SpeechSection";
 
 /**
- * The Voice tab: which speech model the mic uses, the files on disk, and
- * reading replies aloud.
+ * The Voice tab: which speech model the mic uses and the language it
+ * expects, the files on disk, and reading replies aloud.
  *
  * Downloads go through the same store the composer's prompt does, so one
  * started here shows its progress there too, and the mic knows the moment the
@@ -125,6 +126,24 @@ export function VoiceTab() {
 
       {status && (
         <section className="section">
+          <Field label="Language" hint={languageHint(status)}>
+            <select
+              value={status.language}
+              onChange={(e) => run(() => api.setVoiceLanguage(e.target.value))}
+            >
+              <option value="auto">Detect it each time</option>
+              {status.languages.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </section>
+      )}
+
+      {status && (
+        <section className="section">
           <span className="micro">On this machine</span>
           <dl className="voice-files m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
             <dt>Microphone</dt>
@@ -141,4 +160,16 @@ export function VoiceTab() {
       <SpeechSection keychain={keychain} />
     </>
   );
+}
+
+/**
+ * What the language setting does for the model that's chosen: nothing for an
+ * English-only one, a saved detection pass for the rest.
+ */
+function languageHint(status: api.VoiceStatus): string {
+  const chosen = status.models.find((m) => m.id === status.model);
+  if (chosen?.english_only) {
+    return `${chosen.id} only hears English, so this applies when you pick a model without .en.`;
+  }
+  return "Naming the language you speak skips working it out on every dictation, which is most of what the larger models spend on a short sentence.";
 }

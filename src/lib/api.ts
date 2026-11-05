@@ -1540,6 +1540,10 @@ export const voiceStatus = () => invoke<VoiceStatus>("voice_status");
 /** Rejects with the list of known names when `model` isn't one of them. */
 export const setVoiceModel = (model: string) => invoke<void>("set_voice_model", { model });
 
+/** A code such as `en`, or `auto`. Rejects a language whisper.cpp doesn't know. */
+export const setVoiceLanguage = (language: string) =>
+  invoke<void>("set_voice_language", { language });
+
 /**
  * Downloads a speech model, resolving once its checksum matches and it's in
  * place. `onProgress` fires up to a couple of hundred times. A second call

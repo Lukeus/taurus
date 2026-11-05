@@ -613,6 +613,16 @@ impl Host {
             .await
     }
 
+    /// Which language the multilingual speech models expect, or `auto`.
+    ///
+    /// Global, like the model. The caller checks the code against
+    /// whisper.cpp's list; this crate doesn't know it.
+    pub async fn set_voice_language(&self, language: &str) -> Result<(), String> {
+        let language = language.trim().to_string();
+        self.edit_global_setting(|s| s.voice_language = Some(language))
+            .await
+    }
+
     /// How replies are read aloud.
     ///
     /// Global, like the speech model: which voice somebody wants to hear is

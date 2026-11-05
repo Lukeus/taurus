@@ -23,6 +23,14 @@ pub struct VoiceModel {
     pub installed: bool,
 }
 
+/// A language the multilingual models can be told to expect.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct VoiceLanguage {
+    pub code: String,
+    pub name: String,
+}
+
 /// What the mic needs to know before it's pressed.
 #[derive(Serialize, TS)]
 #[ts(export)]
@@ -32,6 +40,11 @@ pub struct VoiceStatus {
     /// back to the default here so the mic still has something to offer.
     pub model: String,
     pub models: Vec<VoiceModel>,
+    /// The language settings name, as a code, or `auto`. Like `model`, a
+    /// hand-edited one the app doesn't know comes back as `auto`.
+    pub language: String,
+    /// Every language there is to choose, by name. `auto` isn't one of them.
+    pub languages: Vec<VoiceLanguage>,
     /// The default input device, or `None` when there isn't one or the
     /// system's audio service didn't answer in time.
     #[ts(optional)]
@@ -64,9 +77,20 @@ async fn chosen_model(state: &AppState) -> &'static taurus_voice::ModelSpec {
     })
 }
 
+/// The language settings name, or `auto` when it isn't one whisper.cpp knows.
+/// See [`VoiceStatus::language`].
+async fn chosen_language(state: &AppState) -> &'static str {
+    let named = state.host.settings().await.voice_language;
+    taurus_voice::language(&named).unwrap_or_else(|_| {
+        tracing::warn!(language = %named, "settings name an unknown voice language; detecting it");
+        taurus_voice::AUTO
+    })
+}
+
 #[tauri::command]
 pub async fn voice_status(state: State<'_, Arc<AppState>>) -> CmdResult<VoiceStatus> {
     let chosen = chosen_model(&state).await;
+    let language = chosen_language(&state).await;
     let voice = state.voice.clone();
     let models = taurus_voice::MODELS
         .iter()
@@ -93,6 +117,14 @@ pub async fn voice_status(state: State<'_, Arc<AppState>>) -> CmdResult<VoiceSta
     Ok(VoiceStatus {
         model: chosen.id.to_string(),
         models,
+        language: language.to_string(),
+        languages: taurus_voice::languages()
+            .into_iter()
+            .map(|l| VoiceLanguage {
+                code: l.code.to_string(),
+                name: l.name,
+            })
+            .collect(),
         microphone,
         folder: voice.models().dir().display().to_string(),
     })
@@ -102,6 +134,17 @@ pub async fn voice_status(state: State<'_, Arc<AppState>>) -> CmdResult<VoiceSta
 pub async fn set_voice_model(state: State<'_, Arc<AppState>>, model: String) -> CmdResult<()> {
     let spec = taurus_voice::spec(&model).map_err(text)?;
     state.host.set_voice_model(spec.id).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_voice_language(
+    state: State<'_, Arc<AppState>>,
+    language: String,
+) -> CmdResult<()> {
+    let code = taurus_voice::language(&language).map_err(text)?;
+    state.host.set_voice_language(code).await?;
     emit_status(&state).await;
     Ok(())
 }
@@ -183,6 +226,7 @@ pub async fn voice_start(state: State<'_, Arc<AppState>>, on_level: Channel<f32>
 #[tauri::command]
 pub async fn voice_stop(state: State<'_, Arc<AppState>>) -> CmdResult<String> {
     let spec = chosen_model(&state).await;
+    let language = chosen_language(&state).await;
     let workspace = state.host.workspace().await;
     let abort = Arc::new(AtomicBool::new(false));
     *state.voice_abort.lock().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&abort);
@@ -194,9 +238,10 @@ pub async fn voice_stop(state: State<'_, Arc<AppState>>) -> CmdResult<String> {
         }
         let hint = hint(&workspace);
         let started = std::time::Instant::now();
-        let heard = voice.transcribe(spec.id, &audio, &hint, abort);
+        let heard = voice.transcribe(spec.id, language, &audio, &hint, abort);
         info!(
             seconds = audio.seconds(),
+            language,
             took_ms = started.elapsed().as_millis() as u64,
             ok = heard.is_ok(),
             "transcribed a dictation"

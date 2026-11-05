@@ -24,6 +24,8 @@ const status = (installed: boolean) => ({
     { id: "tiny.en", summary: "", bytes: 32_166_155, english_only: true, installed: false },
     { id: "base.en", summary: "", bytes: 59_721_011, english_only: true, installed },
   ],
+  language: "auto",
+  languages: [{ code: "en", name: "English" }],
   microphone: "MacBook Pro Microphone",
   folder: "/home/me/.taurus/models/whisper",
 });
