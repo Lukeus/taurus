@@ -53,21 +53,27 @@ impl Engine {
             path: path.display().to_string(),
             reason: "its path isn't valid UTF-8".into(),
         })?;
+        let mut params = WhisperContextParameters::default();
+        // Measured on Metal: 15–20% off every model's transcription time.
+        // On the CPU it made no difference, so it stays where it was measured.
+        params.flash_attn(cfg!(target_os = "macos"));
         let context =
-            WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
-                .map_err(|e| VoiceError::Load {
-                    path: path.display().to_string(),
-                    reason: e.to_string(),
-                })?;
+            WhisperContext::new_with_params(path_str, params).map_err(|e| VoiceError::Load {
+                path: path.display().to_string(),
+                reason: e.to_string(),
+            })?;
         let context = Arc::new(context);
         *loaded = Some((path.to_path_buf(), Arc::clone(&context)));
         Ok(context)
     }
 
-    /// Transcribes `audio` with the model at `path`.
+    /// Transcribes `audio` with the model at `path`, expecting `language`: a
+    /// code from [`crate::languages`], or [`crate::AUTO`] to detect it. The
+    /// `.en` models are always told English.
     pub fn transcribe(
         &self,
         spec: &ModelSpec,
+        language: &'static str,
         path: &Path,
         audio: &Captured,
         hint: &str,
@@ -86,7 +92,7 @@ impl Engine {
             .map_err(|e| VoiceError::Transcribe(e.to_string()))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some(if spec.english_only { "en" } else { "auto" }));
+        params.set_language(Some(if spec.english_only { "en" } else { language }));
         params.set_n_threads(threads());
         // Each dictation stands alone. Carrying text over between windows is
         // how a long recording starts repeating itself.

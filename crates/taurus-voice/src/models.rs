@@ -6,7 +6,8 @@
 //! measured — a moved tag or a tampered mirror fails the checksum instead of
 //! being loaded into a C++ parser.
 //!
-//! All four are quantized (`q5_1`): about a third the size of the full-precision
+//! All are quantized (`q5_1`, or `q5_0` for large-v3-turbo, which upstream
+//! only publishes that way): about a third the size of the full-precision
 //! files, at an accuracy difference too small to notice in dictation.
 
 use std::path::{Path, PathBuf};
@@ -78,6 +79,18 @@ pub const MODELS: &[ModelSpec] = &[
         sha256: "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
         english_only: false,
         summary: "Other languages. Detects which one you're speaking.",
+    },
+    // Only where whisper.cpp runs on the GPU. Timed 2026-11-04 on an M4 Max,
+    // with a sentence's audio already in hand: 0.6–0.9 s on Metal, 8–9 s on
+    // the CPU, which is how Windows and Linux run it.
+    #[cfg(target_os = "macos")]
+    ModelSpec {
+        id: "large-v3-turbo",
+        file: "ggml-large-v3-turbo-q5_0.bin",
+        bytes: 574_041_195,
+        sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        english_only: false,
+        summary: "Most accurate, in any language. About a second per sentence.",
     },
 ];
 

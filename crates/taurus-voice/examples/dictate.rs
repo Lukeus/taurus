@@ -5,6 +5,7 @@
 //! cargo run --release -p taurus-voice --example dictate -- --seconds 10
 //! cargo run --release -p taurus-voice --example dictate -- --wav speech.wav
 //! cargo run --release -p taurus-voice --example dictate -- --model small.en --hint "Taurus, taurus-core"
+//! cargo run --release -p taurus-voice --example dictate -- --model base --language de
 //! cargo run --release -p taurus-voice --example dictate -- --wav speech.wav --abort   # must cancel
 //! ```
 //!
@@ -36,6 +37,7 @@ async fn run() -> Result<(), VoiceError> {
     let mut seconds = 5u64;
     let mut wav: Option<PathBuf> = None;
     let mut hint = "Taurus.".to_string();
+    let mut language = taurus_voice::AUTO.to_string();
     let mut abort = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -44,6 +46,7 @@ async fn run() -> Result<(), VoiceError> {
             "--seconds" => seconds = args.next().and_then(|s| s.parse().ok()).unwrap_or(5),
             "--wav" => wav = args.next().map(PathBuf::from),
             "--hint" => hint = args.next().unwrap_or_default(),
+            "--language" => language = args.next().unwrap_or_default(),
             // Raises the abort flag before transcribing, which must end in
             // "canceled" rather than in text or a whisper error code.
             "--abort" => abort = true,
@@ -119,7 +122,13 @@ async fn run() -> Result<(), VoiceError> {
     // dictation after it costs.
     for run in ["first (loads the model)", "second (model loaded)"] {
         let started = Instant::now();
-        let text = voice.transcribe(&model, &audio, &hint, Arc::new(AtomicBool::new(abort)))?;
+        let text = voice.transcribe(
+            &model,
+            &language,
+            &audio,
+            &hint,
+            Arc::new(AtomicBool::new(abort)),
+        )?;
         println!("{run}: {:.0?}", started.elapsed());
         println!("  {text}");
     }

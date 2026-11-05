@@ -19,6 +19,7 @@
 //! model that was loaded last.
 
 pub mod capture;
+pub mod languages;
 pub mod models;
 mod resample;
 pub mod transcribe;
@@ -28,6 +29,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 pub use capture::{input_device_name, Captured, Recording};
+pub use languages::{language, languages, Language, AUTO};
 pub use models::{spec, ModelSpec, Models, DEFAULT_MODEL, MODELS};
 pub use resample::{to_whisper_rate, WHISPER_RATE};
 pub use transcribe::{clean, hint_for, Engine};
@@ -81,6 +83,11 @@ pub enum VoiceError {
         list = models::known_ids()
     )]
     UnknownModel(String),
+    #[error(
+        "\"{0}\" isn't a language Taurus can transcribe. Pick one in Settings › \
+         Voice, or use a code such as en, de or ja, or auto to detect it."
+    )]
+    UnknownLanguage(String),
     #[error(
         "The speech model {0} isn't downloaded yet. Press the mic to download \
          it, or get it from Settings › Voice."
@@ -198,19 +205,23 @@ impl Voice {
         }
     }
 
-    /// Turns captured audio into text with the model `id`.
+    /// Turns captured audio into text with the model `id`, expecting
+    /// `language` (see [`languages::language`]; the `.en` models ignore it).
     ///
     /// Blocking, and CPU-heavy on machines without a GPU backend. `abort` set
     /// from another thread stops it at the next point whisper.cpp checks.
     pub fn transcribe(
         &self,
         id: &str,
+        language: &str,
         audio: &Captured,
         hint: &str,
         abort: Arc<AtomicBool>,
     ) -> Result<String, VoiceError> {
         let spec = spec(id)?;
+        let language = languages::language(language)?;
         let path = self.models.ready(spec)?;
-        self.engine.transcribe(spec, &path, audio, hint, abort)
+        self.engine
+            .transcribe(spec, language, &path, audio, hint, abort)
     }
 }

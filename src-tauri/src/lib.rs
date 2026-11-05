@@ -385,6 +385,7 @@ pub fn run() {
             commands::stop_index_build,
             commands::voice_status,
             commands::set_voice_model,
+            commands::set_voice_language,
             commands::voice_download,
             commands::stop_voice_download,
             commands::check_for_update,
