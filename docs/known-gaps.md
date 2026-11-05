@@ -744,8 +744,8 @@ the backlog, and they're the minority.
   answered with a diagram answers in prose or uses `show_chart`. Closing that
   means image *generation*, which only some backends offer, and none the
   same way.
-- **No built-in tool returns an image yet.** The shape exists and every
-  adapter carries it, but only MCP servers use it: a browser driver's
+- **No built-in tool makes an image.** `read_file` hands back a picture that's
+  already on disk, and MCP servers return their own: a browser driver's
   screenshot, a renderer's output. A built-in that rasterizes a PDF page or
   captures a window is a tool nobody has written here, not a limit on what a
   tool may return.

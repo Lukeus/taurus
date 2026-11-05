@@ -438,6 +438,13 @@ would be worse than output that's never structured.
 screenshots arrive as pictures, not the literal words `[image: image/png]`,
 which is all a result type with no room for an image can say.
 
+**`read_file` on a picture returns the picture.** A PNG, JPEG, WebP or GIF
+comes back as an image with a line naming its format and size, so "what's in
+`docs/screenshots/notes.png`?" is a question the model can answer. The file is
+judged by its first bytes, not its name, so a `.png` that holds text reads as
+text. One past five megabytes is refused, with a suggestion to make a smaller
+copy.
+
 **Only Anthropic carries an image inside the result.** OpenAI's
 `role: "tool"` message, Gemini's `functionResponse`, and Ollama's tool message
 are text-only. There the image follows the result, with a line naming the
