@@ -256,9 +256,8 @@ pub struct Host {
     /// The terminal beside the conversation, for a frontend that has one.
     ///
     /// Set once by the desktop app and never by the CLI, which has no dock.
-    /// Whether `read_terminal` is offered is decided per turn from this,
-    /// because a shell opens and closes between turns. See
-    /// [`Self::set_terminal`].
+    /// `read_terminal` is offered on every turn while this is set, open shell or
+    /// not. See [`Self::set_terminal`].
     terminal: std::sync::RwLock<Option<Arc<dyn taurus_tools::blocks::TerminalReader>>>,
     /// The user's configured hooks, rebuilt on every reload.
     ///

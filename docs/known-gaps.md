@@ -138,10 +138,9 @@ the backlog, and they're the minority.
 - **Every enabled tool goes out with every request.** Nothing filters tools by
   relevance or loads them on demand, and an MCP server's tools are sent whole.
   The Context panel names the heaviest schemas, and Settings › Tools is where
-  you drop one. The tool list also changes when the terminal dock opens or closes
-  (`read_terminal` comes and goes with it) and when an MCP server connects or
-  drops. Tools come first in a request, so the next request after any of those
-  misses a hosted backend's prompt cache entirely.
+  you drop one. The tool list also changes when an MCP server connects or
+  drops. Tools come first in a request, so the next request after that misses
+  a hosted backend's prompt cache entirely.
 - **A cache entry on Anthropic lasts five minutes.** Taurus asks for the
   default lifetime. A pause longer than that between messages means the next
   one writes the conversation into the cache again, at a quarter over the

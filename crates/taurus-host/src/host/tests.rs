@@ -2701,6 +2701,9 @@ impl taurus_tools::blocks::TerminalReader for Terminal {
     fn shell(&self) -> String {
         "zsh".into()
     }
+    fn open(&self) -> bool {
+        self.live
+    }
     fn integrated(&self) -> bool {
         self.live
     }
@@ -2713,10 +2716,12 @@ impl taurus_tools::blocks::TerminalReader for Terminal {
 }
 
 #[tokio::test]
-async fn the_terminal_is_offered_only_while_a_shell_is_marking_commands() {
-    // The CLI never sets one, and a dock running a shell with no integration
-    // has nothing to read: either way the model must not be handed a tool
-    // that can only fail.
+async fn the_terminal_is_offered_whenever_the_app_has_a_dock() {
+    // The CLI never sets one, so it never gets the tool. The app always
+    // does, shell or no shell: a tool that came and went with the dock would
+    // change the front of every request, and miss a hosted backend's cache
+    // each time the dock was opened or shut. The tool answers a closed dock
+    // itself.
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
@@ -2729,8 +2734,8 @@ async fn the_terminal_is_offered_only_while_a_shell_is_marking_commands() {
     );
     host.set_terminal(Some(Arc::new(Terminal { live: false })));
     assert!(
-        !turn_tools(&host).await.contains(&read),
-        "a shell without marks"
+        turn_tools(&host).await.contains(&read),
+        "a dock with no shell running"
     );
     host.set_terminal(Some(Arc::new(Terminal { live: true })));
     assert!(
@@ -2749,8 +2754,8 @@ async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
     host.reload().await;
-    // `read_terminal` is per turn only while a dock shell is marking its
-    // commands, so this turn has one.
+    // `read_terminal` is per turn, and only in a frontend with a dock, so this
+    // turn has one.
     host.set_terminal(Some(Arc::new(Terminal { live: true })));
 
     let turn = turn_tools(&host).await;

@@ -787,6 +787,10 @@ impl TerminalReader for Terminals {
             .unwrap_or_else(|| "shell".into())
     }
 
+    fn open(&self) -> bool {
+        self.reading().is_some()
+    }
+
     fn integrated(&self) -> bool {
         self.reading()
             .is_some_and(|shell| lock(&shell.blocks).integrated())
