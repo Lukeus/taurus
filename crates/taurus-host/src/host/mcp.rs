@@ -192,7 +192,7 @@ impl Host {
         // each knows which layer wrote it. Plugins' servers are the lowest
         // layer, so your own mcp.json can switch one off by its key, and a
         // layer that won't parse is skipped rather than fatal.
-        let (config, _, problems) = self.mcp_layers(&workspace);
+        let (config, _, problems) = Self::mcp_layers(&workspace);
 
         let plan = self.mcp.plan(&config, restart).await;
 
@@ -310,7 +310,7 @@ impl Host {
     /// The active profile's saved credentials, with the servers using each.
     pub async fn credentials(&self) -> Result<Vec<CredentialView>, String> {
         let workspace = self.workspace.read().await.clone();
-        let (config, _, _) = self.mcp_layers(&workspace);
+        let (config, _, _) = Self::mcp_layers(&workspace);
         credentials::views(profile::active_id(), &config.servers)
     }
 

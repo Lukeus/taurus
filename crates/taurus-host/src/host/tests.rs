@@ -4601,6 +4601,8 @@ async fn a_skill_saved_into_a_project_plugin_under_a_running_command_stands() {
             .exists(),
         "{said}"
     );
+}
+
 /// A stand-in whose environment names the saved credential `name`.
 fn stand_in_using(name: &str, tools: &[&str]) -> taurus_mcp::ServerConfig {
     let mut server = stand_in(tools);
