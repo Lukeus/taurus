@@ -339,7 +339,24 @@ impl StreamAccumulator {
 
     fn append_text(&mut self, text: String, thinking: bool) {
         let reuse = match (&self.open, thinking) {
-            (Some(Open::Text(i)), false) | (Some(Open::Thinking(i)), true) => Some(*i),
+            (Some(Open::Text(i)), false) => Some(*i),
+            // An empty delta is how an adapter opens a thinking block before it
+            // has any text, and a signature is the last thing a block gets. So
+            // an empty delta after one is the next block starting, not more of
+            // this one. Anthropic sends a signed block and a withheld one back
+            // to back, and merged, the withheld block's data would replace the
+            // first one's signature. Text after a signature still continues
+            // the block, which is how Gemini signs a part mid-thought.
+            (Some(Open::Thinking(i)), true) => {
+                let signed = matches!(
+                    self.blocks.get(*i),
+                    Some(ContentBlock::Thinking {
+                        signature: Some(_),
+                        ..
+                    })
+                );
+                (!(signed && text.is_empty())).then_some(*i)
+            }
             _ => None,
         };
         match reuse {
@@ -427,6 +444,65 @@ mod tests {
             panic!("expected a tool use, got {:?}", message.content[0]);
         };
         assert_eq!(signature.as_deref(), Some("sig-call"));
+    }
+
+    #[test]
+    fn an_empty_delta_after_a_signature_starts_the_next_block() {
+        // How an adapter opens a block before it has text. After a signature,
+        // that's a new block; more text is more of the same one.
+        let mut acc = StreamAccumulator::new();
+        for event in [
+            StreamEvent::ThinkingDelta {
+                text: "first".into(),
+            },
+            StreamEvent::ThinkingSignature {
+                signature: "a".into(),
+            },
+            StreamEvent::ThinkingDelta {
+                text: String::new(),
+            },
+            StreamEvent::ThinkingSignature {
+                signature: "b".into(),
+            },
+        ] {
+            acc.push(event);
+        }
+        let (message, ..) = acc.finish();
+        assert_eq!(
+            message.content,
+            vec![
+                ContentBlock::Thinking {
+                    text: "first".into(),
+                    signature: Some("a".into())
+                },
+                ContentBlock::Thinking {
+                    text: String::new(),
+                    signature: Some("b".into())
+                },
+            ]
+        );
+
+        // Gemini signs a part mid-thought, and the thought goes on.
+        let mut acc = StreamAccumulator::new();
+        for event in [
+            StreamEvent::ThinkingDelta {
+                text: "one ".into(),
+            },
+            StreamEvent::ThinkingSignature {
+                signature: "g".into(),
+            },
+            StreamEvent::ThinkingDelta { text: "two".into() },
+        ] {
+            acc.push(event);
+        }
+        let (message, ..) = acc.finish();
+        assert_eq!(
+            message.content,
+            vec![ContentBlock::Thinking {
+                text: "one two".into(),
+                signature: Some("g".into())
+            }]
+        );
     }
 
     #[test]

@@ -436,7 +436,7 @@ impl Provider for AnthropicProvider {
                     // thinking block carries a signature and no text at all —
                     // and a signature with no block to attach it to is dropped,
                     // which makes the next request's replay illegal.
-                    BlockStart::Thinking | BlockStart::RedactedThinking => {
+                    BlockStart::Thinking => {
                         send(
                             &tx,
                             StreamEvent::ThinkingDelta {
@@ -444,6 +444,23 @@ impl Provider for AnthropicProvider {
                             },
                         )
                         .await?;
+                    }
+                    // A block of its own, carrying its data where a signature
+                    // goes, so the next request can send it back. See
+                    // `ANTHROPIC_REDACTED_PREFIX`.
+                    BlockStart::RedactedThinking { data } => {
+                        send(
+                            &tx,
+                            StreamEvent::ThinkingDelta {
+                                text: String::new(),
+                            },
+                        )
+                        .await?;
+                        if !data.is_empty() {
+                            let signature =
+                                format!("{}{data}", taurus_provider::ANTHROPIC_REDACTED_PREFIX);
+                            send(&tx, StreamEvent::ThinkingSignature { signature }).await?;
+                        }
                     }
                     BlockStart::Text | BlockStart::Other => {}
                 },
@@ -611,6 +628,90 @@ mod tests {
             .await
     }
 
+    /// The message the real stream loop and the shared accumulator make of
+    /// these frames, sent the way the API sends them.
+    async fn streamed_message(frames: &[&str]) -> Message {
+        let mut body: String = frames.iter().map(|f| format!("data: {f}\n\n")).collect();
+        body.push_str("data: {\"type\":\"message_stop\"}\n\n");
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+        let provider = AnthropicProvider::new("anthropic", server.uri(), Some("sk-test".into()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let request = ChatRequest::new("claude-opus-5", vec![Message::user("hi")]);
+        let streaming = tokio::spawn(async move {
+            provider
+                .stream(request, tx, tokio_util::sync::CancellationToken::new())
+                .await
+        });
+        let mut acc = StreamAccumulator::new();
+        while let Some(event) = rx.recv().await {
+            acc.push(event);
+        }
+        streaming.await.unwrap().unwrap();
+        acc.finish().0
+    }
+
+    #[tokio::test]
+    async fn withheld_reasoning_is_its_own_block_and_goes_back_as_it_came() {
+        // A signed block and a withheld one, back to back, the way the API
+        // sends them. Merged into one, the withheld data replaced the first
+        // block's signature; dropped, the next request was refused.
+        let message = streamed_message(&[
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"EmwKAhgBEgy3va"}}"#,
+            r#"{"type":"content_block_stop","index":1}"#,
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"Ezz9"}}"#,
+            r#"{"type":"content_block_stop","index":2}"#,
+            r#"{"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}}"#,
+            r#"{"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"done"}}"#,
+            r#"{"type":"content_block_stop","index":3}"#,
+        ])
+        .await;
+        let withheld = |data: &str| ContentBlock::Thinking {
+            text: String::new(),
+            signature: Some(format!(
+                "{}{data}",
+                taurus_provider::ANTHROPIC_REDACTED_PREFIX
+            )),
+        };
+        assert_eq!(
+            message.content,
+            vec![
+                ContentBlock::Thinking {
+                    text: "weighing it".into(),
+                    signature: Some("sig-1".into()),
+                },
+                withheld("EmwKAhgBEgy3va"),
+                withheld("Ezz9"),
+                ContentBlock::text("done"),
+            ]
+        );
+
+        let wire = crate::convert::messages_to_wire(&ChatRequest::new("m", vec![message]));
+        let blocks = wire[0]["content"].as_array().unwrap();
+        assert_eq!(
+            blocks[..3],
+            [
+                serde_json::json!({"type": "thinking", "thinking": "weighing it", "signature": "sig-1"}),
+                serde_json::json!({"type": "redacted_thinking", "data": "EmwKAhgBEgy3va"}),
+                serde_json::json!({"type": "redacted_thinking", "data": "Ezz9"}),
+            ]
+        );
+        // The answer, with the cache mark a last block carries.
+        assert_eq!(blocks[3]["text"], "done");
+        assert_eq!(blocks.len(), 4);
+    }
+
     #[tokio::test]
     async fn a_stream_that_closes_without_ending_is_an_error() {
         let cut = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"half\"}}\n\n";
@@ -672,9 +773,24 @@ mod tests {
                             .await
                             .unwrap();
                     }
-                    BlockStart::Thinking | BlockStart::RedactedThinking => {
+                    BlockStart::Thinking => {
                         tx.send(StreamEvent::ThinkingDelta {
                             text: String::new(),
+                        })
+                        .await
+                        .unwrap();
+                    }
+                    BlockStart::RedactedThinking { data } => {
+                        tx.send(StreamEvent::ThinkingDelta {
+                            text: String::new(),
+                        })
+                        .await
+                        .unwrap();
+                        tx.send(StreamEvent::ThinkingSignature {
+                            signature: format!(
+                                "{}{data}",
+                                taurus_provider::ANTHROPIC_REDACTED_PREFIX
+                            ),
                         })
                         .await
                         .unwrap();

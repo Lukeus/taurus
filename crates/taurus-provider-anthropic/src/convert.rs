@@ -7,7 +7,7 @@
 
 use serde_json::{json, Value};
 use taurus_provider::{
-    anthropic_signature, replay_input, ChatRequest, ContentBlock, Role, ToolDef,
+    anthropic_redacted, anthropic_signature, replay_input, ChatRequest, ContentBlock, Role, ToolDef,
 };
 
 /// Marks a prefix worth caching on the way out.
@@ -144,15 +144,17 @@ fn block_list(content: &[ContentBlock]) -> Vec<Value> {
             //
             // Without a signature it cannot be sent at all — the field is not
             // optional on the wire, and a fabricated one is worse than none —
-            // so an unsigned block is omitted. That happens for reasoning the
-            // provider returned redacted, and it is the known gap in this
-            // adapter rather than a silent one: the request that follows may be
-            // rejected, with an error that says so.
-            // Another provider's signature, from earlier in a conversation that
-            // changed provider, is left out like an unsigned block: this API
-            // can't verify it, and sending it is a 400.
+            // so an unsigned block is omitted. Reasoning the provider withheld
+            // goes back as it came, `redacted_thinking` with its data, which
+            // was carried where a signature goes. Another provider's
+            // signature, from earlier in a conversation that changed provider,
+            // is left out like an unsigned block: this API can't verify it,
+            // and sending it is a 400.
             ContentBlock::Thinking { text, signature } => {
-                if let Some(signature) = signature.as_deref().and_then(anthropic_signature) {
+                let signature = signature.as_deref();
+                if let Some(data) = signature.and_then(anthropic_redacted) {
+                    blocks.push(json!({"type": "redacted_thinking", "data": data}));
+                } else if let Some(signature) = signature.and_then(anthropic_signature) {
                     blocks.push(json!({
                         "type": "thinking",
                         "thinking": text,

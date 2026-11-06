@@ -365,12 +365,6 @@ the backlog, and they're the minority.
   unexpected still waits for the timeout. A real back-and-forth would mean
   keeping the turn open on a running child and deciding what the model may
   type into it. That's a bigger surface than this opens.
-- **Reasoning the provider returns redacted can't be replayed.** Anthropic
-  signs its thinking blocks and requires them back unedited. A redacted one
-  has no signature this harness can carry, so it's left out of the next
-  request. Where that matters, the API says so explicitly instead of failing
-  quietly, but the turn has to be retried. Carrying the encrypted form would
-  mean a second shape in the normalized types for one provider's edge case.
 - **An instructions file is read at turn boundaries, not watched.**
   `AGENTS.md` and everything it imports are re-read at the start of each
   turn, so an edit lands on your next message, not the next reload. It isn't

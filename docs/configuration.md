@@ -1313,6 +1313,8 @@ Reasoning blocks are replayed with the signature the provider issued them
 under. That's not a nicety: a turn that reasoned and then called a tool is
 only legal on the next request if its thinking comes back signed and unedited.
 A signature lost in the stream means a rejected request one turn later.
+Reasoning Anthropic withholds arrives as `redacted_thinking`, with no text you
+can read, and goes back the same way.
 
 **Gemini's schemas are sanitized on the way out.** Gemini accepts an OpenAPI 3
 subset and refuses a request outright on a keyword it doesn't know, with an

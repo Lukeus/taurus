@@ -37,11 +37,29 @@ pub fn is_openai_reasoning(signature: &str) -> bool {
 /// ever issued and read by Gemini.
 pub const GEMINI_THOUGHT_PREFIX: &str = "gemini-thought:";
 
+/// Marks a [`ContentBlock::Thinking`] as reasoning Anthropic withheld: a
+/// `redacted_thinking` block, whose encrypted `data` is carried after this.
+///
+/// Such a block has no text and no signature, but the API still wants it back
+/// unedited when the turn it's in continues, so it travels in the signature
+/// slot like OpenAI's sealed reasoning does. Behind a prefix because it isn't a
+/// signature: sent as one, it's a 400.
+pub const ANTHROPIC_REDACTED_PREFIX: &str = "anthropic-redacted:";
+
 /// A thinking block's signature as Anthropic should see it: the value itself,
-/// or `None` when another provider issued it and this API can't verify it.
+/// or `None` when another provider issued it and this API can't verify it, or
+/// when it's a withheld block instead (see [`anthropic_redacted`]).
 pub fn anthropic_signature(signature: &str) -> Option<&str> {
-    let foreign = is_openai_reasoning(signature) || signature.starts_with(GEMINI_THOUGHT_PREFIX);
+    let foreign = is_openai_reasoning(signature)
+        || signature.starts_with(GEMINI_THOUGHT_PREFIX)
+        || signature.starts_with(ANTHROPIC_REDACTED_PREFIX);
     (!foreign).then_some(signature)
+}
+
+/// The encrypted `data` of a block Anthropic withheld, or `None` when the
+/// signature is anything else.
+pub fn anthropic_redacted(signature: &str) -> Option<&str> {
+    signature.strip_prefix(ANTHROPIC_REDACTED_PREFIX)
 }
 
 /// A thinking block's signature as Gemini should see it: past the prefix, or
@@ -814,6 +832,13 @@ mod replay_tests {
         let openai = format!("{OPENAI_REASONING_PREFIX}o");
         assert_eq!(anthropic_signature(&openai), None);
         assert_eq!(gemini_signature(&openai), None);
+        // Withheld reasoning is Anthropic's, but not a signature.
+        let withheld = format!("{ANTHROPIC_REDACTED_PREFIX}r");
+        assert_eq!(anthropic_signature(&withheld), None);
+        assert_eq!(anthropic_redacted(&withheld), Some("r"));
+        assert_eq!(gemini_signature(&withheld), None);
+        assert!(!is_openai_reasoning(&withheld));
+        assert_eq!(anthropic_redacted("sig"), None);
     }
 }
 
