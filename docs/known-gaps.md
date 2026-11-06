@@ -1012,11 +1012,9 @@ the backlog, and they're the minority.
   the same sketch opens centered on another machine or after a fresh install.
   Saving the view in the file would make every pan a change to a committed
   file, and a conflict for two people looking at different parts of it.
-- **A note links only within its own notebook, and only to the top of a
-  note.** A project note can't link to a global one, or the other way round:
-  the link is a path to a file beside the note, and the two notebooks are
-  different folders. A `#section` after the name is dropped, so the note
-  opens at its top rather than at that heading.
+- **A note links only within its own notebook.** A project note can't link to
+  a global one, or the other way round: the link is a path to a file beside
+  the note, and the two notebooks are different folders.
 - **A note's diagram isn't searchable and its text isn't indexed.** Transcript
   search doesn't look in notes, and neither does the code index. A project
   note is a Markdown file in `.taurus/`, which the index skips along with the

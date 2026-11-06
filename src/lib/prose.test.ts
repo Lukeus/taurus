@@ -9,6 +9,7 @@ import {
   headingOffsets,
   linkLine,
   noteName,
+  noteSection,
   suggest,
   toggleTask,
   type Offer,
@@ -251,8 +252,18 @@ describe("which links in a note are notes", () => {
     expect(noteName("Token%20store.md")).toBe("Token store");
     expect(noteName("./plan.md")).toBe("plan");
     expect(noteName("Plan.MD")).toBe("Plan");
-    // A section is dropped, and the note opens at its top.
+    // A section isn't part of the name.
     expect(noteName("plan.md#rollout")).toBe("plan");
+  });
+
+  it("reads the section a link points into", () => {
+    expect(noteSection("plan.md#rollout-plan")).toBe("rollout-plan");
+    // Written the way a heading's text reads, it still finds the slug.
+    expect(noteSection("plan.md#Rollout-Plan")).toBe("rollout-plan");
+    expect(noteSection("Token%20store.md#caf%C3%A9")).toBe("café");
+    for (const href of [undefined, "plan.md", "plan.md#", "plan.md#%E0%A4%A"]) {
+      expect(noteSection(href), String(href)).toBeNull();
+    }
   });
 
   it("leaves every other link alone", () => {

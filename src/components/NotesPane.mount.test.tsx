@@ -1032,6 +1032,49 @@ describe("write, read, or both", () => {
     );
   });
 
+  it("opens a note at the heading a link's #section names", async () => {
+    const plan = "# Plan\n\nSee [the rotation](<Token store.md#key-rotation>).\n";
+    const store = "# Token store\n\nWhere tokens live.\n\n## Key rotation\n\nEvery ninety days.\n";
+    answering({
+      list_pages: () => [ref("Plan"), ref("Token store")],
+      read_page: (args: never) => {
+        const { name } = args as { name: string };
+        return page(name, name === "Plan" ? plan : store);
+      },
+    });
+    const { host, click } = await mount();
+    await click(host.querySelector(".notes-row"));
+    await vi.waitFor(() => expect(host.querySelector("textarea")?.value).toBe(plan));
+    await click(saying(host, "Read"));
+
+    // jsdom lays nothing out, so the heading says where it is.
+    const placed = vi
+      .spyOn(HTMLHeadingElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLHeadingElement) {
+        return { top: this.textContent === "Key rotation" ? 480 : 0 } as DOMRect;
+      });
+    // The column stays through the switch, and keeps what it's told.
+    const col = host.querySelector<HTMLElement>(".notes-preview")!;
+    let top = 0;
+    Object.defineProperty(col, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (to: number) => void (top = to),
+    });
+    try {
+      const link = host.querySelector<HTMLAnchorElement>(".notes-read a")!;
+      expect(link.getAttribute("data-tip")).toBe('Open the note "Token store", at #key-rotation');
+      await click(link);
+      await vi.waitFor(() =>
+        expect(host.querySelector(".notes-name")?.textContent).toBe("Token store"),
+      );
+      await vi.waitFor(() => expect(top).toBe(480));
+      expect(host.querySelector(".notes-preview")).toBe(col);
+    } finally {
+      placed.mockRestore();
+    }
+  });
+
   it("offers the notebook's other notes while a link is being written", async () => {
     const { host, type } = await openPlan();
     await type(host.querySelector("textarea"), `${TEXT}\nAlso [this](`);

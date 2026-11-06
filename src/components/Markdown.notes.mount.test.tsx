@@ -105,8 +105,17 @@ describe("a link in a note", () => {
     const { box } = mount(TEXT, host);
     const link = [...box.querySelectorAll("a")].find((a) => a.textContent === "the store")!;
     act(() => link.click());
-    expect(host.openNote).toHaveBeenCalledWith("Token store");
+    expect(host.openNote).toHaveBeenCalledWith("Token store", null);
     expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("opens the note at the heading its #section names", () => {
+    const host = noteHost();
+    const { box } = mount("Read [the rollout](<Token store.md#rollout-plan>).\n", host);
+    const link = box.querySelector("a")!;
+    expect(link.getAttribute("data-tip")).toBe('Open the note "Token store", at #rollout-plan');
+    act(() => link.click());
+    expect(host.openNote).toHaveBeenCalledWith("Token store", "rollout-plan");
   });
 
   it("says a note that is not there is not there, and opens nothing", () => {

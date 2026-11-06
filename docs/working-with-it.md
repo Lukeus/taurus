@@ -1784,10 +1784,13 @@ its file:
 The store itself is in [Token store](<Token store.md>).
 ```
 
-Clicking it opens that note. A link to a note the notebook doesn't have is
-drawn dashed and says so when you point at it. A link reaches only the note's
-own notebook, and a `#section` after the name is ignored, so the note opens at
-its top. Inside a link's address, `[text](`, the editor offers the notebook's
+Clicking it opens that note. A `#section` after the name opens it at that
+heading, spelled the way GitHub spells one: lowercase, with spaces as hyphens
+and punctuation dropped, so `## Key rotation` is
+`[rotation](<Token store.md#key-rotation>)`. A heading the note doesn't have
+leaves it at its top. A link to a note the notebook doesn't have is drawn
+dashed and says so when you point at it. A link reaches only the note's own
+notebook. Inside a link's address, `[text](`, the editor offers the notebook's
 other notes, and the `/` list has them too.
 
 It saves itself a moment after you stop typing, and never overwrites anything
