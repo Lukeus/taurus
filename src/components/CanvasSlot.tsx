@@ -5,6 +5,7 @@ import type { Document, Selection } from "../lib/api";
 import { findKey, type FindKey } from "../lib/find";
 import { changedLines, FLASH_MS, reconcile, SAVE_AFTER_MS } from "../lib/document";
 import { useStore } from "../state/store";
+import { COMMAND_ENDED } from "../lib/terminal";
 import { Canvas } from "./Canvas";
 import type { SaveState } from "../state/notebook";
 
@@ -438,8 +439,9 @@ export function CanvasSlot({
 
   /*
    * Looks again when the file comes back into view: the tab brought to the front,
-   * or the window brought back. A tab can sit behind another for hours, and a
-   * `git checkout` in the terminal says nothing to anybody.
+   * or the window brought back. A tab can sit behind another for hours. And when
+   * a command in the dock finishes, since a `git checkout` there changes the file
+   * with the window in focus the whole time.
    *
    * Skipped while a save is out, whose own write would read as somebody else's.
    * An unchanged fingerprint means nothing moved, whatever the buffer holds.
@@ -478,7 +480,13 @@ export function CanvasSlot({
     };
     if (!justRead) look();
     window.addEventListener("focus", look);
-    return () => window.removeEventListener("focus", look);
+    // And when a command in the dock finishes, which changes files without the
+    // window ever losing focus.
+    window.addEventListener(COMMAND_ENDED, look);
+    return () => {
+      window.removeEventListener("focus", look);
+      window.removeEventListener(COMMAND_ENDED, look);
+    };
     // Reads everything through refs, like `leave`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showing]);

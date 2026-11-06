@@ -63,6 +63,7 @@ pub async fn create_session(
             // anything in here.
             switches: Mutex::new(Vec::new()),
             plan_edits: Mutex::new(Vec::new()),
+            unattended_marks: Mutex::new(Vec::new()),
         }),
     );
 
@@ -116,6 +117,10 @@ pub struct ResumedSession {
     /// The panel draws the newest plan, whichever of the model and the person
     /// wrote it.
     pub plan_edits: Vec<PlanEditMark>,
+    /// Where it was set to run unattended or set back, positioned the way
+    /// `switches` are, so a reopened conversation says why a turn refused its
+    /// tools.
+    pub unattended: Vec<taurus_host::UnattendedMark>,
     /// The turn that ended before its work did — the process died in it, or
     /// it ran out of round trips — when this conversation's transcript ends in
     /// one. `None` for one that finished, and for one whose turn is running
@@ -211,7 +216,7 @@ pub async fn resume_session(
 ) -> CmdResult<ResumedSession> {
     // `loaded` is carried alongside so the log below can be opened on the
     // transcript this was actually read from — see `SessionLog::resume`.
-    let (session, provider_id, switches, plan_edits, turns, loaded) =
+    let (session, provider_id, switches, plan_edits, unattended_marks, turns, loaded) =
         // Cloned out of the map first, or the guard would keep the shard locked
         // through every await in the arm below, the transcript load included.
         match state.sessions.get(&session_id).map(|open| open.clone()) {
@@ -223,6 +228,7 @@ pub async fn resume_session(
                 let provider_id = entry.provider_id.lock().await.clone();
                 let switches = entry.switches.lock().await.clone();
                 let plan_edits = entry.plan_edits.lock().await.clone();
+                let unattended_marks = entry.unattended_marks.lock().await.clone();
                 // Never waited for. A turn holds this lock for its whole run, which
                 // is minutes for a long one, and awaiting it here hung the window
                 // on the click that reopens the conversation that is *already*
@@ -239,7 +245,15 @@ pub async fn resume_session(
                     Some(session) => {
                         // The log's lock is held a line at a time, never for a turn.
                         let turns = entry.log.lock().await.marks().to_vec();
-                        (session, provider_id, switches, plan_edits, turns, None)
+                        (
+                            session,
+                            provider_id,
+                            switches,
+                            plan_edits,
+                            unattended_marks,
+                            turns,
+                            None,
+                        )
                     }
                     None => {
                         let id = session_id.clone();
@@ -256,6 +270,7 @@ pub async fn resume_session(
                             provider_id,
                             switches,
                             plan_edits,
+                            unattended_marks,
                             loaded.turns,
                             None,
                         )
@@ -283,12 +298,14 @@ pub async fn resume_session(
                     .await?;
                 let switches = loaded.switches.clone();
                 let plan_edits = loaded.plan_edits.clone();
+                let unattended_marks = loaded.unattended.clone();
                 let turns = loaded.turns.clone();
                 (
                     loaded.session.clone(),
                     resolved,
                     switches,
                     plan_edits,
+                    unattended_marks,
                     turns,
                     Some(loaded),
                 )
@@ -340,6 +357,7 @@ pub async fn resume_session(
         messages: session.messages.clone(),
         switches: switches.clone(),
         plan_edits: plan_edits.clone(),
+        unattended: unattended_marks.clone(),
         turns,
         interrupted: session.interrupted.as_ref().map(InterruptedTurn::from),
         delegates,
@@ -373,6 +391,7 @@ pub async fn resume_session(
                 released: AtomicBool::new(false),
                 switches: Mutex::new(switches),
                 plan_edits: Mutex::new(plan_edits),
+                unattended_marks: Mutex::new(unattended_marks.clone()),
             }));
             info!(session = %session_id, "session resumed");
         }
@@ -728,18 +747,28 @@ pub async fn attach_session(
 /// leave is a moment when something is already running.
 ///
 /// It widens nothing — see [`SessionEntry::unattended`] — so there is no
-/// standing decision to record and nothing is written to disk. A conversation
-/// reopened tomorrow asks again.
+/// standing decision to keep. A conversation reopened tomorrow asks again. What
+/// is written down is that it happened: a change of setting goes into the
+/// transcript, and comes back as the line the window draws for it.
 #[tauri::command]
 pub async fn set_unattended(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     unattended: bool,
-) -> CmdResult<()> {
+) -> CmdResult<Option<taurus_host::UnattendedMark>> {
     let entry = state.session(&session_id)?;
-    entry.unattended.store(unattended, Ordering::Relaxed);
+    let was = entry.unattended.swap(unattended, Ordering::Relaxed);
     info!(session = %session_id, unattended, "unattended set");
-    Ok(())
+    if was == unattended {
+        return Ok(None);
+    }
+    // On the record, so a transcript read back later says why a turn refused
+    // its own tools. The switch is still not saved: reopening asks again.
+    let mark = entry.log.lock().await.record_unattended(unattended);
+    if let Some(mark) = &mark {
+        entry.unattended_marks.lock().await.push(mark.clone());
+    }
+    Ok(mark)
 }
 
 /// Lets go of a conversation whose release was waiting for its turn.

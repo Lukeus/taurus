@@ -214,6 +214,16 @@ enum Record {
         edit: PlanEdit,
         at: u64,
     },
+    /// The conversation was set to run unattended, or set back.
+    ///
+    /// The switch itself is held in memory and asked again on reopen, so this
+    /// grants nothing. It's here so a transcript read back later says why a
+    /// turn refused its own tools. Skipped by an older build, like
+    /// [`Record::Model`].
+    Unattended {
+        on: bool,
+        at: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -764,6 +774,23 @@ impl SessionLog {
         .then_some(mark)
     }
 
+    /// Records that the conversation was set to run unattended, or set back,
+    /// and where it falls. `None` when nothing was written, as for
+    /// [`Self::record_plan`]: the switch still applies, it just isn't on the
+    /// record.
+    pub fn record_unattended(&mut self, on: bool) -> Option<UnattendedMark> {
+        if self.off || !has_header(&self.path) {
+            return None;
+        }
+        let mark = UnattendedMark {
+            after: self.persisted,
+            on,
+            at: now(),
+        };
+        self.write(&Record::Unattended { on, at: mark.at })
+            .then_some(mark)
+    }
+
     /// Appends one record. Returns whether it landed.
     fn write(&mut self, record: &Record) -> bool {
         match self.open() {
@@ -960,6 +987,21 @@ pub struct PlanEditMark {
     pub at: u64,
 }
 
+/// Where the conversation was set to run unattended, or set back, positioned
+/// the way a [`Switch`] is.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UnattendedMark {
+    /// How many messages preceded it.
+    #[ts(type = "number")]
+    pub after: usize,
+    /// Set to run unattended, rather than set back.
+    pub on: bool,
+    /// Unix seconds.
+    #[ts(type = "number")]
+    pub at: u64,
+}
+
 pub struct Loaded {
     pub session: Session,
     /// The backend this conversation was last worked on, when it has moved at
@@ -969,6 +1011,8 @@ pub struct Loaded {
     pub switches: Vec<Switch>,
     /// Where the person edited the plan, oldest first.
     pub plan_edits: Vec<PlanEditMark>,
+    /// Where it was set to run unattended or set back, oldest first.
+    pub unattended: Vec<UnattendedMark>,
     /// Where each request starts, oldest first. A turn that continued an
     /// interrupted one isn't here, and neither is any turn of a transcript
     /// written before turns had ids.
@@ -1009,6 +1053,7 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
     let mut spend = Spend::default();
     let mut switches: Vec<Switch> = Vec::new();
     let mut plan_edits: Vec<PlanEditMark> = Vec::new();
+    let mut unattended: Vec<UnattendedMark> = Vec::new();
     let mut turns: Vec<TurnMark> = Vec::new();
     // Turns spent on the current request, the turn with no end yet, and
     // whether the last turn to end ran out of round trips.
@@ -1053,6 +1098,11 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
                 after: messages.len(),
                 steps,
                 edit,
+                at,
+            }),
+            Ok(Record::Unattended { on, at }) => unattended.push(UnattendedMark {
+                after: messages.len(),
+                on,
                 at,
             }),
             Ok(Record::TurnEnd { id, outcome }) => {
@@ -1127,9 +1177,11 @@ fn read_transcript(path: PathBuf) -> Result<Loaded, String> {
             summarized_away: 0,
             owed,
             interrupted,
+            retired_tool_ids: Default::default(),
         },
         switches,
         plan_edits,
+        unattended,
         turns,
         path,
     })
@@ -2749,6 +2801,30 @@ mod tests {
         assert_eq!(edits[0].after, 2);
         assert_eq!(edits[0].steps, steps);
         assert_eq!(edits[0].edit, edit);
+    }
+
+    #[test]
+    fn leaving_a_conversation_unattended_reads_back_where_it_happened() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/unattended");
+        let mut session = session_with("ua", &["first"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        // Before anything is on disk there is no row to put it beside, and a
+        // transcript of nothing but this would be a conversation in the rail
+        // that never happened.
+        assert!(log.record_unattended(true).is_none());
+
+        log.record(&session);
+        assert_eq!(log.record_unattended(true).expect("written").after, 2);
+        session.push(Message::user("second"));
+        session.push(Message::assistant("refused"));
+        log.record(&session);
+        log.record_unattended(false).expect("written");
+
+        let marks = load("ua").unwrap().unattended;
+        assert_eq!(marks.len(), 2);
+        assert!(marks[0].on && marks[0].after == 2);
+        assert!(!marks[1].on && marks[1].after == 4);
     }
 
     #[test]

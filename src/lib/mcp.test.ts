@@ -6,6 +6,11 @@ import {
   joinCommandLine,
   splitCommandLine,
   stateOf,
+  blankDraft,
+  canKeep,
+  keepsByDefault,
+  namesOnly,
+  withKeep,
 } from "./mcp";
 
 const view = (patch: Partial<McpServerView> = {}): McpServerView => ({
@@ -210,5 +215,53 @@ describe("what the form refuses to save", () => {
         }),
       ),
     ).toMatch(/same name/i);
+  });
+});
+
+describe("what the keychain box is offered on", () => {
+  it("takes a reference, behind a scheme or not, as names only", () => {
+    expect(namesOnly("${GITHUB_TOKEN}")).toBe(true);
+    expect(namesOnly("Bearer ${secret:linear}")).toBe(true);
+    expect(namesOnly("bearer   ${A} ${B}")).toBe(true);
+    expect(namesOnly("Bearer lin_123")).toBe(false);
+    expect(namesOnly("sk-${TOKEN}")).toBe(false);
+    expect(namesOnly("Bearer ")).toBe(false);
+  });
+
+  it("ticks headers and token-looking variables, not the rest", () => {
+    expect(keepsByDefault(true, "X-Region")).toBe(true);
+    expect(keepsByDefault(false, "GITHUB_PERSONAL_ACCESS_TOKEN")).toBe(true);
+    expect(keepsByDefault(false, "OPENAI_API_KEY")).toBe(true);
+    expect(keepsByDefault(false, "LOG_LEVEL")).toBe(false);
+    expect(keepsByDefault(false, "PATH")).toBe(false);
+  });
+
+  it("is never offered to a project's program", () => {
+    const local = { ...blankDraft("workspace"), transport: "stdio" as const };
+    expect(canKeep(local, true)).toBe(false);
+    expect(canKeep({ ...local, transport: "http" }, true)).toBe(true);
+    expect(canKeep({ ...local, scope: "global" }, false)).toBe(false);
+  });
+
+  it("sends a decision only for the rows that were offered one", () => {
+    const draft = {
+      ...blankDraft("global"),
+      transport: "stdio" as const,
+      env: [
+        { key: "TOKEN", value: "abc", secret: false },
+        { key: "LOG_LEVEL", value: "debug", secret: false },
+        { key: "REF", value: "${X}", secret: false },
+        { key: "HELD", value: "", secret: true },
+        { key: "UNTICKED", value: "abc", secret: false, keep: false },
+      ],
+    };
+    expect(withKeep(draft, true).env.map((v) => v.keep)).toEqual([
+      true,
+      false,
+      undefined,
+      undefined,
+      false,
+    ]);
+    expect(withKeep(draft, false).env.every((v) => v.keep === undefined)).toBe(true);
   });
 });

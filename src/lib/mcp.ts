@@ -176,6 +176,63 @@ export function draftProblem(draft: McpServerDraft): string | null {
 }
 
 /** A fresh row for the env/headers editor. */
+/**
+ * Whether a value is only names: `${VAR}` and `${secret:name}` references,
+ * optionally after `Bearer`, `Token` or `Basic`. The backend's `names_only`,
+ * for deciding what the keychain box is offered on.
+ */
+export function namesOnly(value: string): boolean {
+  let rest = value.trim().replace(/^(bearer|token|basic) +/i, "");
+  if (rest === "") return false;
+  while (rest.startsWith("${")) {
+    const end = rest.indexOf("}");
+    if (end < 0) return false;
+    rest = rest.slice(end + 1).trimStart();
+  }
+  return rest === "";
+}
+
+/**
+ * Whether a typed value goes to the keychain unless it's unticked. Every
+ * header, since a header that isn't a credential is rarely typed into this
+ * form, and an environment variable whose name says it holds one.
+ */
+export function keepsByDefault(header: boolean, key: string): boolean {
+  return header || /token|key|secret|password|passwd|auth|credential|\bpat\b/i.test(key);
+}
+
+/**
+ * Whether a typed token in this draft can be kept in the keychain at all:
+ * there's a keychain, and the server is one a saved credential reaches. A
+ * project's own program never gets one.
+ */
+export function canKeep(draft: McpServerDraft, keychain: boolean): boolean {
+  return keychain && (draft.transport === "http" || draft.scope === "global");
+}
+
+/** Whether this row is offered the keychain box. */
+export function keepable(value: McpValue, offered: boolean): boolean {
+  return offered && !value.secret && value.value.trim() !== "" && !namesOnly(value.value);
+}
+
+/**
+ * The draft as it's sent to be saved: every row offered the keychain says
+ * whether to use it, its default filled in where nobody touched the box, and
+ * no other row says anything.
+ */
+export function withKeep(draft: McpServerDraft, keychain: boolean): McpServerDraft {
+  const offered = canKeep(draft, keychain);
+  const header = draft.transport === "http";
+  const decide = (values: McpValue[]) =>
+    values.map((value) => ({
+      ...value,
+      keep: keepable(value, offered)
+        ? (value.keep ?? keepsByDefault(header, value.key))
+        : undefined,
+    }));
+  return { ...draft, env: decide(draft.env), headers: decide(draft.headers) };
+}
+
 export function blankValue(): McpValue {
   return { key: "", value: "", secret: false };
 }
@@ -277,6 +334,62 @@ export function fromCatalog(
  */
 export function leaksSecret(entry: CatalogEntry, scope: Scope): boolean {
   return scope === "workspace" && entry.inputs.some((i) => i.kind === "secret");
+}
+
+/**
+ * Whether installing this entry saves its tokens as credentials in the
+ * keychain, and writes `${secret:NAME}` where the token would have gone.
+ *
+ * Wherever the backend would hand the credential back: your own file, or an
+ * HTTP server, which gets one pinned to its own host. A project's program is
+ * the one place a saved credential never goes, so a token for one is still
+ * written into the file, and `leaksSecret` still asks first.
+ */
+export function keepsInKeychain(entry: CatalogEntry, scope: Scope, keychain: boolean): boolean {
+  return (
+    keychain &&
+    entry.inputs.some((i) => i.kind === "secret") &&
+    (scope === "global" || entry.transport === "http")
+  );
+}
+
+/**
+ * The saved credential a secret input becomes: the entry's id, with the
+ * input's key added when the entry asks for more than one.
+ */
+export function credentialFor(entry: CatalogEntry, inputKey: string): string {
+  const id = entry.id.replace(/[^A-Za-z0-9_.-]/g, "-");
+  const secrets = entry.inputs.filter((i) => i.kind === "secret");
+  return secrets.length > 1 ? `${id}-${inputKey}` : id;
+}
+
+/**
+ * The hosts a saved credential is for. An HTTP entry's own host, so the token
+ * goes nowhere else even if the entry is copied. None for a program, which
+ * only your own file can start with one.
+ */
+export function credentialHosts(entry: CatalogEntry, answers: Record<string, string>): string[] {
+  if (entry.transport !== "http") return [];
+  const url = fill(entry.url, answers);
+  try {
+    return url ? [new URL(url).hostname] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The answers with each secret replaced by the reference to its credential. */
+export function withReferences(
+  entry: CatalogEntry,
+  answers: Record<string, string>,
+): Record<string, string> {
+  const out = { ...answers };
+  for (const input of entry.inputs) {
+    if (input.kind === "secret" && (answers[input.key] ?? "").trim()) {
+      out[input.key] = `\${secret:${credentialFor(entry, input.key)}}`;
+    }
+  }
+  return out;
 }
 
 /**

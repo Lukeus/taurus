@@ -52,6 +52,7 @@ impl Host {
                 max_iterations: settings.max_iterations,
                 context_strategy: settings.context_strategy,
                 context_limit: (settings.context_limit > 0).then_some(settings.context_limit),
+                verify_changes: settings.verify_changes,
                 capture: if settings.otlp_capture_content {
                     taurus_core::Capture::Content
                 } else {
@@ -103,7 +104,12 @@ impl Host {
         // Per turn for the canvas's reason: the dock is the person's own shell,
         // in this window. A delegate has no window, and reading what somebody
         // typed is a step past anything it was sent to do.
-        if let Some(terminal) = self.live_terminal() {
+        //
+        // Offered whenever the app has a dock, open or not. Tools lead every
+        // request, so one that came and went with the dock would cost a hosted
+        // backend's whole cached prefix each time it was opened or shut, and
+        // the tool says plainly when there is nothing to read.
+        if let Some(terminal) = self.terminal() {
             registry.register(Arc::new(
                 taurus_tools::builtin::terminal::ReadTerminal::new(terminal),
             ));
@@ -465,20 +471,20 @@ impl Host {
     /// Hands the host the terminal beside the conversation.
     ///
     /// The desktop calls this once, at startup, with every shell its dock will
-    /// open. `read_terminal` is then offered on each turn that starts while one
-    /// of those shells is running and marking its commands, and on no other:
-    /// a closed dock, or a shell without integration, has nothing to read.
+    /// open. `read_terminal` is then offered on every turn, whether or not a
+    /// shell is running, so the tool list holds still while the dock opens and
+    /// closes. A closed dock or a shell without integration is answered by the
+    /// tool itself. The CLI never calls this, and never gets the tool.
     pub fn set_terminal(&self, terminal: Option<Arc<dyn taurus_tools::blocks::TerminalReader>>) {
         *self.terminal.write().unwrap_or_else(|e| e.into_inner()) = terminal;
     }
 
-    /// The terminal, if a shell in it is reporting commands right now.
-    fn live_terminal(&self) -> Option<Arc<dyn taurus_tools::blocks::TerminalReader>> {
+    /// The terminal, if this frontend has one.
+    fn terminal(&self) -> Option<Arc<dyn taurus_tools::blocks::TerminalReader>> {
         self.terminal
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
-            .filter(|t| t.integrated())
     }
 
     /// The model reaches these through `check_command`; this is the other

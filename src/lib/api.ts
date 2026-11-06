@@ -103,6 +103,7 @@ import type { Problem } from "../bindings/Problem";
 import type { ProblemSource } from "../bindings/ProblemSource";
 import type { Profile } from "../bindings/Profile";
 import type { ProfileView } from "../bindings/ProfileView";
+import type { CredentialView } from "../bindings/CredentialView";
 import type { ProviderConfig } from "../bindings/ProviderConfig";
 import type { AgentProposal } from "../bindings/AgentProposal";
 import type { AgentSaveTarget } from "../bindings/AgentSaveTarget";
@@ -126,6 +127,7 @@ import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { Skipped } from "../bindings/Skipped";
 import type { PlanEditMark } from "../bindings/PlanEditMark";
+import type { UnattendedMark } from "../bindings/UnattendedMark";
 import type { PlanEdited } from "../bindings/PlanEdited";
 import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
@@ -294,6 +296,7 @@ export type {
   ProblemSource,
   Profile,
   ProfileView,
+  CredentialView,
   ProviderConfig,
   ProviderKind,
   RepoStatus,
@@ -312,6 +315,7 @@ export type {
   Skipped,
   PlanEditMark,
   PlanEdited,
+  UnattendedMark,
   Step,
   StepState,
   Switch,
@@ -467,7 +471,7 @@ export function sendMessage(
  * Not persisted. A conversation reopened in a new window asks again.
  */
 export const setUnattended = (sessionId: string, unattended: boolean) =>
-  invoke<void>("set_unattended", { sessionId, unattended });
+  invoke<UnattendedMark | null>("set_unattended", { sessionId, unattended });
 
 /**
  * Which conversations have a turn running in them.
@@ -1106,6 +1110,7 @@ export const setOtlpEndpoint = (endpoint: string) =>
 
 /** Whether a turn finishing while you're elsewhere sends a notification. */
 export const setNotifyWhenDone = (on: boolean) => invoke<void>("set_notify_when_done", { on });
+export const setVerifyChanges = (on: boolean) => invoke<void>("set_verify_changes", { on });
 
 /** How large the interface is drawn, in percent; applied to the window at once. */
 export const setUiScale = (percent: number) => invoke<void>("set_ui_scale", { percent });
@@ -1131,6 +1136,19 @@ export const getProfile = () => invoke<ProfileView>("get_profile");
 /** Saves the active profile and returns what was written. */
 export const saveProfile = (profile: Profile) =>
   invoke<ProfileView>("save_profile", { profile });
+
+/** The active profile's saved credentials, and the servers using each. */
+export const listCredentials = () => invoke<CredentialView[]>("list_credentials");
+
+/**
+ * Saves a credential to the keychain. `value` null changes only the hosts.
+ * Restarts the servers that use it.
+ */
+export const saveCredential = (name: string, hosts: string[], value: string | null) =>
+  invoke<CredentialView>("save_credential", { name, hosts, value });
+
+/** Removes a saved credential from the keychain and the profile. */
+export const removeCredential = (name: string) => invoke<void>("remove_credential", { name });
 
 /** Every hook the layers define, on or off, and which layer decided each. */
 export const hookList = () => invoke<HookView[]>("hook_list");

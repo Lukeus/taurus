@@ -17,7 +17,9 @@ use tokio_util::sync::CancellationToken;
 use taurus_agents::proposal::AgentProposal;
 use taurus_core::telemetry::Traces;
 use taurus_core::Session;
-use taurus_host::{Host, PermissionPromptFactory, PlanEditMark, SessionLog, Switch};
+use taurus_host::{
+    Host, PermissionPromptFactory, PlanEditMark, SessionLog, Switch, UnattendedMark,
+};
 use taurus_skills::proposal::SkillProposal;
 use taurus_tools::{Answer, PermissionPrompt};
 
@@ -100,6 +102,9 @@ pub struct SessionEntry {
     /// Where the person has edited the plan, oldest first. Held for the
     /// reason `switches` is.
     pub plan_edits: Mutex<Vec<PlanEditMark>>,
+    /// Where it was set to run unattended or set back, oldest first. Held for
+    /// the reason `switches` is.
+    pub unattended_marks: Mutex<Vec<UnattendedMark>>,
 }
 
 /// What letting go of a conversation means, asked at the moment of letting go.
@@ -477,6 +482,7 @@ mod tests {
             released: AtomicBool::new(false),
             switches: Mutex::new(Vec::new()),
             plan_edits: Mutex::new(Vec::new()),
+            unattended_marks: Mutex::new(Vec::new()),
         };
         let sessions = DashMap::new();
         sessions.insert("s1".to_string(), Arc::new(entry));

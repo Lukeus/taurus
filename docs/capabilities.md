@@ -1139,8 +1139,10 @@ What that gets you:
   wrong?" after a failure. It's a draft, not a send, so you can say what you
   actually want to know. The message carries its own evidence, so it still
   makes sense in the transcript a week later.
-- **`read_terminal`**, a tool the model gets while the dock is open. "Why did
-  that fail?" typed under a red build is a complete question now. The model
+- **`read_terminal`**, a tool the model always has in the app. With the dock
+  closed it says so, and it stays in the tool list either way, so opening the
+  dock doesn't cost a hosted backend's prompt cache. "Why did that fail?"
+  typed under a red build is a complete question now. The model
   lists your recent commands with the end of each one's output, and reads any
   one of them whole. See
   [What you run in the dock, the model can read](safety.md#permissions).

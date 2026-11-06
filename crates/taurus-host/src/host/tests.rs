@@ -2701,6 +2701,9 @@ impl taurus_tools::blocks::TerminalReader for Terminal {
     fn shell(&self) -> String {
         "zsh".into()
     }
+    fn open(&self) -> bool {
+        self.live
+    }
     fn integrated(&self) -> bool {
         self.live
     }
@@ -2713,10 +2716,12 @@ impl taurus_tools::blocks::TerminalReader for Terminal {
 }
 
 #[tokio::test]
-async fn the_terminal_is_offered_only_while_a_shell_is_marking_commands() {
-    // The CLI never sets one, and a dock running a shell with no integration
-    // has nothing to read: either way the model must not be handed a tool
-    // that can only fail.
+async fn the_terminal_is_offered_whenever_the_app_has_a_dock() {
+    // The CLI never sets one, so it never gets the tool. The app always
+    // does, shell or no shell: a tool that came and went with the dock would
+    // change the front of every request, and miss a hosted backend's cache
+    // each time the dock was opened or shut. The tool answers a closed dock
+    // itself.
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
@@ -2729,8 +2734,8 @@ async fn the_terminal_is_offered_only_while_a_shell_is_marking_commands() {
     );
     host.set_terminal(Some(Arc::new(Terminal { live: false })));
     assert!(
-        !turn_tools(&host).await.contains(&read),
-        "a shell without marks"
+        turn_tools(&host).await.contains(&read),
+        "a dock with no shell running"
     );
     host.set_terminal(Some(Arc::new(Terminal { live: true })));
     assert!(
@@ -2749,8 +2754,8 @@ async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
     host.reload().await;
-    // `read_terminal` is per turn only while a dock shell is marking its
-    // commands, so this turn has one.
+    // `read_terminal` is per turn, and only in a frontend with a dock, so this
+    // turn has one.
     host.set_terminal(Some(Arc::new(Terminal { live: true })));
 
     let turn = turn_tools(&host).await;
@@ -4702,4 +4707,156 @@ async fn a_provider_list_saved_in_settings_isnt_read_again_at_the_next_turn() {
         !host.refresh_config().await,
         "its own write was taken as a hand edit"
     );
+}
+
+/// Runs a turn that writes a file and stops without running anything, under
+/// the given project settings, and says whether the model was asked to check.
+async fn asked_to_check_with(settings: &str) -> bool {
+    use taurus_core::testing::{FakeProvider, ScriptedTurn};
+
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    write_settings(&workspace, settings);
+    std::fs::write(
+        workspace.join(".taurus/permissions.json"),
+        r#"{"allowed":["write_file"]}"#,
+    )
+    .unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+
+    // The third answer is there for the nudge to spend. Without one, a turn
+    // that wasn't asked simply leaves it unread.
+    let provider = FakeProvider::new(vec![
+        ScriptedTurn::tool_call(
+            "w1",
+            "write_file",
+            serde_json::json!({ "path": "a.txt", "content": "new\n" }),
+        ),
+        ScriptedTurn::text("Wrote a.txt."),
+        ScriptedTurn::text("Nothing to run against a text file."),
+    ]);
+    let agent = host
+        .build_agent(
+            provider,
+            "fake",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "conversation1",
+                prompt: "write a.txt",
+                unattended: None,
+            },
+        )
+        .await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut session = taurus_core::Session::new("fake");
+    session.id = "conversation1".into();
+    agent
+        .run_turn(
+            &mut session,
+            taurus_provider::Message::user("write a.txt"),
+            tx,
+        )
+        .await
+        .expect("the turn should finish");
+    drain.await.unwrap();
+    session
+        .messages
+        .iter()
+        .any(|m| m.text().contains("have not run anything since"))
+}
+
+/// The Settings switch reaches the agent: the default asks, and
+/// `verify_changes: false` stops the ask, and with it the extra request.
+#[tokio::test]
+async fn the_check_your_work_nudge_follows_the_setting() {
+    assert!(asked_to_check_with("{}").await, "on by default");
+    assert!(
+        !asked_to_check_with(r#"{"verify_changes": false}"#).await,
+        "switched off, a turn that wrote and ran nothing just ends"
+    );
+}
+
+/// A stand-in whose environment names the saved credential `name`.
+fn stand_in_using(name: &str, tools: &[&str]) -> taurus_mcp::ServerConfig {
+    let mut server = stand_in(tools);
+    if let taurus_mcp::ServerConfig::Stdio { env, .. } = &mut server {
+        env.insert("TOKEN".into(), format!("${{secret:{name}}}"));
+    }
+    server
+}
+
+#[tokio::test]
+async fn your_own_server_gets_a_saved_credential_and_a_projects_does_not() {
+    // The same entry, in the two files. A trusted folder whose `git pull`
+    // added a server is the case trust can't see, and this is the gate for it.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    let name = "host-test-own-not-project";
+    host.save_credential(name, vec![], Some("tok".into()))
+        .await
+        .unwrap();
+    write_mcp(home.path(), &[("mine", stand_in_using(name, &["a"]))]);
+    write_mcp(
+        &config::workspace_dir(&workspace),
+        &[("theirs", stand_in_using(name, &["b"]))],
+    );
+    crate::trust::trust(&workspace).unwrap();
+    host.reload_mcp().await;
+
+    let statuses: BTreeMap<String, ServerStatus> = host
+        .mcp_statuses()
+        .await
+        .into_iter()
+        .map(|s| (s.name.clone(), s))
+        .collect();
+    assert!(statuses["mine"].connected, "{:?}", statuses["mine"].error);
+    let refused = statuses["theirs"].error.clone().unwrap_or_default();
+    assert!(
+        refused.contains("program the project chose"),
+        "a project's server was given the credential, or failed for another reason: {refused}"
+    );
+
+    let listed = host.credentials().await.unwrap();
+    let mut used_by = listed[0].used_by.clone();
+    used_by.sort();
+    assert_eq!(used_by, ["mine", "theirs"]);
+}
+
+#[tokio::test]
+async fn saving_a_credential_restarts_what_uses_it_and_leaves_the_rest() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, home) = host(&workspace);
+    let name = "host-test-restart-using";
+    host.save_credential(name, vec![], Some("first".into()))
+        .await
+        .unwrap();
+    write_mcp(
+        home.path(),
+        &[
+            ("uses", stand_in_using(name, &["a"])),
+            ("other", stand_in(&["b"])),
+        ],
+    );
+    host.reload_mcp().await;
+    let (a, b) = (
+        taurus_mcp::namespaced("uses", "a"),
+        taurus_mcp::namespaced("other", "b"),
+    );
+    let (uses, other) = (
+        registered(&host, &a).await.unwrap(),
+        registered(&host, &b).await.unwrap(),
+    );
+
+    host.save_credential(name, vec![], Some("second".into()))
+        .await
+        .unwrap();
+    assert!(
+        !Arc::ptr_eq(&uses, &registered(&host, &a).await.unwrap()),
+        "the server using it kept the old value"
+    );
+    assert!(Arc::ptr_eq(&other, &registered(&host, &b).await.unwrap()));
 }

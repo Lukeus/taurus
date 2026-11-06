@@ -43,6 +43,7 @@ use taurus_tools::{
 
 use crate::command;
 use crate::config::{self, ProviderConfig, ProviderKind, Scope, Settings, Theme, WireApi};
+use crate::credentials::{self, CredentialView};
 use crate::document::{fingerprint, Document, Saved, MAX_DOCUMENT_BYTES};
 use crate::freshness::Freshness;
 use crate::instructions::{self, Instructions};
@@ -260,9 +261,8 @@ pub struct Host {
     /// The terminal beside the conversation, for a frontend that has one.
     ///
     /// Set once by the desktop app and never by the CLI, which has no dock.
-    /// Whether `read_terminal` is offered is decided per turn from this,
-    /// because a shell opens and closes between turns. See
-    /// [`Self::set_terminal`].
+    /// `read_terminal` is offered on every turn while this is set, open shell or
+    /// not. See [`Self::set_terminal`].
     terminal: std::sync::RwLock<Option<Arc<dyn taurus_tools::blocks::TerminalReader>>>,
     /// The user's configured hooks, rebuilt on every reload.
     ///
@@ -379,7 +379,8 @@ impl Host {
             permissions: RwLock::new(permissions),
             // Handed the keychain, so a server that wants OAuth can be signed
             // in to. See `secrets::Keychain`.
-            mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain)),
+            mcp: McpManager::with_vault(Arc::new(crate::secrets::Keychain))
+                .with_credentials(Arc::new(crate::credentials::ProfileCredentials)),
             mcp_reload: tokio::sync::Mutex::new(()),
             problems: RwLock::new(Vec::new()),
             prompts,

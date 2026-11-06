@@ -39,6 +39,9 @@ impl TerminalReader for Shell {
     fn shell(&self) -> String {
         self.name.clone()
     }
+    fn open(&self) -> bool {
+        true
+    }
     fn integrated(&self) -> bool {
         self.blocks.lock().unwrap().integrated()
     }

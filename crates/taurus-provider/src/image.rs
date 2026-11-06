@@ -106,13 +106,16 @@ pub fn check(mime_type: &str, data: &str) -> Result<usize, Rejected> {
     }
 }
 
+/// Bytes as the base64 an image block carries, so a tool that reads a picture
+/// off disk needs no encoder of its own.
+pub fn encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn encode(bytes: &[u8]) -> String {
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    }
 
     fn png_bytes() -> Vec<u8> {
         let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];

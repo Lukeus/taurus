@@ -546,6 +546,10 @@ fn now_ms() -> u64 {
 pub trait TerminalReader: Send + Sync {
     /// The shell's name, for the heading of what the tool returns: `zsh`.
     fn shell(&self) -> String;
+    /// Whether a shell is running at all. The tool is offered whether or not
+    /// one is, so the list of tools doesn't change when the dock opens and
+    /// closes, and this is how it tells "no terminal" from "no commands".
+    fn open(&self) -> bool;
     /// See [`BlockTracker::integrated`].
     fn integrated(&self) -> bool;
     /// See [`BlockTracker::recent`].

@@ -203,6 +203,14 @@ impl Host {
             .await
     }
 
+    /// Whether a turn that changed files and ran nothing is asked to check its
+    /// work. Global, like the iteration ceiling; a project's `settings.json`
+    /// can still set its own.
+    pub async fn set_verify_changes(&self, on: bool) -> Result<(), String> {
+        self.edit_global_setting(|s| s.verify_changes = Some(on))
+            .await
+    }
+
     /// How large the interface is drawn, in percent. Clamped on the way in, so
     /// what's written is what's used. The caller applies it to the window.
     pub async fn set_ui_scale(&self, percent: u32) -> Result<u32, String> {
