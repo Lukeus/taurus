@@ -7,6 +7,8 @@ license.workspace = true
 description = "Frontend-agnostic assembly of the Taurus harness: config, prompts, and the tool registry"
 
 [dependencies]
+# A pasted server URL cut down to the host a saved credential is for.
+url = "2"
 taurus-core.workspace = true
 taurus-hooks.workspace = true
 taurus-index.workspace = true

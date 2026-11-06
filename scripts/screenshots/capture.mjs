@@ -76,6 +76,8 @@ const SHOTS = [
   // switched off — because the panel exists for the ones that are not working,
   // and a frame of four green rows would say nothing about what it is for.
   { name: "mcp", shot: "mcp", theme: "dark" },
+  // The server form with a token just typed and Keychain ticked beside it.
+  { name: "mcp-keychain", shot: "mcp-keychain", theme: "light" },
   // A plugin as Taurus reads it: its parts, what isn't run here and why, and
   // one whose name stops it loading.
   { name: "plugins", shot: "plugins", theme: "dark" },
@@ -105,7 +107,8 @@ const SHOTS = [
   { name: "hooks", shot: "hooks", theme: "dark" },
   // Settings › Terminal, with a shell and font chosen.
   { name: "terminal-settings", shot: "terminal-settings", theme: "dark" },
-  // Settings › Profile, with a name and the switch that sends it on.
+  // Settings › Profile, with a name, the switch that sends it, and two saved
+  // credentials.
   { name: "profile", shot: "profile", theme: "light" },
   // A profile rather than a page of rows, and a file with real problems in it:
   // one column 42% missing, one with too many distinct values to rank. A grid

@@ -15,12 +15,11 @@ the backlog, and they're the minority.
 
 - **There's one profile, and nothing switches between them.** Profiles are
   laid out to be several, each in its own folder under `~/.taurus/profiles`,
-  but only `default` exists and Settings has no switcher. A profile also holds
-  nothing but your name so far. Provider keys, MCP sign-ins and the tokens
-  typed into the MCP panel aren't part of it: they belong to the machine, not
-  to a profile, and switching would leave them where they are. Moving them in
-  is the next piece, and it's where saved credentials for MCP servers (a
-  keychain reference in place of a token in `mcp.json`) belong. See
+  but only `default` exists and Settings has no switcher. A profile holds your
+  name and your [saved credentials](configuration.md#saved-credentials), and
+  each profile's credentials get keychain entries of their own. Provider keys
+  and MCP sign-ins aren't part of a profile yet. They belong to the machine,
+  and switching would leave them where they are. See
   [Your profile](configuration.md#your-profile).
 - **A pty on Windows depends on a runtime fetched at build time.** The Windows
   bundle ships Microsoft's redistributable ConPTY next to the executable:
@@ -680,15 +679,13 @@ the backlog, and they're the minority.
   two minutes may well answer the next one, so its card is left alone and
   only the call fails. That's a judgment, and it can be wrong in one
   direction: the panel can look healthier than the server is.
-- **A token you paste is stored in `mcp.json` in plain text.** OAuth refresh
-  tokens go to the OS keychain. A personal access token typed into the header
-  or environment field doesn't. It's written into the file, the same file the
-  panel exists to save you from editing. Entries that want a token default to
-  the global file, not the one inside the repository. Choosing the repository
-  asks you to acknowledge that a commit can publish it. There's no keychain
-  reference. `${VARIABLE}` is expanded in any field, so the way to keep a
-  token out of the file today is to export it and name the variable. Nothing
-  in the panel tells you that.
+- **A token for a project's own program is stored in plain text.** A saved
+  credential never reaches a stdio server defined in a project's `mcp.json`,
+  by design, so a token typed for one is written into that file as typed, and
+  the catalog asks you to confirm first. Everywhere else, a typed token goes
+  to the keychain. The way to keep one out of a project file is to define the
+  server in your own `~/.taurus/mcp.json`, or name a `${VAR}`. See
+  [Saved credentials](configuration.md#saved-credentials).
 - **A sign-in needs the authorization server to register Taurus on the spot.**
   OAuth works through dynamic client registration (RFC 7591): Taurus asks the
   authorization server for a client id when you press Sign in. The current
