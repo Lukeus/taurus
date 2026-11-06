@@ -11,6 +11,7 @@ import {
 
 import { when } from "../lib/format";
 import { findKey, type FindKey } from "../lib/find";
+import { slug } from "../lib/links";
 import { chord, isChord, isComposing } from "../lib/keys";
 import { toggleTask } from "../lib/prose";
 import { embedFor, pathOf, same, type Notebook, type NoteMode } from "../state/notebook";
@@ -206,6 +207,35 @@ export function NotesPane({
 
   const pane = useRef<HTMLElement>(null);
   const body = useRef<NoteBodyHandle | null>(null);
+
+  /**
+   * The heading a note link asked to open at, held until that note is the
+   * one open and `landOn` can look for it.
+   *
+   * Held rather than scrolled to on the click, because the note it's in hasn't
+   * been read yet then. A link to a heading that's since been renamed opens
+   * the note at its top, the way a link to a missing heading on a web page
+   * does.
+   */
+  const [landing, setLanding] = useState<{ scope: Scope; name: string; slug: string } | null>(
+    null,
+  );
+  /** Stops the last landing from following late content. */
+  const settling = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (!landing || page?.kind !== "note") return;
+    if (page.scope !== landing.scope || page.name !== landing.name) return;
+    // The rendered note trails the text by a render; its headings are the old
+    // note's, or none, until it catches up.
+    if (shown !== typed) return;
+    setLanding(null);
+    const col = pane.current?.querySelector<HTMLElement>(".notes-preview");
+    settling.current?.();
+    settling.current = col ? landOn(col, landing.slug) : null;
+  }, [landing, page, typed, shown]);
+
+  useEffect(() => () => settling.current?.(), []);
   /** The mode before Split, which ⌘\ goes back to. */
   const beforeSplit = useRef<NoteMode>("write");
 
@@ -281,7 +311,10 @@ export function NotesPane({
     if (noteScope === null || !page || page.kind !== "note") return null;
     return {
       hasNote: (name: string) => noteNames.includes(name),
-      openNote: (name: string) => choose({ scope: noteScope, kind: "note" as const, name }),
+      openNote: (name: string, section: string | null) => {
+        setLanding(section ? { scope: noteScope, name, slug: section } : null);
+        choose({ scope: noteScope, kind: "note" as const, name });
+      },
       toggleTask: (at: number) => {
         const { typed: now, shown: seen } = latest.current;
         if (seen !== now) return;
@@ -570,6 +603,61 @@ export function NotesPane({
       )}
     </section>
   );
+}
+
+/** The rendered note's headings, which a `#section` names. */
+const HEADINGS = ".markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6";
+
+/** How long after a link is followed its heading may still be waited for, and
+ *  late content may still move it back into view. */
+const SETTLE_MS = 1500;
+
+/** What says somebody chose to be somewhere else in the column. */
+const CHOSEN = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+
+/**
+ * Puts the heading `wanted` is the slug of at the top of `col`, and keeps it
+ * there while the note finishes drawing.
+ *
+ * The rendered note catches up with its text a render after the pane does, and
+ * a diagram or a sketch above the heading arrives later still and pushes it
+ * down. So for a short while the heading is looked for again whenever the
+ * column's content changes, and the column put back — until somebody scrolls,
+ * clicks or types in it. Looked for each time rather than kept, because the
+ * element found first can be the note being left, if it had the same heading.
+ * Set on the column directly rather than with `scrollIntoView`, which would
+ * also scroll everything around the pane. A heading never found leaves the
+ * note at its top. Returns what stops it.
+ */
+function landOn(col: HTMLElement, wanted: string): () => void {
+  const put = () => {
+    const heading = [...col.querySelectorAll(HEADINGS)].find(
+      (h) => slug(h.textContent ?? "") === wanted,
+    );
+    if (heading) {
+      col.scrollTop += heading.getBoundingClientRect().top - col.getBoundingClientRect().top;
+    }
+  };
+  put();
+  let done = false;
+  const changed = () => {
+    if (!done) put();
+  };
+  const drawn = new MutationObserver(changed);
+  drawn.observe(col, { childList: true, subtree: true, characterData: true });
+  const sized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(changed);
+  if (col.firstElementChild) sized?.observe(col.firstElementChild);
+  const stop = () => {
+    if (done) return;
+    done = true;
+    drawn.disconnect();
+    sized?.disconnect();
+    window.clearTimeout(timer);
+    for (const kind of CHOSEN) col.removeEventListener(kind, stop);
+  };
+  for (const kind of CHOSEN) col.addEventListener(kind, stop, { passive: true });
+  const timer = window.setTimeout(stop, SETTLE_MS);
+  return stop;
 }
 
 const MODE_WORD: Record<NoteMode, string> = { write: "Write", split: "Split", read: "Read" };

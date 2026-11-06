@@ -125,8 +125,8 @@ export function linkLine(name: string): string {
  *
  * `sketchName`'s rules for the other kind of file: a `.md` file beside the
  * note, which Markdown hands over percent-encoded, with nothing in it that
- * would reach outside the notebook. A web address is a web address, and a
- * `#section` after the name is dropped — the note opens at its top.
+ * would reach outside the notebook. A web address is a web address. A
+ * `#section` after the name isn't part of it; `noteSection` reads that.
  */
 export function noteName(href: string | undefined): string | null {
   if (!href) return null;
@@ -142,6 +142,27 @@ export function noteName(href: string | undefined): string | null {
   if (!/\.md$/i.test(path) || /[\\/]/.test(path)) return null;
   const name = path.slice(0, -".md".length);
   return name === "" ? null : name;
+}
+
+/**
+ * The heading a note link points into, as the slug its `#section` spells, or
+ * `null` for a link to the top of a note.
+ *
+ * The same slug a heading link on the page itself is matched by, so
+ * `[rollout](plan.md#rollout-plan)` lands where `[rollout](#rollout-plan)`
+ * does from inside `plan`. GitHub writes and follows the same form.
+ */
+export function noteSection(href: string | undefined): string | null {
+  const hash = href?.indexOf("#") ?? -1;
+  if (!href || hash < 0) return null;
+  let section: string;
+  try {
+    section = decodeURIComponent(href.slice(hash + 1));
+  } catch {
+    return null;
+  }
+  section = section.trim().toLowerCase();
+  return section === "" ? null : section;
 }
 
 /** A task's marker from the start of its list item: the bullet or number, the

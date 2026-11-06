@@ -843,7 +843,10 @@ at, not a tab behind it.
 
 The row holds 12 files. Past that, the least recently used one closes, as long as
 everything in it is saved. Each workspace has its own set of tabs, and they come
-back when you return to it in the same window.
+back when you return to it, in the same window or after a restart, with the same
+one in front. They're kept on this machine, not in the project. A file that was
+deleted while Taurus was closed just doesn't come back, instead of opening as a
+tab that says it's gone.
 
 ### Finding in a file
 

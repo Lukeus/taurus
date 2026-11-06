@@ -21,6 +21,13 @@ export type CanvasTab = {
   reveal: LineSpan | null;
   /** When it was last the one showing, for choosing which to close. */
   used: number;
+  /**
+   * Whether it came back from the last time this folder was open, rather than
+   * being opened since. One that can't be read any more closes instead of
+   * saying so: nobody asked for it this time, and a file deleted while the app
+   * was shut is an ordinary thing.
+   */
+  restored?: boolean;
 };
 
 export type CanvasTabs = { tabs: CanvasTab[]; active: string; clock: number };
@@ -139,7 +146,9 @@ export function nameTab(state: CanvasTabs, path: string, shown: string): CanvasT
   }
   return {
     ...state,
-    tabs: state.tabs.map((tab) => (tab.path === path ? { ...tab, shown } : tab)),
+    // Read, so it's an ordinary tab from here: a restored one that goes
+    // missing later says so like any other.
+    tabs: state.tabs.map((tab) => (tab.path === path ? { ...tab, shown, restored: undefined } : tab)),
   };
 }
 
@@ -165,4 +174,86 @@ export function tabLabels(paths: readonly string[]): Map<string, string> {
       return [path, labelAt(i, depth) || path];
     }),
   );
+}
+
+/**
+ * Which files each folder had open, kept on this machine so they come back
+ * when the folder does.
+ *
+ * Only the paths and which one was showing. What was typed and not yet written
+ * isn't kept: autosave has written it by the time anyone could quit, and a
+ * draft kept here would be a second copy of the file to reconcile. Guarded the
+ * way every remembered thing in the app is — see `sketchView` — because a
+ * webview with site data blocked throws on the read as well as the write, and
+ * a value an older version left behind can be anything.
+ */
+const KEY = "taurus.canvasTabs";
+
+/** How many folders' tabs are kept. The ones that go are the least recently
+ *  open, which nobody is coming back to tomorrow. */
+const KEEP_FOLDERS = 50;
+
+type Kept = Record<string, { paths: string[]; active: string; at: number }>;
+
+/** Keeps what `workspace` has open, or forgets it when nothing is. */
+export function rememberTabs(workspace: string, state: CanvasTabs | null): void {
+  const all = readKept();
+  if (!state || state.tabs.length === 0) {
+    if (!(workspace in all)) return;
+    delete all[workspace];
+  } else {
+    all[workspace] = { paths: state.tabs.map((tab) => tab.path), active: state.active, at: Date.now() };
+    const folders = Object.keys(all);
+    if (folders.length > KEEP_FOLDERS) {
+      folders
+        .sort((a, b) => all[a].at - all[b].at)
+        .slice(0, folders.length - KEEP_FOLDERS)
+        .forEach((old) => delete all[old]);
+    }
+  }
+  try {
+    localStorage.setItem(KEY, JSON.stringify(all));
+  } catch {
+    // Storage full or blocked: the tabs just don't come back next time.
+  }
+}
+
+/**
+ * The tabs `workspace` had open when it was last left, marked as restored, or
+ * `null` if there are none.
+ *
+ * In the order they were in. The one showing then shows now; the rest count as
+ * used in that order, so the oldest is still the first to close for room.
+ */
+export function recallTabs(workspace: string): CanvasTabs | null {
+  const kept = readKept()[workspace];
+  if (!kept) return null;
+  const paths = [...new Set(kept.paths)].slice(0, MAX_TABS);
+  if (paths.length === 0) return null;
+  const tabs = paths.map((path, i) => ({ path, shown: null, reveal: null, used: i + 1, restored: true }));
+  const active = paths.includes(kept.active) ? kept.active : paths[paths.length - 1];
+  return { tabs, active, clock: paths.length };
+}
+
+function readKept(): Kept {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const parsed: unknown = JSON.parse(localStorage.getItem(KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Kept = {};
+    // Folder by folder, so one bad value costs its own folder's tabs only.
+    for (const [folder, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const entry = value as { paths?: unknown; active?: unknown; at?: unknown } | null;
+      if (!entry || typeof entry !== "object" || !Array.isArray(entry.paths)) continue;
+      const paths = entry.paths.filter((p): p is string => typeof p === "string" && p !== "");
+      out[folder] = {
+        paths,
+        active: typeof entry.active === "string" ? entry.active : "",
+        at: Number(entry.at) || 0,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }

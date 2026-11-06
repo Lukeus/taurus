@@ -1795,10 +1795,13 @@ its file:
 The store itself is in [Token store](<Token store.md>).
 ```
 
-Clicking it opens that note. A link to a note the notebook doesn't have is
-drawn dashed and says so when you point at it. A link reaches only the note's
-own notebook, and a `#section` after the name is ignored, so the note opens at
-its top. Inside a link's address, `[text](`, the editor offers the notebook's
+Clicking it opens that note. A `#section` after the name opens it at that
+heading, spelled the way GitHub spells one: lowercase, with spaces as hyphens
+and punctuation dropped, so `## Key rotation` is
+`[rotation](<Token store.md#key-rotation>)`. A heading the note doesn't have
+leaves it at its top. A link to a note the notebook doesn't have is drawn
+dashed and says so when you point at it. A link reaches only the note's own
+notebook. Inside a link's address, `[text](`, the editor offers the notebook's
 other notes, and the `/` list has them too.
 
 It saves itself a moment after you stop typing, and never overwrites anything
@@ -1872,6 +1875,15 @@ zoom controls when its canvas is narrower than 730 pixels, or shorter than
 often the difference.
 
 ![A sketch with the list folded away, in Excalidraw's full layout](screenshots/sketch-wide.png)
+
+Shapes you add to Excalidraw's library are there in every sketch, in every
+workspace, and after a restart. They're kept in
+`~/.taurus/sketch-library.excalidrawlib`, in Excalidraw's own library format,
+so you can share the file or put a library downloaded from
+[libraries.excalidraw.com](https://libraries.excalidraw.com) in its place. If
+that file isn't one Taurus can read, it says so and leaves the file alone:
+shapes you add aren't saved over it until you fix or delete it and open the
+sketch again.
 
 Some of Excalidraw is turned off here, each for a reason:
 

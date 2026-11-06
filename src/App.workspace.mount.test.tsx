@@ -98,7 +98,7 @@ const state = {
   agentProposals: [],
   datasets: [],
   queued: [],
-  wrote: [],
+  wrote: null,
   permission: null,
   trust: null,
   opening: { path: "src/main.rs", lines: null, at: 1 },
@@ -185,6 +185,8 @@ const option = (text: string) =>
   );
 
 beforeEach(() => {
+  // Open tabs are kept per folder in storage, so each test starts with none.
+  localStorage.clear();
   steps.length = 0;
   kept = 0;
   document.body.innerHTML = "";
@@ -334,5 +336,28 @@ describe("a broken hooks file", () => {
     await settle();
     (state as { session: unknown }).session = null;
     expect(steps).toEqual(["flush", "send"]);
+  });
+});
+
+describe("the canvas across a restart", () => {
+  const KEY = "taurus.canvasTabs";
+  const open = (host: HTMLElement) =>
+    [...host.querySelectorAll<HTMLElement>("[data-canvas]")].map((slot) => slot.dataset.canvas);
+
+  it("opens the files this folder had open, and keeps what's opened since", async () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        "/tmp/project": { paths: ["README.md", "docs/plan.md"], active: "docs/plan.md", at: 1 },
+        "/tmp/next": { paths: ["other.md"], active: "other.md", at: 1 },
+      }),
+    );
+    const host = await mounted();
+    // `opening` names src/main.rs, which a turn asked for as the window came up.
+    expect(open(host).sort()).toEqual(["README.md", "docs/plan.md", "src/main.rs"]);
+    const kept = JSON.parse(localStorage.getItem(KEY)!);
+    expect([...kept["/tmp/project"].paths].sort()).toEqual(["README.md", "docs/plan.md", "src/main.rs"]);
+    // Another folder's are left alone for when it opens.
+    expect(kept["/tmp/next"].paths).toEqual(["other.md"]);
   });
 });

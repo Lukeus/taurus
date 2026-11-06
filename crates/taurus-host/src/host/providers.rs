@@ -40,6 +40,18 @@ impl Host {
         Ok(provider)
     }
 
+    /// [`Self::provider`], for the start of a turn: config edited by hand since
+    /// the last one is read first, so a `providers.json` changed in an editor
+    /// (the canvas among them) reaches the very message sent after it.
+    ///
+    /// Only where a turn begins. [`Self::provider`] is also called from inside
+    /// one, for a sub-agent's model route, and a reload there would change what
+    /// a running turn started with.
+    pub async fn provider_for_turn(&self, id: &str) -> Result<Arc<dyn Provider>, String> {
+        self.refresh_for_turn().await;
+        self.provider(id).await
+    }
+
     /// The provider configured under `id`, built the first time it is used
     /// rather than now.
     ///
@@ -202,6 +214,9 @@ impl Host {
     pub async fn set_providers(&self, providers: Vec<ProviderConfig>) -> Result<(), String> {
         config::save_providers(&providers)?;
         let workspace = self.workspace.read().await.clone();
+        // This write is already applied below; the next turn needn't reload
+        // for it.
+        *self.providers_seen.write().await = provider_freshness(&workspace);
         let (effective, _) = config::load_providers(Some(&workspace));
         *self.providers.write().await = effective;
         self.forget_providers();

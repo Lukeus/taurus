@@ -19,11 +19,12 @@ would write one project's overrides into the file every other project reads.
 
 | File | Global | Workspace |
 | --- | --- | --- |
-| `providers.json` | Backends, including the header a key is sent in. Never the key itself, which lives in the OS keychain or an env var. | Overrides and additions for this project. |
+| `providers.json` | Backends, including the header a key is sent in. Never the key itself, which lives in the OS keychain or an env var. Edit it by hand while the app is open and your next message uses the new list. | Overrides and additions for this project. |
 | `mcp.json` | MCP servers over stdio or HTTP, in the same format Claude Desktop uses. Values may name env vars, and `env` and `headers` may name [saved credentials](#saved-credentials). The **MCP** panel reads and writes it; **Edit mcp.json** opens it. | Extra servers, or `{"disabled": true}` to switch an inherited one off. |
 | `search.json` | Web search backends and which one is active. Never the key itself, which lives in the OS keychain or an env var, as with providers. | A different backend for this project, or field overrides on an inherited one. |
 | `settings.json` | Last workspace, the two synthesis toggles, `shell_integration` (whether the terminal dock marks each command; on by default), theme and theme id, fallback model, `max_iterations`, `max_concurrent_agents` (how many sub-agents one message runs at once, 2 by default, 1 to 8, see [how many run at once](capabilities.md#how-many-run-at-once)), `context_strategy` (`compact` or `relay`, see [the context window](working-with-it.md#the-context-window)), `context_limit` (the working context in tokens, 200,000 by default, `0` for the model's whole window), `plugins`, which plugins are switched on or off, `voice_model`, the speech model the mic transcribes with (`base.en` by default, see [Talking instead of typing](working-with-it.md#talking-instead-of-typing)), `voice_language`, the language the multilingual models expect (a code such as `en` or `de`, or `auto`, the default), `notify_when_done` (on by default), `verify_changes`, whether a turn that changed files and ran nothing is asked once to check its work (on by default, see [Checking its work](working-with-it.md#one-thing-extends-a-turn)), `ui_scale` (the interface size in percent, 75 to 150), `terminal_shell` (read from this file only, never a project's), `terminal_font` and `terminal_font_size`, and `speech`, which reads replies aloud: `read_aloud` (off by default), `engine` (`system`, `elevenlabs` or `openai`), and each engine's own voice, model and `api_key_env` (plus `base_url` and `api_key_header` for `openai`, see [Reading replies aloud through the same gateway](#reading-replies-aloud-through-the-same-gateway)), kept so switching engines loses nothing (see [Hearing replies read aloud](working-with-it.md#hearing-replies-read-aloud)). A file that doesn't parse is shown at the top of **Settings › Behavior**, and the app won't write to it until you fix or delete it, so a typo never costs you the rest of the file. | The provider and model this project was last worked in, a step limit for turns here, how many sub-agents run at once, the context strategy, and the working context. Settings always writes the global file; when this one sets a value, **Settings › Behavior** says so under that control, because this one wins here. |
 | `themes/` | Custom palettes, typefaces, wordmarks, logos, corner radii and column insets. See [Themes](#themes). | Themes that travel with the project, so a repository can brand the app for everyone who opens it. |
+| `sketch-library.excalidrawlib` | The shapes in the sketch editor's library, in Excalidraw's own format. Written when a shape is added or removed; see [Sketching](working-with-it.md#sketching). | Not read. The library is yours, not a project's. |
 | `skills/` | Skills available in every workspace. | Skills that travel with the project. |
 | `permissions.json` | "Always everywhere" decisions. A file that doesn't parse grants nothing, is named in the log, and is never written over, so its rules are still there once you fix it. | "Always here" decisions, read the same way. |
 | `sessions/` | Transcripts, in a directory per workspace. | — |
@@ -990,7 +991,7 @@ one:
 | --- | --- |
 | `name` | What the picker calls it. Falls back to the file name. |
 | `dark`, `light` | The fourteen colors, by the names in the table below. Hex only: `#rgb`, `#rrggbb` or `#rrggbbaa`. |
-| `fonts` | `display`, `body`, `mono`. A family name, not a stack. The fallbacks after it stay the app's, so naming a font you don't have degrades instead of breaking. It has to be **installed on the machine**. The window loads no remote stylesheets, so a theme can't bring a typeface with it. |
+| `fonts` | `display`, `body`, `mono`. A family name, not a stack. The fallbacks after it stay the app's, so naming a font you don't have degrades instead of breaking. **Settings › Appearance** names any it can't find, and the theme editor says so under the field as you type. It has to be **installed on the machine**. The window loads no remote stylesheets, so a theme can't bring a typeface with it. |
 | `brand.wordmark` | The word beside the mark. An empty string is a real answer and means a mark on its own. Leaving the key out keeps `taurus`. |
 | `brand.logo` | An SVG, PNG, JPEG or WebP up to 256KB. A bare name is read from the theme file's folder, so a logo committed beside it travels with it. |
 | `shape.radius` | Multiplier on the corner-radius ladder, 0 to 3. `0` is square, `1` is as shipped. |
@@ -1390,6 +1391,8 @@ Reasoning blocks are replayed with the signature the provider issued them
 under. That's not a nicety: a turn that reasoned and then called a tool is
 only legal on the next request if its thinking comes back signed and unedited.
 A signature lost in the stream means a rejected request one turn later.
+Reasoning Anthropic withholds arrives as `redacted_thinking`, with no text you
+can read, and goes back the same way.
 
 **Gemini's schemas are sanitized on the way out.** Gemini accepts an OpenAPI 3
 subset and refuses a request outright on a keyword it doesn't know, with an

@@ -205,6 +205,7 @@ export function CanvasDeck({
               key={tab.path}
               path={tab.path}
               reveal={tab.reveal}
+              restored={tab.restored}
               workspace={workspace}
               front={tab.path === active}
               column={showing}
@@ -237,6 +238,7 @@ function TabSlot({
 }: {
   path: string;
   reveal: { from: number; to: number } | null;
+  restored?: boolean;
   workspace: string | null;
   front: boolean;
   column: boolean;

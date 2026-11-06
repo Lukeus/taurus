@@ -1434,6 +1434,15 @@ export const saveDocument = (path: string, text: string, fingerprint: string) =>
 export const listPages = () => invoke<PageRef[]>("list_pages");
 
 /** One note, as it is on disk right now. */
+/**
+ * The sketch editor's library file, as text, or `null` before a shape has been
+ * added. One for every sketch everywhere — see `SketchEditor`.
+ */
+export const readSketchLibrary = () => invoke<string | null>("read_sketch_library");
+
+/** Replaces the sketch library. Refused unless it's an Excalidraw library. */
+export const saveSketchLibrary = (text: string) => invoke<void>("save_sketch_library", { text });
+
 export const readPage = (scope: Scope, kind: PageKind, name: string) =>
   invoke<Page>("read_page", { scope, kind, name });
 

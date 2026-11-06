@@ -144,10 +144,12 @@ pub struct MessageStart {
 pub enum BlockStart {
     Text,
     Thinking,
-    /// Reasoning the provider withheld. It has no readable text and no
-    /// signature this harness can replay, so it opens a block and contributes
-    /// nothing to it.
-    RedactedThinking,
+    /// Reasoning the provider withheld. No readable text, only `data`, which
+    /// has to go back unedited, and arrives whole here rather than in deltas.
+    RedactedThinking {
+        #[serde(default)]
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,

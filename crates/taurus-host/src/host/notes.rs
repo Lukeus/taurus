@@ -51,6 +51,51 @@ impl Host {
         Ok(notes)
     }
 
+    /* ----------------------------------------------------- sketch library */
+
+    /// The shapes kept in the sketch editor's library, as the file holds them,
+    /// or `None` before anything has been added.
+    ///
+    /// One library for every sketch in every folder, the way Excalidraw's own
+    /// is: a shape somebody keeps is theirs, not a project's. It's a file in
+    /// `~/.taurus` rather than the webview's storage because it's work, not a
+    /// preference, and clearing site data shouldn't take it. It's Excalidraw's
+    /// own `.excalidrawlib` format, so a library downloaded from the public
+    /// site can be dropped in place of it, and this one can be shared the same
+    /// way.
+    pub async fn sketch_library(&self) -> Result<Option<String>, String> {
+        let path = sketch_library_path();
+        off_runtime(
+            "reading the sketch library",
+            move || match std::fs::read_to_string(&path) {
+                Ok(text) => Ok(Some(text)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("Couldn't read {}: {e}", path.display())),
+            },
+        )
+        .await
+    }
+
+    /// Replaces the sketch library with `text`, which has to be a library.
+    ///
+    /// Checked before it's written, because the editor writes this on every
+    /// change to the library, and a value that wasn't one would replace the
+    /// shapes somebody kept with something nothing can read. Written whole and
+    /// atomically, like every config file.
+    pub async fn save_sketch_library(&self, text: &str) -> Result<(), String> {
+        check_sketch_library(text)?;
+        let (path, text) = (sketch_library_path(), text.to_string());
+        off_runtime("saving the sketch library", move || {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+            }
+            config::replace_file(&path, &text)
+                .map_err(|e| format!("Couldn't save {}: {e}", path.display()))
+        })
+        .await
+    }
+
     /* ----------------------------------------------------------- notebook */
 
     /// Every note somebody has written, in both scopes.
@@ -241,4 +286,43 @@ impl Host {
         })
         .await
     }
+}
+
+/// Where the sketch library is kept. See [`Host::sketch_library`].
+pub(crate) fn sketch_library_path() -> std::path::PathBuf {
+    config::home_dir().join(SKETCH_LIBRARY_FILE)
+}
+
+/// The library's file name, beside `settings.json`.
+pub const SKETCH_LIBRARY_FILE: &str = "sketch-library.excalidrawlib";
+
+/// The largest library that's written. A shape is a few kilobytes, so this is
+/// thousands of them. Past it, something is writing that isn't a person adding
+/// shapes.
+const MAX_SKETCH_LIBRARY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Whether `text` is something the library file may hold: Excalidraw's
+/// `excalidrawlib` document, with its shapes as a list.
+fn check_sketch_library(text: &str) -> Result<(), String> {
+    if text.len() > MAX_SKETCH_LIBRARY_BYTES {
+        return Err(format!(
+            "The sketch library wasn't saved: at {} MB it's over the {} MB limit.",
+            text.len().div_ceil(1024 * 1024),
+            MAX_SKETCH_LIBRARY_BYTES / (1024 * 1024)
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| format!("The sketch library wasn't saved: it isn't JSON ({e})."))?;
+    let is_library = value.get("type").and_then(|t| t.as_str()) == Some("excalidrawlib")
+        && value
+            .get("libraryItems")
+            .is_some_and(|items| items.is_array());
+    if !is_library {
+        return Err(
+            "The sketch library wasn't saved: it isn't an Excalidraw library \
+             (`\"type\": \"excalidrawlib\"` with a `libraryItems` list)."
+                .into(),
+        );
+    }
+    Ok(())
 }

@@ -17,9 +17,10 @@ pub mod stream;
 
 pub use error::{brief, ProviderError, Result};
 pub use message::{
-    anthropic_signature, gemini_signature, is_openai_reasoning, pair_tool_results, relocated_note,
-    replay_input, with_unique_tool_ids, ContentBlock, Message, Role, ToolOutput, ToolResultBlock,
-    GEMINI_THOUGHT_PREFIX, OPENAI_REASONING_PREFIX,
+    anthropic_redacted, anthropic_signature, gemini_signature, is_openai_reasoning,
+    pair_tool_results, relocated_note, replay_input, with_unique_tool_ids, ContentBlock, Message,
+    Role, ToolOutput, ToolResultBlock, ANTHROPIC_REDACTED_PREFIX, GEMINI_THOUGHT_PREFIX,
+    OPENAI_REASONING_PREFIX,
 };
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};

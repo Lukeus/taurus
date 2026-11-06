@@ -359,12 +359,6 @@ the backlog, and they're the minority.
   unexpected still waits for the timeout. A real back-and-forth would mean
   keeping the turn open on a running child and deciding what the model may
   type into it. That's a bigger surface than this opens.
-- **Reasoning the provider returns redacted can't be replayed.** Anthropic
-  signs its thinking blocks and requires them back unedited. A redacted one
-  has no signature this harness can carry, so it's left out of the next
-  request. Where that matters, the API says so explicitly instead of failing
-  quietly, but the turn has to be retried. Carrying the encrypted form would
-  mean a second shape in the normalized types for one provider's edge case.
 - **An instructions file is read at turn boundaries, not watched.**
   `AGENTS.md` and everything it imports are re-read at the start of each
   turn, so an edit lands on your next message, not the next reload. It isn't
@@ -872,10 +866,12 @@ the backlog, and they're the minority.
   on or off, a file its manifest names showing up, and a project you trust
   all land on your next message.
 
-  Two things *aren't* on this path and need a reload: the provider list and
-  the rest of `settings.json`. You edit both in the app most of the time, not
-  in a file, and both are re-read when you save them there. A hand edit to
-  `providers.json` while the app is open is the case that waits.
+  The provider list is on it too: a hand edit to either `providers.json`
+  reaches the next message, and since it can change which tools there are,
+  it re-reads everything above in one go. The rest of `settings.json` *isn't*
+  on this path. You edit it in the app most of the time, not in a file, and
+  it's re-read when you save it there. A hand edit to it while the app is
+  open is the case that waits.
 
 - **Only zsh and bash mark their commands.** The dock's blocks, the
   **Ask about this** button and `read_terminal` all come from shell integration:
@@ -1001,11 +997,9 @@ the backlog, and they're the minority.
   the same sketch opens centered on another machine or after a fresh install.
   Saving the view in the file would make every pan a change to a committed
   file, and a conflict for two people looking at different parts of it.
-- **A note links only within its own notebook, and only to the top of a
-  note.** A project note can't link to a global one, or the other way round:
-  the link is a path to a file beside the note, and the two notebooks are
-  different folders. A `#section` after the name is dropped, so the note
-  opens at its top rather than at that heading.
+- **A note links only within its own notebook.** A project note can't link to
+  a global one, or the other way round: the link is a path to a file beside
+  the note, and the two notebooks are different folders.
 - **A note's diagram isn't searchable and its text isn't indexed.** Transcript
   search doesn't look in notes, and neither does the code index. A project
   note is a Markdown file in `.taurus/`, which the index skips along with the
@@ -1016,10 +1010,12 @@ the backlog, and they're the minority.
   every other font, script and stylesheet in the app put together. It's left
   out, so that text draws in the system's own face instead. It still saves,
   exports and embeds.
-- **A sketch's library lasts as long as the window.** Shapes you add to
-  Excalidraw's library are kept in memory and not written anywhere.
-  **Browse libraries** opens the public library site in your browser, and
-  its **Add to Excalidraw** button returns to excalidraw.com, not to the app.
+- **A library from the public site can't be added with one click.**
+  **Browse libraries** opens libraries.excalidraw.com in your browser, and
+  its **Add to Excalidraw** button returns to excalidraw.com, not to the app,
+  which has no address a browser can hand a library to. Download the library
+  instead and put it at `~/.taurus/sketch-library.excalidrawlib`, which
+  replaces what's there rather than merging with it.
 - **A sketch has no export.** Excalidraw's Save to disk, Open and Export image
   are turned off. The file is the sketch, and a second way to save it would
   bypass the rule that no save overwrites a version it hasn't seen. Copy as
@@ -1044,8 +1040,7 @@ the backlog, and they're the minority.
   unused translations are replaced with empty modules at build time.
 - **The canvas shows one file at a time.** Files open in tabs, but there's no
   split inside the canvas, so comparing two side by side is still the terminal
-  dock's job. Open tabs last as long as the window, and aren't restored when
-  it reopens.
+  dock's job.
 - **Only a link is a link.** A path written as plain text or in backticks,
   like `src/retry.rs:40`, isn't clickable; only a Markdown link opens the canvas.
   Turning every path-shaped word into a link would also catch ones that aren't
@@ -1629,10 +1624,11 @@ the backlog, and they're the minority.
   no remote stylesheet, so there's nothing to point a `@font-face` at.
   Bundling a font file inside a theme would mean reading arbitrary binaries
   out of a config directory and injecting them as `data:` URIs, which is a
-  wider hole than the feature is worth. A theme naming a font nobody has
-  falls back to the stack the app ships instead of failing. So this is
-  quiet, not broken, and quiet is its own problem: nothing on screen says the
-  font wasn't found.
+  wider hole than the feature is worth. A theme naming a font this machine
+  doesn't have falls back to the stack the app ships instead of failing, and
+  **Settings › Appearance** names the face that's missing. That check measures
+  text drawn in the family against the generic families, so a font installed
+  while the app is open isn't seen until the window reloads.
 - **Themes are read fresh on every status, and only the active one carries its
   logo.** The picker's full scan happens when the picker opens. The split
   exists because a resolved theme carries its logo inlined as base64, and

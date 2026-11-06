@@ -1,10 +1,24 @@
 import "../lib/excalidrawEnv";
 
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
-import { Excalidraw, MainMenu, hashElementsVersion, serializeAsJSON } from "@excalidraw/excalidraw";
-import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  Excalidraw,
+  MainMenu,
+  hashElementsVersion,
+  serializeAsJSON,
+  useHandleLibrary,
+} from "@excalidraw/excalidraw";
+import type {
+  AppState,
+  BinaryFiles,
+  ExcalidrawImperativeAPI,
+  LibraryItems,
+  LibraryItems_anyVersion,
+} from "@excalidraw/excalidraw/types";
 
 import { parse } from "../lib/sketch";
+import { libraryAdapter } from "../lib/sketchLibrary";
+import { useStore } from "../state/store";
 import { openLink } from "../state/openLink";
 import { recall, remember, sameView, type View } from "../lib/sketchView";
 import { useWindowTheme } from "../lib/windowTheme";
@@ -131,6 +145,26 @@ export default function SketchEditor({
    * whose key moved is worth serialising at all. Panning changes none of them.
    */
   const lastKey = useRef<string | null>(null);
+
+  /*
+   * The library: shapes kept for reuse across every sketch, in a file of their
+   * own — see `sketchLibrary`. Loaded into each canvas as it mounts, and
+   * written whole whenever a shape is added or removed. One adapter per editor,
+   * so a file found unreadable stays unwritten until a sketch is opened again.
+   */
+  const [excalidraw, setExcalidraw] = useState<ExcalidrawImperativeAPI | null>(null);
+  const library = useMemo(
+    () =>
+      libraryAdapter<LibraryItems_anyVersion, LibraryItems>((message) =>
+        useStore.getState().noteError(message),
+      ),
+    [],
+  );
+  useHandleLibrary({
+    excalidrawAPI: excalidraw,
+    adapter: library,
+  });
+
   const timer = useRef<number | null>(null);
   /** The serialisation waiting out `timer`, so it can be run early. */
   const pending = useRef<(() => string) | null>(null);
@@ -216,6 +250,7 @@ export default function SketchEditor({
     <div className="sketch-edit">
       <Excalidraw
         key={generation}
+        excalidrawAPI={setExcalidraw}
         initialData={parsed.data}
         theme={theme}
         langCode="en"

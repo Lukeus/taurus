@@ -68,6 +68,7 @@ export function CanvasSlot({
   flushRef,
   wide,
   tabbed,
+  restored = false,
 }: {
   path: string;
   reveal: { from: number; to: number } | null;
@@ -96,6 +97,9 @@ export function CanvasSlot({
   wide?: { on: boolean; toggle: () => void };
   /** See `Canvas`. */
   tabbed?: boolean;
+  /** Came back from the last session. Closes rather than showing a file it
+   *  can no longer read — see `CanvasTab`. */
+  restored?: boolean;
 }) {
   const noteError = useStore((s) => s.noteError);
   const wrote = useStore((s) => s.wrote);
@@ -151,6 +155,8 @@ export function CanvasSlot({
   live.current = { doc, typed, conflict };
   const workspaceNow = useRef(workspace);
   workspaceNow.current = workspace;
+  const unasked = useRef({ restored, onClose });
+  unasked.current = { restored, onClose };
   /**
    * Which opening of a file the editor is on. It moves the moment the editor
    * leaves one, and an answer is applied only if it hasn't moved since it was
@@ -315,7 +321,11 @@ export function CanvasSlot({
           setConflict(read);
         }
       })
-      .catch((e) => current && setDocError(String(e)));
+      .catch((e) => {
+        if (!current) return;
+        if (unasked.current.restored) unasked.current.onClose();
+        else setDocError(String(e));
+      });
     // A file opened, then closed, then opened again before the first read
     // landed would otherwise show the first file's contents under the second
     // one's name.

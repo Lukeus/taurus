@@ -4608,6 +4608,107 @@ async fn a_skill_saved_into_a_project_plugin_under_a_running_command_stands() {
     );
 }
 
+#[tokio::test]
+async fn the_sketch_library_is_kept_in_the_config_home_and_refuses_what_isnt_one() {
+    let dir = TempDir::new().unwrap();
+    let (host, _home) = host(dir.path());
+    assert_eq!(
+        host.sketch_library().await.unwrap(),
+        None,
+        "nothing kept yet"
+    );
+
+    let library = r#"{"type":"excalidrawlib","version":2,"source":"taurus","libraryItems":[{"id":"a","status":"unpublished","elements":[],"created":1}]}"#;
+    host.save_sketch_library(library).await.unwrap();
+    assert_eq!(
+        host.sketch_library().await.unwrap().as_deref(),
+        Some(library)
+    );
+    assert!(config::home_dir()
+        .join(super::notes::SKETCH_LIBRARY_FILE)
+        .exists());
+
+    // A value that isn't a library would replace the shapes with something
+    // nothing can read, so it's refused and the file is left as it was.
+    for wrong in [
+        "not json",
+        r#"{"type":"excalidraw","elements":[]}"#,
+        r#"{"type":"excalidrawlib","libraryItems":{}}"#,
+    ] {
+        let said = host.save_sketch_library(wrong).await.unwrap_err();
+        assert!(
+            said.starts_with("The sketch library wasn't saved"),
+            "{said}"
+        );
+    }
+    assert_eq!(
+        host.sketch_library().await.unwrap().as_deref(),
+        Some(library)
+    );
+}
+
+#[tokio::test]
+async fn a_provider_file_edited_by_hand_is_read_at_the_next_turn() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload_local().await;
+    let id = "edited-by-hand";
+    assert!(host.provider_config(id).await.is_none());
+    assert!(!host.refresh_config().await, "nothing has moved yet");
+
+    // Written in an editor, not through Settings, while the app is open.
+    write_providers(
+        &workspace,
+        &format!(r#"[{{"id": "{id}", "kind": "ollama", "base_url": "http://127.0.0.1:10"}}]"#),
+    );
+    let first = host.provider_for_turn(id).await.expect("the new provider");
+    assert!(host.providers().await.iter().any(|p| p.id == id));
+
+    // Edited again: the provider built from the old entry isn't the one used.
+    write_providers(
+        &workspace,
+        &format!(r#"[{{"id": "{id}", "kind": "ollama", "base_url": "http://127.0.0.1:1100"}}]"#),
+    );
+    let second = host.provider_for_turn(id).await.unwrap();
+    assert!(!Arc::ptr_eq(&first, &second), "a changed provider was kept");
+    assert_eq!(
+        host.provider_config(id).await.unwrap().base_url,
+        "http://127.0.0.1:1100"
+    );
+
+    // A broken one is named, the way a reload names it.
+    write_providers(&workspace, "{ not json");
+    assert!(host.refresh_config().await);
+    assert!(!host
+        .problems_from(&[ProblemSource::Providers])
+        .await
+        .is_empty());
+
+    // Unmoved, it costs a look and nothing more.
+    assert!(!host.refresh_config().await);
+}
+
+#[tokio::test]
+async fn a_provider_list_saved_in_settings_isnt_read_again_at_the_next_turn() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload_local().await;
+    let mut providers = host.global_providers().await;
+    providers.push(
+        serde_json::from_str(
+            r#"{"id": "saved-in-settings", "kind": "ollama", "base_url": "http://127.0.0.1:10"}"#,
+        )
+        .unwrap(),
+    );
+    host.set_providers(providers).await.unwrap();
+    assert!(
+        !host.refresh_config().await,
+        "its own write was taken as a hand edit"
+    );
+}
+
 /// Runs a turn that writes a file and stops without running anything, under
 /// the given project settings, and says whether the model was asked to check.
 async fn asked_to_check_with(settings: &str) -> bool {
