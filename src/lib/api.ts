@@ -127,6 +127,7 @@ import type { SkillProposal } from "../bindings/SkillProposal";
 import type { SkillSummary } from "../bindings/SkillSummary";
 import type { Skipped } from "../bindings/Skipped";
 import type { PlanEditMark } from "../bindings/PlanEditMark";
+import type { UnattendedMark } from "../bindings/UnattendedMark";
 import type { PlanEdited } from "../bindings/PlanEdited";
 import type { Step } from "../bindings/Step";
 import type { Switch } from "../bindings/Switch";
@@ -314,6 +315,7 @@ export type {
   Skipped,
   PlanEditMark,
   PlanEdited,
+  UnattendedMark,
   Step,
   StepState,
   Switch,
@@ -469,7 +471,7 @@ export function sendMessage(
  * Not persisted. A conversation reopened in a new window asks again.
  */
 export const setUnattended = (sessionId: string, unattended: boolean) =>
-  invoke<void>("set_unattended", { sessionId, unattended });
+  invoke<UnattendedMark | null>("set_unattended", { sessionId, unattended });
 
 /**
  * Which conversations have a turn running in them.
@@ -1108,6 +1110,7 @@ export const setOtlpEndpoint = (endpoint: string) =>
 
 /** Whether a turn finishing while you're elsewhere sends a notification. */
 export const setNotifyWhenDone = (on: boolean) => invoke<void>("set_notify_when_done", { on });
+export const setVerifyChanges = (on: boolean) => invoke<void>("set_verify_changes", { on });
 
 /** How large the interface is drawn, in percent; applied to the window at once. */
 export const setUiScale = (percent: number) => invoke<void>("set_ui_scale", { percent });

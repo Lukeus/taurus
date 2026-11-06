@@ -533,6 +533,29 @@ export function Settings({
               <label className="settings-check">
                 <input
                   type="checkbox"
+                  checked={status?.settings.verify_changes ?? true}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    run(setBehaviorError, async () => {
+                      await api.setVerifyChanges(on);
+                      await refresh();
+                    });
+                  }}
+                />
+                <span>
+                  Ask the model to check its work
+                  <span className="hint">
+                    When a turn changed files and ran nothing afterwards, the
+                    model is asked once to run something that checks them. That
+                    costs one more request.
+                  </span>
+                </span>
+              </label>
+              <FromProject field="verify_changes" />
+
+              <label className="settings-check">
+                <input
+                  type="checkbox"
                   checked={status?.settings.context_strategy === "relay"}
                   onChange={(e) => {
                     const strategy = e.target.checked ? "relay" : "compact";

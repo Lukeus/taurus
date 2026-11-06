@@ -366,7 +366,10 @@ you, which is the right default — the turn keeps its place, and answering in
 the morning carries on from where it stopped. The pill beside Stop is how you
 say you won't be there. Set a conversation to **unattended** and anything that
 would have prompted is refused instead, with the reason in the transcript, and
-a question card is skipped rather than parked.
+a question card is skipped rather than parked. The switch leaves a line in the
+transcript too, and so does switching back, so a conversation read later says
+why its turn refused its own tools. The setting itself isn't saved: a
+conversation you reopen asks again.
 
 It has the narrow shape the CLI's policy deliberately doesn't: it can only
 refuse. There's no desktop equivalent of `--allow`, because a switch that could

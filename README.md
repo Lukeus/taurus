@@ -47,7 +47,7 @@ that costs.</sub>
 
 ## Quick start
 
-You need Rust 1.87 or newer. The desktop app also needs Node and pnpm (CI uses
+You need Rust 1.89 or newer. The desktop app also needs Node and pnpm (CI uses
 Node 22 and pnpm 9) and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
 platform. Building the workspace also compiles the whisper.cpp speech engine,

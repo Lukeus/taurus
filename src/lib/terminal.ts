@@ -198,3 +198,20 @@ export function describeBlock(block: {
       return `${command}, ended without a status${time}`;
   }
 }
+
+/**
+ * The window event the dock sends when a command in it finishes.
+ *
+ * For the canvas, which re-reads its file when one arrives. A `git checkout`
+ * or a formatter run in the dock changes files with the window still in focus,
+ * so nothing else would tell the canvas to look; this is the moment the files
+ * have settled, and it costs one read per command rather than a filesystem
+ * watcher. An event and not a store field, because nobody needs to know a
+ * command ended after the fact, only as it happens.
+ */
+export const COMMAND_ENDED = "taurus:command-ended";
+
+/** Says a command in the dock has finished. See {@link COMMAND_ENDED}. */
+export function commandEnded(): void {
+  window.dispatchEvent(new Event(COMMAND_ENDED));
+}

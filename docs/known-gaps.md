@@ -137,20 +137,14 @@ the backlog, and they're the minority.
 - **Every enabled tool goes out with every request.** Nothing filters tools by
   relevance or loads them on demand, and an MCP server's tools are sent whole.
   The Context panel names the heaviest schemas, and Settings › Tools is where
-  you drop one. The tool list also changes when the terminal dock opens or closes
-  (`read_terminal` comes and goes with it) and when an MCP server connects or
-  drops. Tools come first in a request, so the next request after any of those
-  misses a hosted backend's prompt cache entirely.
+  you drop one. The tool list also changes when an MCP server connects or
+  drops. Tools come first in a request, so the next request after that misses
+  a hosted backend's prompt cache entirely.
 - **A cache entry on Anthropic lasts five minutes.** Taurus asks for the
   default lifetime. A pause longer than that between messages means the next
   one writes the conversation into the cache again, at a quarter over the
   normal input price. An hour-long lifetime costs twice the normal price to
   write, and isn't offered.
-- **The check-your-work nudge has no switch in Settings.** When a turn changed
-  files and ran nothing afterwards, the model is asked once to check, which
-  is one more request with the whole conversation in it. `verify_changes` in
-  `AgentConfig` turns it off for code that embeds the agent, but the app
-  doesn't expose it.
 - **A hook can refuse a tool call but can't approve one.** There's no `allow`
   verdict, so a hook can't skip a permission prompt the way hooks in some
   other harnesses can. That rules out "approve every `git status` for me", and
@@ -427,10 +421,6 @@ the backlog, and they're the minority.
   build appended to may already hold a torn fragment and a whole record on one
   line, and that line is dropped on load like any other it can't parse. Getting
   the record back would mean guessing where the fragment stops, and nothing does.
-- **The CLI and the app can still overwrite each other's memory notes.** Writes
-  are serialized inside one process, and each is an atomic replace, so the file
-  never tears. But a `taurus run` beside the window can read the notes, then
-  replace a note the window added in between. Covering it takes a lock file.
 - **A cut command's output can be swept away while the transcript still points
   at it.** When a stream outruns what the model's window has room for, the
   whole of it is written to `~/.taurus/output/<workspace-key>/`, and the gap
@@ -752,8 +742,8 @@ the backlog, and they're the minority.
   answered with a diagram answers in prose or uses `show_chart`. Closing that
   means image *generation*, which only some backends offer, and none the
   same way.
-- **No built-in tool returns an image yet.** The shape exists and every
-  adapter carries it, but only MCP servers use it: a browser driver's
+- **No built-in tool makes an image.** `read_file` hands back a picture that's
+  already on disk, and MCP servers return their own: a browser driver's
   screenshot, a renderer's output. A built-in that rasterizes a PDF page or
   captures a window is a tool nobody has written here, not a limit on what a
   tool may return.
@@ -1074,13 +1064,15 @@ the backlog, and they're the minority.
   a file during a conflict or after a failed save keeps your text and brings it
   back when you reopen the file, but it's held in memory. Closing the window
   loses it.
-- **A file changing outside a turn goes unnoticed until you look at it.** The
-  canvas reloads when the running turn writes the file (`files_changed` says so
-  on the turn's own event stream), when its tab comes to the front, and when the
-  window regains focus. A `git checkout` in the terminal dock changes nothing on
-  screen until one of those happens, because the window never lost focus. Saving
-  is still safe: it compares fingerprints and refuses instead of overwriting.
-  Watching the filesystem properly is a dependency and a lifetime to get right.
+- **A file changing outside a turn goes unnoticed until something says to
+  look.** The canvas reloads when the running turn writes the file
+  (`files_changed` says so on the turn's own event stream), when its tab comes
+  to the front, when the window regains focus, and when a command in the
+  terminal dock finishes, so a `git checkout` there shows up as it ends. A
+  change made in the background while you stay in Taurus, by a build watcher
+  or a sync client, waits for the next of them. Saving is still
+  safe: it compares fingerprints and refuses instead of overwriting. Watching
+  the filesystem properly is a dependency and a lifetime to get right.
 - **Colors can be wrong in a file over 1 MB.** Up to that size the editor reads
   the whole file for every edit, so a comment or string that opens above the
   screen colors correctly. A larger file would lag on each keystroke (about 130 ms
@@ -1166,12 +1158,6 @@ the backlog, and they're the minority.
   the harness classifying tools by something other than effect. Effect is
   what the categories exist to capture, and it's what the run header counts.
   The shape is a useful hint about the kind of work, not a readout.
-- **An id compaction dropped can come back in a later turn.** A tool call whose
-  id is already used gets a fresh one, but the list of used ids is what's in the
-  conversation plus what this turn has stored. If compaction dropped a call and a
-  provider reuses its id in a later turn, the id counts as free. Delegations can't
-  collide this way, since background work stops when a turn ends, but a spill file
-  with the same id and label can be overwritten.
 - **A turn dies with the process.** It survives everything inside the window —
   a reload, a switch to another conversation, the conversation being closed —
   because the turn belongs to the conversation rather than to the call that
@@ -1240,13 +1226,6 @@ the backlog, and they're the minority.
   alternative is a shell parser, and a parser that is wrong lets something
   through, where a tokenizer that gives up asks. See
   [Permissions](safety.md#permissions).
-- **A turn running unattended doesn't say so in its transcript.** The refusals
-  do: each one reads "nobody is there to allow this" where the call would have
-  been. But the switch itself leaves no line, so a conversation read back a
-  week later shows a turn that refused its own tools with nothing saying why
-  that was the arrangement. It's a per-conversation setting rather than
-  anything the transcript records, and it isn't saved, so reopening the
-  conversation shows the refusals and no trace of the decision behind them.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.**
   Any tool call that draws a view is left out of the folded run header.
   That's what stops a table getting filed under "6 steps · 11s" behind a
@@ -1361,14 +1340,14 @@ the backlog, and they're the minority.
   `tables:` block for anything it joins against). That's what lets a
   committed recipe run on a fresh clone. A recipe that names loaded datasets
   instead doesn't, and nothing warns you which kind you've written.
-- **A profile is a full scan every time, and it can't be canceled.** Its
-  result isn't cached. A dataset entry points at a file anything can rewrite,
-  and a remembered profile is the kind of answer that's right for a week and
-  then quietly wrong. So opening the pane on a multi-gigabyte file reads it
-  again, and clicking away leaves that read running to completion. Caching it
-  properly means invalidating on the file's length and modification time,
-  which is how a page's row count is kept. Canceling means threading a token
-  through the engine trait. Neither is written for the profile.
+- **A profile can't be canceled, and it's read again whenever the file
+  changes.** Once a file has been profiled, the result is kept against its
+  length and modification time, the rule a page's row count follows, so going
+  back to an unchanged file costs nothing. A changed one is read end to end
+  again, and clicking away while that runs leaves it running to completion.
+  Canceling means threading a token through the engine trait, which isn't
+  written. A rewrite that keeps both the length and the time is missed, the
+  blind spot every fingerprint here shares.
 
   What keeps this bearable is that a profile is the one thing that has to
   read everything. Loading reads a header, and paging counts a file once per

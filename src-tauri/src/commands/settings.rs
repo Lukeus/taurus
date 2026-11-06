@@ -299,6 +299,13 @@ pub async fn set_hook(
 }
 
 #[tauri::command]
+pub async fn set_verify_changes(state: State<'_, Arc<AppState>>, on: bool) -> CmdResult<()> {
+    state.host.set_verify_changes(on).await?;
+    emit_status(&state).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_notify_when_done(state: State<'_, Arc<AppState>>, on: bool) -> CmdResult<()> {
     state.host.set_notify_when_done(on).await?;
     emit_status(&state).await;

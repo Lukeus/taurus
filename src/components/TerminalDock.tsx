@@ -18,6 +18,7 @@ import {
   blockMark,
   blockState,
   bytes,
+  commandEnded,
   describeBlock,
   duration,
   fade,
@@ -342,6 +343,7 @@ export function TerminalDock({
               });
               // A new command takes the bar back from one that was clicked.
               if (block.running) setChosen(null);
+              else commandEnded();
               decorate(block);
             });
             return;

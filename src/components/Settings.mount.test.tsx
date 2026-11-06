@@ -1053,6 +1053,15 @@ describe("the notification switch", () => {
   });
 });
 
+describe("the check-your-work switch", () => {
+  it("writes through its own command", async () => {
+    const host = await mount();
+    click(host, "Behavior");
+    await flip(checkbox(host, "check its work"));
+    expect(invoke).toHaveBeenCalledWith("set_verify_changes", { on: false });
+  });
+});
+
 describe("the interface size", () => {
   it("is applied the moment a size is picked", async () => {
     const host = await mount();

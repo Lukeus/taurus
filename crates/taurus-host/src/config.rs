@@ -1551,6 +1551,12 @@ pub struct Settings {
     /// a turn finishing on the screen you're looking at needs no telling.
     #[serde(default = "default_true")]
     pub notify_when_done: bool,
+    /// Whether a turn that changed files and ran nothing afterwards is asked,
+    /// once, to check its work. On by default. The ask is one more request
+    /// with the whole conversation in it, which a project with a slow build or
+    /// no tests may not want to pay for.
+    #[serde(default = "default_true")]
+    pub verify_changes: bool,
     /// How large the whole interface is drawn, in percent. The webview's own
     /// zoom, so text, spacing and the terminal scale together. Clamped to
     /// [`MIN_UI_SCALE`]..=[`MAX_UI_SCALE`].
@@ -1839,6 +1845,7 @@ impl Default for Settings {
             speech: SpeechSettings::default(),
             plugins: BTreeMap::new(),
             notify_when_done: true,
+            verify_changes: true,
             ui_scale: default_ui_scale(),
             terminal_shell: String::new(),
             terminal_font: String::new(),
@@ -1935,6 +1942,9 @@ pub struct StoredSettings {
     /// See [`Settings::notify_when_done`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_when_done: Option<bool>,
+    /// See [`Settings::verify_changes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_changes: Option<bool>,
     /// See [`Settings::ui_scale`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_scale: Option<u32>,
@@ -1989,6 +1999,7 @@ impl StoredSettings {
         // the user's would be a voice nobody picked.
         self.speech = other.speech.or(self.speech.take());
         self.notify_when_done = other.notify_when_done.or(self.notify_when_done);
+        self.verify_changes = other.verify_changes.or(self.verify_changes);
         self.ui_scale = other.ui_scale.or(self.ui_scale);
         self.terminal_shell = other.terminal_shell.or(self.terminal_shell.take());
         self.terminal_font = other.terminal_font.or(self.terminal_font.take());
@@ -2065,6 +2076,7 @@ impl StoredSettings {
             speech: self.speech.unwrap_or(defaults.speech),
             plugins: self.plugins.unwrap_or(defaults.plugins),
             notify_when_done: self.notify_when_done.unwrap_or(defaults.notify_when_done),
+            verify_changes: self.verify_changes.unwrap_or(defaults.verify_changes),
             // Clamped like the iteration ceiling: a typo'd number brought back
             // into range beats a window drawn at 5% or 900%.
             ui_scale: self
@@ -2564,6 +2576,7 @@ mod tests {
             }),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
             notify_when_done: Some(false),
+            verify_changes: Some(false),
             ui_scale: Some(125),
             terminal_shell: Some("/opt/homebrew/bin/fish".into()),
             terminal_font: Some("JetBrains Mono".into()),

@@ -17,6 +17,7 @@ import { CanvasDeck } from "./CanvasDeck";
 import type { TabMark } from "./CanvasSlot";
 import { closeTab, nameTab, openTab, showTab, type CanvasTabs } from "../lib/canvasTabs";
 import { useStore } from "../state/store";
+import { commandEnded } from "../lib/terminal";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -235,6 +236,18 @@ describe("a row of open files", () => {
     await act(async () => tab("a.rs").click());
     await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(boxFor("a.rs").value).toBe("git checkout\n");
+  });
+
+  it("notices a command in the dock changing the file, with the window in focus", async () => {
+    await mount();
+    await act(async () => tab("a.rs").click());
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    disk["a.rs"] = { ...disk["a.rs"], text: "checked out\n", fingerprint: "a3" };
+    await act(async () => {
+      commandEnded();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(boxFor("a.rs").value).toBe("checked out\n");
   });
 
   it("raises no conflict over typing when nothing moved on disk", async () => {

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use crate::budget::OutputBudget;
 use crate::diff::FileDiff;
 use crate::tool::{parse_input, schema_for, Effect, Tool, ToolContext, ToolError, ToolResult};
+use taurus_provider::{ToolOutput, ToolResultBlock};
 
 /// Guards against a single read blowing the model's context window.
 ///
@@ -114,7 +115,8 @@ impl Tool for ReadFile {
     fn description(&self) -> &str {
         "Read a file's contents. Prefer this over running `cat`. Returns the text with 1-based \
          line numbers so you can reference specific lines. Long files come back one window at a \
-         time; pass `offset` and `limit` to ask for the part you need instead of the whole file."
+         time; pass `offset` and `limit` to ask for the part you need instead of the whole file. \
+         A PNG, JPEG, WebP or GIF comes back as the image itself."
     }
     fn input_schema(&self) -> serde_json::Value {
         schema_for::<ReadFileInput>()
@@ -141,6 +143,10 @@ impl Tool for ReadFile {
                 "{} is a directory; use list_dir",
                 input.path
             )));
+        }
+
+        if let Some(image) = read_image(&path, ctx).await? {
+            return Ok(image);
         }
 
         let start = input.offset.unwrap_or(1).max(1) - 1;
@@ -205,6 +211,61 @@ impl Tool for ReadFile {
         }
         Ok(out.into())
     }
+}
+
+/// A picture, when the file is one of the four formats a request can carry.
+///
+/// Read by its first bytes rather than its extension, the way the image
+/// checks downstream do, so a `.png` that is really text is read as text.
+/// Without this, a screenshot or a chart came back as a page of replacement
+/// characters the model would try to make sense of.
+///
+/// The whole file goes in one block: there is no window into a picture. One
+/// past the size limit is refused here, by name, rather than read into
+/// memory and refused later. A model with no vision still gets a line saying
+/// what was there — see `ToolOutput::without_images`.
+async fn read_image(path: &Path, ctx: &ToolContext) -> Result<Option<ToolOutput>, ToolError> {
+    use taurus_provider::image;
+    use tokio::io::AsyncReadExt;
+
+    let mut head = [0u8; 12];
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        // The text path names the error; this one only decides the shape.
+        return Ok(None);
+    };
+    let got = file.read(&mut head).await.unwrap_or(0);
+    let Some(mime_type) = image::sniff(&head[..got]) else {
+        return Ok(None);
+    };
+
+    let shown = ctx.display(path);
+    let format = match mime_type {
+        "image/png" => "PNG",
+        "image/jpeg" => "JPEG",
+        "image/webp" => "WebP",
+        _ => "GIF",
+    };
+    let size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    if size > image::MAX_IMAGE_BYTES as u64 {
+        return Err(ToolError::InvalidInput(format!(
+            "{shown} is a {format} of {:.1} MB, and an image can be at most {} MB. Run a \
+             command that makes a smaller copy and read that instead.",
+            size as f64 / (1024.0 * 1024.0),
+            image::MAX_IMAGE_BYTES / (1024 * 1024)
+        )));
+    }
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| ToolError::Failed(format!("cannot read {shown}: {e}")))?;
+    let blocks = vec![
+        ToolResultBlock::text(format!(
+            "{shown} is a {format} image, {} KB.",
+            bytes.len().div_ceil(1024)
+        )),
+        ToolResultBlock::image(mime_type, image::encode(&bytes)),
+    ];
+    // Two blocks, so never empty.
+    Ok(ToolOutput::blocks(blocks).ok())
 }
 
 /// Tells the model what it just got and how to get the rest.
@@ -1024,6 +1085,52 @@ mod tests {
             .unwrap();
         assert!(out.to_text().contains("    1\tone"));
         assert!(out.to_text().contains("    2\ttwo"));
+    }
+
+    #[tokio::test]
+    async fn a_picture_comes_back_as_a_picture() {
+        let (ctx, dir) = test_ctx();
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.extend_from_slice(&[0u8; 64]);
+        std::fs::write(dir.path().join("shot.png"), &png).unwrap();
+        let out = ReadFile
+            .execute(serde_json::json!({"path": "shot.png"}), &ctx)
+            .await
+            .unwrap();
+        let images: Vec<_> = out.images().collect();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].0, "image/png");
+        assert_eq!(images[0].1, taurus_provider::image::encode(&png));
+        assert!(
+            out.to_text().contains("shot.png is a PNG image, 1 KB."),
+            "{}",
+            out.to_text()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_named_like_a_picture_is_read_by_what_it_holds() {
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("notes.png"), "not a picture\n").unwrap();
+        let out = ReadFile
+            .execute(serde_json::json!({"path": "notes.png"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.has_images());
+        assert!(out.to_text().contains("    1\tnot a picture"));
+    }
+
+    #[tokio::test]
+    async fn a_picture_past_the_limit_is_refused_by_name() {
+        let (ctx, dir) = test_ctx();
+        let mut jpeg = vec![0xff, 0xd8, 0xff];
+        jpeg.resize(taurus_provider::image::MAX_IMAGE_BYTES + 1, 0);
+        std::fs::write(dir.path().join("big.jpg"), &jpeg).unwrap();
+        let err = ReadFile
+            .execute(serde_json::json!({"path": "big.jpg"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("at most 5 MB"), "{err}");
     }
 
     /// A file of `n` numbered lines, for exercising windowed reads.

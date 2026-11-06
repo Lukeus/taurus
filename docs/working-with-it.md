@@ -438,6 +438,13 @@ would be worse than output that's never structured.
 screenshots arrive as pictures, not the literal words `[image: image/png]`,
 which is all a result type with no room for an image can say.
 
+**`read_file` on a picture returns the picture.** A PNG, JPEG, WebP or GIF
+comes back as an image with a line naming its format and size, so "what's in
+`docs/screenshots/notes.png`?" is a question the model can answer. The file is
+judged by its first bytes, not its name, so a `.png` that holds text reads as
+text. One past five megabytes is refused, with a suggestion to make a smaller
+copy.
+
 **Only Anthropic carries an image inside the result.** OpenAI's
 `role: "tool"` message, Gemini's `functionResponse`, and Ollama's tool message
 are text-only. There the image follows the result, with a line naming the
@@ -992,7 +999,9 @@ is never matched, and the nudge's way out covers it. A plan carried over from
 an earlier turn isn't held to its checks unless this turn changed files.
 
 It fires once per turn, with a way out, so a documentation edit costs one
-round trip, not an argument. `verify_changes` in `AgentConfig` turns it off.
+round trip, not an argument. **Ask the model to check its work** in
+**Settings › Behavior** turns it off, and so does `"verify_changes": false` in
+a project's `settings.json`, for a project with nothing worth running.
 It reads the checkpoint log to tell whether anything changed, so it's exactly
 as accurate as the log. A command that only touched files in an ignored
 directory reads as having changed nothing.

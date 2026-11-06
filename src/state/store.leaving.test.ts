@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 
-import { useStore } from "./store";
+import { entriesFromMessages, useStore } from "./store";
 
 const OPEN = {
   id: "open",
@@ -41,6 +41,7 @@ beforeEach(() => {
     permission: null,
     leaving: null,
     error: null,
+    entries: [],
   });
 });
 
@@ -94,5 +95,53 @@ describe("setting a conversation to unattended", () => {
 
     expect(useStore.getState().leaving).toBeNull();
     expect(calls()).toEqual(["set_unattended"]);
+  });
+});
+
+describe("the line a change of setting leaves", () => {
+  const rules = () =>
+    useStore
+      .getState()
+      .entries.flatMap((e) => (e.kind === "notice" && e.rule ? [e.rule.label] : []));
+
+  it("is drawn when the transcript took it, and not when nothing changed", async () => {
+    invoke.mockImplementation((command: string, args: { unattended?: boolean }) =>
+      Promise.resolve(
+        command === "set_unattended"
+          ? { after: 2, on: args.unattended, at: 0 }
+          : command === "once_allowed_rules"
+            ? []
+            : undefined,
+      ),
+    );
+    await useStore.getState().setUnattended(true);
+    expect(rules()).toEqual(["Unattended"]);
+
+    // Set again to what it already was: the host writes nothing and says so.
+    invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === "once_allowed_rules" ? [] : null),
+    );
+    await useStore.getState().setUnattended(true);
+    expect(rules()).toEqual(["Unattended"]);
+  });
+
+  it("comes back where it happened when the conversation is reopened", () => {
+    const entries = entriesFromMessages(
+      [
+        { role: "user", content: [{ type: "text", text: "build it" }] },
+        { role: "assistant", content: [{ type: "text", text: "Refused." }] },
+      ],
+      [],
+      [],
+      [],
+      [
+        { after: 1, on: true, at: 0 },
+        { after: 2, on: false, at: 0 },
+      ],
+    );
+    const shape = entries.map((e) =>
+      e.kind === "notice" && e.rule ? e.rule.label : e.kind,
+    );
+    expect(shape).toEqual(["user", "Unattended", "assistant", "Attended"]);
   });
 });

@@ -92,6 +92,16 @@ impl Tool for ReadTerminal {
 
     async fn execute(&self, input: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let input: ReadTerminalInput = parse_input(input)?;
+        if !self.terminal.open() {
+            // Offered with the dock shut too, so a model asked "why did that
+            // fail?" learns where the answer would have been.
+            return Err(ToolError::Failed(
+                "The terminal beside this conversation isn't open, so there are no commands to \
+                 read. If the user means something they ran elsewhere, ask them to paste the \
+                 output."
+                    .into(),
+            ));
+        }
         let shell = self.terminal.shell();
         if !self.terminal.integrated() {
             // Said rather than returned as an empty list, which would read as
@@ -233,12 +243,16 @@ mod tests {
     use std::sync::Mutex;
 
     struct Fake {
+        open: bool,
         tracker: Mutex<BlockTracker>,
     }
 
     impl TerminalReader for Fake {
         fn shell(&self) -> String {
             "zsh".into()
+        }
+        fn open(&self) -> bool {
+            self.open
         }
         fn integrated(&self) -> bool {
             self.tracker.lock().unwrap().integrated()
@@ -255,6 +269,7 @@ mod tests {
         let mut tracker = BlockTracker::default();
         tracker.feed(stream.as_bytes());
         Arc::new(Fake {
+            open: true,
             tracker: Mutex::new(tracker),
         })
     }
@@ -308,6 +323,16 @@ mod tests {
             err.to_string().contains("isn't reporting where commands"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_closed_dock_is_told_apart_from_a_quiet_shell() {
+        let closed = Arc::new(Fake {
+            open: false,
+            tracker: Mutex::new(BlockTracker::default()),
+        });
+        let err = run(closed, serde_json::json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("isn't open"), "{err}");
     }
 
     #[tokio::test]

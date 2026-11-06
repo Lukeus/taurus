@@ -170,10 +170,6 @@ fn derived_id(note: &Note) -> String {
 
 /// Serializes every read-modify-write of a notes file in this process.
 ///
-/// A second process, the CLI beside the app, isn't covered. Its write can still
-/// replace a change made since it read, but the atomic replace in [`write`]
-/// means neither can tear the file.
-///
 /// Each writer loads the whole set, changes it, and writes it back, so two at
 /// once each write a set missing the other's change. They do run at once:
 /// parallel delegates each hold a `remember` tool, and the drawer's forget and
@@ -182,11 +178,43 @@ fn derived_id(note: &Note) -> String {
 /// more code than the waiting it saves.
 static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn writing() -> std::sync::MutexGuard<'static, ()> {
+/// Held for one read-modify-write: this process's lock, then the workspace's
+/// lock file, which is what keeps out a second process — `taurus run` beside
+/// the app. Dropping it releases both, the file first.
+struct Writing {
+    _file: std::fs::File,
+    _process: std::sync::MutexGuard<'static, ()>,
+}
+
+/// The lock file beside the notes, never the notes file itself: [`write`]
+/// renames a new file over that one, and a lock on the old file would guard
+/// nothing once it had been replaced.
+fn lock_path(workspace: &Path) -> PathBuf {
+    memory_dir(workspace).join("notes.lock")
+}
+
+fn writing(workspace: &Path) -> Result<Writing, String> {
     // Nothing under this lock can leave the file half-written — see `write` —
     // so a panic elsewhere while it was held is no reason to refuse the next
     // note.
-    WRITING.lock().unwrap_or_else(|e| e.into_inner())
+    let process = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    // In-process first, so delegates queue on a mutex rather than each taking
+    // a file handle to wait on. The file lock is advisory, and every writer of
+    // this file is this code, which takes it.
+    let dir = memory_dir(workspace);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not open {}: {e}", dir.display()))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path(workspace))
+        .map_err(|e| format!("could not save a memory: the lock beside it won't open: {e}"))?;
+    file.lock()
+        .map_err(|e| format!("could not save a memory: another Taurus holds it: {e}"))?;
+    Ok(Writing {
+        _file: file,
+        _process: process,
+    })
 }
 
 /// The `session` of a note a person wrote, rather than a conversation.
@@ -220,7 +248,7 @@ fn checked(text: &str) -> Result<&str, String> {
 pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, String> {
     let text = checked(text)?;
 
-    let _writing = writing();
+    let _writing = writing(workspace)?;
     let mut notes = read_notes(workspace)?;
     notes.push(Note {
         id: fresh_id(),
@@ -245,7 +273,7 @@ pub fn append(workspace: &Path, session: &str, text: &str) -> Result<Vec<Note>, 
 /// the top would push a newer one out of the prompt to make room for it.
 pub fn edit(workspace: &Path, id: &str, text: &str) -> Result<Vec<Note>, String> {
     let text = checked(text)?;
-    let _writing = writing();
+    let _writing = writing(workspace)?;
     let mut notes = read_notes(workspace)?;
     let note = notes
         .iter_mut()
@@ -258,7 +286,7 @@ pub fn edit(workspace: &Path, id: &str, text: &str) -> Result<Vec<Note>, String>
 
 /// Replaces the whole set, which is how the drawer edits and deletes.
 pub fn replace(workspace: &Path, notes: &[Note]) -> Result<(), String> {
-    let _writing = writing();
+    let _writing = writing(workspace)?;
     write(workspace, notes)
 }
 
@@ -326,7 +354,7 @@ pub fn section(notes: &[Note], current: &str) -> Option<String> {
 /// the same file, so a note can be gone by the time somebody clicks — and the
 /// state they wanted is the state they get.
 pub fn forget(workspace: &Path, id: &str) -> Result<Vec<Note>, String> {
-    let _writing = writing();
+    let _writing = writing(workspace)?;
     let notes: Vec<Note> = read_notes(workspace)?
         .into_iter()
         .filter(|note| note.id != id)
@@ -597,6 +625,41 @@ mod tests {
 
         assert!(refused.contains("sentence or two"), "{refused}");
         assert!(load(&workspace()).is_empty());
+    }
+
+    #[test]
+    fn a_note_waits_for_another_process_holding_the_lock() {
+        // A second open of the lock file stands in for `taurus run`: the lock
+        // is per handle on every platform, so this one is as foreign to
+        // `append` as another process's would be.
+        let _home = isolated_home();
+        write("s1", "before");
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .open(lock_path(&workspace()))
+            .unwrap();
+        held.lock().unwrap();
+
+        let (done, finished) = std::sync::mpsc::channel();
+        let ws = workspace();
+        let writer = std::thread::spawn(move || {
+            append(&ws, "s2", "from the window").unwrap();
+            done.send(()).unwrap();
+        });
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "a write went ahead while another process held the notes"
+        );
+
+        drop(held);
+        finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the write goes ahead once the lock is let go");
+        writer.join().unwrap();
+        let texts: Vec<String> = load(&workspace()).into_iter().map(|n| n.text).collect();
+        assert_eq!(texts, ["before", "from the window"]);
     }
 
     #[test]

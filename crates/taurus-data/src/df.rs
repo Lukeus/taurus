@@ -147,8 +147,20 @@ impl Engine for DataFusionEngine {
     }
 
     async fn profile(&self, source: &Source) -> Result<Profile, DataError> {
-        let source = source.clone();
-        elsewhere(async move { InlineEngine.profile(&source).await }).await
+        // A profile reads every row, so one already paid for against the same
+        // length and modification time is returned rather than read again.
+        let before = stamp_of(&source.path);
+        if let Some(kept) = before.and_then(|stamp| known_profile(&source.path, stamp)) {
+            return Ok(kept);
+        }
+        let scanning = source.clone();
+        let profile = elsewhere(async move { InlineEngine.profile(&scanning).await }).await?;
+        // Only if nothing wrote to the file while it was being read. A profile
+        // of a file that moved under the scan describes neither version.
+        if let Some(stamp) = before.filter(|&stamp| stamp_of(&source.path) == Some(stamp)) {
+            remember_profile(&source.path, stamp, &profile);
+        }
+        Ok(profile)
     }
 
     async fn page(&self, source: &Source, offset: u64, limit: u64) -> Result<Page, DataError> {
@@ -260,6 +272,54 @@ fn remember_rows(path: &Path, stamp: Stamp, rows: u64) {
         held.clear();
     }
     held.insert(path.to_path_buf(), Counted { stamp, rows });
+}
+
+/// Profiles already paid for, by file, on the rule [`counted`] keeps.
+///
+/// Opening the Data pane on a dataset profiles it, and a profile is the one
+/// thing that has to read every row. So going back to a multi-gigabyte file
+/// read it end to end again. A rewrite that keeps both the length and the
+/// modification time is missed, as it is for the row counts.
+fn profiled() -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Profiled>>
+{
+    static PROFILED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Profiled>>,
+    > = std::sync::OnceLock::new();
+    PROFILED.get_or_init(Default::default)
+}
+
+/// How many profiles are kept. Fewer than counts, because a profile carries
+/// every column's extremes and top values; past it the lot is dropped.
+const PROFILED_KEPT: usize = 16;
+
+struct Profiled {
+    stamp: Stamp,
+    profile: Profile,
+}
+
+fn known_profile(path: &Path, stamp: Stamp) -> Option<Profile> {
+    let held = profiled()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.get(path)
+        .filter(|kept| kept.stamp == stamp)
+        .map(|kept| kept.profile.clone())
+}
+
+fn remember_profile(path: &Path, stamp: Stamp, profile: &Profile) {
+    let mut held = profiled()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held.len() >= PROFILED_KEPT && !held.contains_key(path) {
+        held.clear();
+    }
+    held.insert(
+        path.to_path_buf(),
+        Profiled {
+            stamp,
+            profile: profile.clone(),
+        },
+    );
 }
 
 /// Runs `work` on [`data_runtime`] and waits for it here.
@@ -1669,6 +1729,34 @@ id,event,price,active
             .set_modified(modified)
             .unwrap();
         assert_eq!(InlineEngine.page(&source, 0, 10).await.unwrap().total, 2);
+    }
+
+    #[tokio::test]
+    async fn a_profile_is_kept_until_the_file_changes() {
+        // The same trick as the row count: a rewrite that keeps the length and
+        // the modification time is invisible to the stamp, so a profile that
+        // still describes the old contents across one was not read again.
+        let dir = TempDir::new().unwrap();
+        let source = file(&dir, "kept.csv", "id\n1\n2\n");
+        let modified = std::fs::metadata(&source.path).unwrap().modified().unwrap();
+        let first = DataFusionEngine.profile(&source).await.unwrap();
+        assert_eq!(column(&first, "id").max.as_deref(), Some("2"));
+
+        std::fs::write(&source.path, "id\n3\n4\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&source.path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let kept = DataFusionEngine.profile(&source).await.unwrap();
+        assert_eq!(kept, first, "read again under an unchanged stamp");
+
+        // A real change moves the length, and is profiled again.
+        std::fs::write(&source.path, "id\n3\n4\n5\n").unwrap();
+        let again = DataFusionEngine.profile(&source).await.unwrap();
+        assert_eq!(again.rows, 3);
+        assert_eq!(column(&again, "id").max.as_deref(), Some("5"));
     }
 
     /// Tab-separated files, and the reason `file_extension` is set at all: the
