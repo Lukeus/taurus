@@ -1865,6 +1865,15 @@ often the difference.
 
 ![A sketch with the list folded away, in Excalidraw's full layout](screenshots/sketch-wide.png)
 
+Shapes you add to Excalidraw's library are there in every sketch, in every
+workspace, and after a restart. They're kept in
+`~/.taurus/sketch-library.excalidrawlib`, in Excalidraw's own library format,
+so you can share the file or put a library downloaded from
+[libraries.excalidraw.com](https://libraries.excalidraw.com) in its place. If
+that file isn't one Taurus can read, it says so and leaves the file alone:
+shapes you add aren't saved over it until you fix or delete it and open the
+sketch again.
+
 Some of Excalidraw is turned off here, each for a reason:
 
 - **Open, Save to disk and Export.** The file *is* the sketch. Another way to

@@ -24,6 +24,20 @@ pub async fn list_pages(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<PageRe
     Ok(state.host.notebook().await)
 }
 
+/// The sketch editor's library, as `~/.taurus/sketch-library.excalidrawlib`
+/// holds it, or `None` before a shape has been added. See
+/// `Host::sketch_library`.
+#[tauri::command]
+pub async fn read_sketch_library(state: State<'_, Arc<AppState>>) -> CmdResult<Option<String>> {
+    state.host.sketch_library().await
+}
+
+/// Replaces the sketch library. Refused unless it's an Excalidraw library.
+#[tauri::command]
+pub async fn save_sketch_library(state: State<'_, Arc<AppState>>, text: String) -> CmdResult<()> {
+    state.host.save_sketch_library(&text).await
+}
+
 /// One note, read off disk.
 ///
 /// Called when a note is opened and again when the pane comes back to it. The

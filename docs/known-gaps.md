@@ -1025,10 +1025,12 @@ the backlog, and they're the minority.
   every other font, script and stylesheet in the app put together. It's left
   out, so that text draws in the system's own face instead. It still saves,
   exports and embeds.
-- **A sketch's library lasts as long as the window.** Shapes you add to
-  Excalidraw's library are kept in memory and not written anywhere.
-  **Browse libraries** opens the public library site in your browser, and
-  its **Add to Excalidraw** button returns to excalidraw.com, not to the app.
+- **A library from the public site can't be added with one click.**
+  **Browse libraries** opens libraries.excalidraw.com in your browser, and
+  its **Add to Excalidraw** button returns to excalidraw.com, not to the app,
+  which has no address a browser can hand a library to. Download the library
+  instead and put it at `~/.taurus/sketch-library.excalidrawlib`, which
+  replaces what's there rather than merging with it.
 - **A sketch has no export.** Excalidraw's Save to disk, Open and Export image
   are turned off. The file is the sketch, and a second way to save it would
   bypass the rule that no save overwrites a version it hasn't seen. Copy as

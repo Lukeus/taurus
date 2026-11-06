@@ -4602,3 +4602,42 @@ async fn a_skill_saved_into_a_project_plugin_under_a_running_command_stands() {
         "{said}"
     );
 }
+
+#[tokio::test]
+async fn the_sketch_library_is_kept_in_the_config_home_and_refuses_what_isnt_one() {
+    let dir = TempDir::new().unwrap();
+    let (host, _home) = host(dir.path());
+    assert_eq!(
+        host.sketch_library().await.unwrap(),
+        None,
+        "nothing kept yet"
+    );
+
+    let library = r#"{"type":"excalidrawlib","version":2,"source":"taurus","libraryItems":[{"id":"a","status":"unpublished","elements":[],"created":1}]}"#;
+    host.save_sketch_library(library).await.unwrap();
+    assert_eq!(
+        host.sketch_library().await.unwrap().as_deref(),
+        Some(library)
+    );
+    assert!(config::home_dir()
+        .join(super::notes::SKETCH_LIBRARY_FILE)
+        .exists());
+
+    // A value that isn't a library would replace the shapes with something
+    // nothing can read, so it's refused and the file is left as it was.
+    for wrong in [
+        "not json",
+        r#"{"type":"excalidraw","elements":[]}"#,
+        r#"{"type":"excalidrawlib","libraryItems":{}}"#,
+    ] {
+        let said = host.save_sketch_library(wrong).await.unwrap_err();
+        assert!(
+            said.starts_with("The sketch library wasn't saved"),
+            "{said}"
+        );
+    }
+    assert_eq!(
+        host.sketch_library().await.unwrap().as_deref(),
+        Some(library)
+    );
+}

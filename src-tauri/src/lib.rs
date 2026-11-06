@@ -309,6 +309,8 @@ pub fn run() {
             commands::list_notes,
             commands::list_pages,
             commands::read_page,
+            commands::read_sketch_library,
+            commands::save_sketch_library,
             commands::save_page,
             commands::create_page,
             commands::rename_page,
