@@ -1053,8 +1053,7 @@ the backlog, and they're the minority.
   unused translations are replaced with empty modules at build time.
 - **The canvas shows one file at a time.** Files open in tabs, but there's no
   split inside the canvas, so comparing two side by side is still the terminal
-  dock's job. Open tabs last as long as the window, and aren't restored when
-  it reopens.
+  dock's job.
 - **Only a link is a link.** A path written as plain text or in backticks,
   like `src/retry.rs:40`, isn't clickable; only a Markdown link opens the canvas.
   Turning every path-shaped word into a link would also catch ones that aren't

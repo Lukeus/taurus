@@ -27,6 +27,8 @@ import {
   closeTab,
   nameTab,
   openTab,
+  recallTabs,
+  rememberTabs,
   samePath,
   showTab,
   type CanvasTabs,
@@ -1255,7 +1257,18 @@ export default function App() {
    * can't be written here, and keep it instead.
    */
   const tabsByFolder = useRef(new Map<string, CanvasTabs>());
-  const tabsFolder = useRef(workspace);
+  /** The folder `canvas` holds the tabs of. `null` to begin with, so the first
+   *  folder to open counts as a switch and gets its tabs back. */
+  const tabsFolder = useRef<string | null>(null);
+  /*
+   * Kept on this machine as they change, so a restart opens them again. Before
+   * the switch below, so on the render where both run it still files the tabs
+   * under the folder they belong to. Not on `workspace`: the render that
+   * switches folder still holds the old folder's tabs.
+   */
+  useEffect(() => {
+    if (tabsFolder.current) rememberTabs(tabsFolder.current, canvas);
+  }, [canvas]);
   useEffect(() => {
     const from = tabsFolder.current;
     if (from === workspace) return;
@@ -1265,7 +1278,8 @@ export default function App() {
         if (now) tabsByFolder.current.set(from, now);
         else tabsByFolder.current.delete(from);
       }
-      return (workspace && tabsByFolder.current.get(workspace)) || null;
+      if (!workspace) return null;
+      return tabsByFolder.current.get(workspace) ?? recallTabs(workspace);
     });
     setCanvasMarks({});
   }, [workspace]);
