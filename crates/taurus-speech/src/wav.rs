@@ -20,8 +20,10 @@ pub struct Pcm {
 /// asked for `pcm`.
 pub fn from_i16_le(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| i16::from_le_bytes(b) as f32 / 32768.0)
         .collect()
 }
 
@@ -65,8 +67,10 @@ pub fn read(bytes: &[u8]) -> Result<Pcm, SpeechError> {
                 // plain integer PCM too.
                 (1 | 0xFFFE, 16) => from_i16_le(data),
                 (3, 32) => data
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&b| f32::from_le_bytes(b))
                     .collect(),
                 _ => return Err(bad(&format!("format {tag} at {bits} bits"))),
             };
