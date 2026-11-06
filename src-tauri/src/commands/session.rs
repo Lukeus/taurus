@@ -409,7 +409,7 @@ pub async fn send_message(
     // Read once, here, so a turn is sent to the backend this conversation was
     // on when it began even if somebody moves it while the answer streams.
     let provider_id = entry.provider_id.lock().await.clone();
-    let provider = state.host.provider(&provider_id).await?;
+    let provider = state.host.provider_for_turn(&provider_id).await?;
 
     // `/name args` becomes the skill's procedure — or the instruction to
     // delegate to that sub-agent — before the model sees it. The user's own

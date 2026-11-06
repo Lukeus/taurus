@@ -222,6 +222,10 @@ pub struct Host {
     /// already made: a hook edited in an editor takes effect on the next
     /// message rather than the next launch.
     hooks_seen: RwLock<Freshness>,
+    /// The same, for both layers' `providers.json`. Taken by
+    /// [`Self::reload_local`], which reads them, and by [`Self::set_providers`],
+    /// which writes one.
+    providers_seen: RwLock<Freshness>,
     /// The active theme as last resolved, and the files it was resolved from.
     ///
     /// It rides on every status push, and resolving it reads the theme file
@@ -367,6 +371,7 @@ impl Host {
             agents_seen: RwLock::new(Freshness::default()),
             skills_seen: RwLock::new(Freshness::default()),
             hooks_seen: RwLock::new(Freshness::default()),
+            providers_seen: RwLock::new(Freshness::default()),
             theme_seen: RwLock::new(None),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             terminal: std::sync::RwLock::new(None),
@@ -456,6 +461,9 @@ impl Host {
     pub async fn reload_local(&self) {
         let workspace = self.workspace.read().await.clone();
 
+        // Before the read, so a file saved while it runs leaves the fingerprint
+        // stale rather than recorded as seen.
+        *self.providers_seen.write().await = provider_freshness(&workspace);
         let (providers, provider_problems) = config::load_providers(Some(&workspace));
         let mut problems = Problem::tag(ProblemSource::Providers, provider_problems);
         // Forgotten only when the list moved. Most reloads — a folder switch, a
@@ -923,13 +931,31 @@ impl Host {
         // that carries every other command.
         let seen = self.instructions_seen.read().await.clone();
         let hooks_seen = self.hooks_seen.read().await.clone();
+        let providers_seen = self.providers_seen.read().await.clone();
         let taken = {
-            let (seen, hooks_seen, workspace) =
-                (seen.clone(), hooks_seen.clone(), workspace.clone());
-            tokio::task::spawn_blocking(move || TurnStamps::take(&seen, &hooks_seen, &workspace))
-                .await
+            let (seen, hooks_seen, providers_seen, workspace) = (
+                seen.clone(),
+                hooks_seen.clone(),
+                providers_seen.clone(),
+                workspace.clone(),
+            );
+            tokio::task::spawn_blocking(move || {
+                TurnStamps::take(&seen, &hooks_seen, &providers_seen, &workspace)
+            })
+            .await
         };
-        let now = taken.unwrap_or_else(|_| TurnStamps::take(&seen, &hooks_seen, &workspace));
+        let now = taken
+            .unwrap_or_else(|_| TurnStamps::take(&seen, &hooks_seen, &providers_seen, &workspace));
+
+        // A provider list edited by hand. It's the one change here that can
+        // move the tools themselves (semantic search is wired to a provider)
+        // and the routes' problems, so it takes the whole local reload, which
+        // re-reads everything below as well and keeps every MCP server up. A
+        // file left as it was costs two `stat`s.
+        if providers_seen != now.providers {
+            self.reload_local().await;
+            return true;
+        }
 
         // Against the files the last read depended on, restated — not against
         // the source list. The two are different sets whenever a brief imports
@@ -1314,19 +1340,36 @@ struct TurnStamps {
     agents: Freshness,
     skills: Freshness,
     hooks: Freshness,
+    providers: Freshness,
 }
 
 impl TurnStamps {
     /// A `stat` per file each and a directory listing or two, every one of them
     /// a blocking call — which is why a turn takes these on a blocking thread.
-    fn take(instructions: &Freshness, hooks: &Freshness, workspace: &Path) -> Self {
+    fn take(
+        instructions: &Freshness,
+        hooks: &Freshness,
+        providers: &Freshness,
+        workspace: &Path,
+    ) -> Self {
         Self {
             instructions: instructions.refreshed(),
             agents: agent_freshness(&config::agent_sources(Some(workspace))),
             skills: skill_freshness(&config::skill_sources(Some(workspace))),
             hooks: hooks.refreshed(),
+            providers: providers.refreshed(),
         }
     }
+}
+
+/// A fingerprint over both layers' `providers.json`, present or not, so a
+/// project file written for the first time is noticed too.
+fn provider_freshness(workspace: &Path) -> Freshness {
+    let files: Vec<PathBuf> = [Scope::Global, Scope::Workspace]
+        .into_iter()
+        .filter_map(|scope| config::providers_file(scope, Some(workspace)))
+        .collect();
+    Freshness::of_files(files.iter().map(PathBuf::as_path))
 }
 
 /// Intersects every agent's `tools:` list with the finished registry, returning

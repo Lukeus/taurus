@@ -884,10 +884,12 @@ the backlog, and they're the minority.
   on or off, a file its manifest names showing up, and a project you trust
   all land on your next message.
 
-  Two things *aren't* on this path and need a reload: the provider list and
-  the rest of `settings.json`. You edit both in the app most of the time, not
-  in a file, and both are re-read when you save them there. A hand edit to
-  `providers.json` while the app is open is the case that waits.
+  The provider list is on it too: a hand edit to either `providers.json`
+  reaches the next message, and since it can change which tools there are,
+  it re-reads everything above in one go. The rest of `settings.json` *isn't*
+  on this path. You edit it in the app most of the time, not in a file, and
+  it's re-read when you save it there. A hand edit to it while the app is
+  open is the case that waits.
 
 - **Only zsh and bash mark their commands.** The dock's blocks, the
   **Ask about this** button and `read_terminal` all come from shell integration:
