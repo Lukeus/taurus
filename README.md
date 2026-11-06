@@ -460,7 +460,8 @@ web search.
   servers and hooks under one name, in Claude Code's layout, installed from a
   folder or a git URL and named under the plugin so they never collide.
 - [**Themes**](docs/configuration.md#themes): fourteen colors, three
-  typefaces, a wordmark, and a corner radius, in a file you can commit. A
+  typefaces, a wordmark and logo, a corner radius and the column insets, in
+  a file you can commit. A
   workspace can carry its own, so a repo can brand the app for everyone who
   opens it.
 
