@@ -33,6 +33,7 @@ use taurus_data::{
     QueryResult as DataQueryResult, Recipe,
 };
 
+use taurus_host::credentials::CredentialView;
 use taurus_host::onscreen::OnScreen;
 use taurus_host::profile::{Profile, ProfileView};
 use taurus_host::search::{self, SearchResults};

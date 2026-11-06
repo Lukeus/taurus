@@ -15,12 +15,11 @@ the backlog, and they're the minority.
 
 - **There's one profile, and nothing switches between them.** Profiles are
   laid out to be several, each in its own folder under `~/.taurus/profiles`,
-  but only `default` exists and Settings has no switcher. A profile also holds
-  nothing but your name so far. Provider keys, MCP sign-ins and the tokens
-  typed into the MCP panel aren't part of it: they belong to the machine, not
-  to a profile, and switching would leave them where they are. Moving them in
-  is the next piece, and it's where saved credentials for MCP servers (a
-  keychain reference in place of a token in `mcp.json`) belong. See
+  but only `default` exists and Settings has no switcher. A profile holds your
+  name and your [saved credentials](configuration.md#saved-credentials), and
+  each profile's credentials get keychain entries of their own. Provider keys
+  and MCP sign-ins aren't part of a profile yet. They belong to the machine,
+  and switching would leave them where they are. See
   [Your profile](configuration.md#your-profile).
 - **A pty on Windows depends on a runtime fetched at build time.** The Windows
   bundle ships Microsoft's redistributable ConPTY next to the executable:
@@ -196,11 +195,12 @@ the backlog, and they're the minority.
   `old_str`, `new_str`, `file_text`) follow Copilot's documentation. Claude
   Code's format, which Copilot also reads, has run against real Claude Code
   and Codex plugins.
-- **Parts of a Claude Code plugin have nothing here to run them.** Command
-  files, LSP servers, output styles, workflows, themes, monitors, `bin/` on
-  `PATH`, a plugin's own settings, `userConfig` and dependencies. Each is
-  listed on the plugin by name, with why. Command files are the one with a
-  near equivalent: a user-invocable skill is a `/command`.
+- **Parts of a Claude Code plugin have nothing here to run them.** LSP
+  servers, output styles, workflows, themes, monitors, `bin/` on `PATH`, a
+  plugin's own settings, `userConfig` and dependencies. Each is listed on the
+  plugin by name, with why. A plugin's `commands/` aren't on that list: each
+  file in them runs as a one-file skill named `plugin:file`, the way Claude
+  Code folded its commands into skills.
 - **An installed plugin's skills and agents aren't edited in place.** Their
   files are replaced on the next `update`, so an edit would be lost later. The
   drawers copy one into your own folder under its own name instead. A plugin
@@ -670,15 +670,13 @@ the backlog, and they're the minority.
   two minutes may well answer the next one, so its card is left alone and
   only the call fails. That's a judgment, and it can be wrong in one
   direction: the panel can look healthier than the server is.
-- **A token you paste is stored in `mcp.json` in plain text.** OAuth refresh
-  tokens go to the OS keychain. A personal access token typed into the header
-  or environment field doesn't. It's written into the file, the same file the
-  panel exists to save you from editing. Entries that want a token default to
-  the global file, not the one inside the repository. Choosing the repository
-  asks you to acknowledge that a commit can publish it. There's no keychain
-  reference. `${VARIABLE}` is expanded in any field, so the way to keep a
-  token out of the file today is to export it and name the variable. Nothing
-  in the panel tells you that.
+- **A token for a project's own program is stored in plain text.** A saved
+  credential never reaches a stdio server defined in a project's `mcp.json`,
+  by design, so a token typed for one is written into that file as typed, and
+  the catalog asks you to confirm first. Everywhere else, a typed token goes
+  to the keychain. The way to keep one out of a project file is to define the
+  server in your own `~/.taurus/mcp.json`, or name a `${VAR}`. See
+  [Saved credentials](configuration.md#saved-credentials).
 - **A sign-in needs the authorization server to register Taurus on the spot.**
   OAuth works through dynamic client registration (RFC 7591): Taurus asks the
   authorization server for a client id when you press Sign in. The current
@@ -934,8 +932,9 @@ the backlog, and they're the minority.
   people actually install and falls back through them. A machine with any of
   them renders the prompt correctly. A machine with none shows those glyphs
   as empty boxes, with the text around them intact. Bundling one would be
-  tens of megabytes for a decoration, and there's no setting to name a
-  different font yet.
+  tens of megabytes for a decoration. A Nerd Font you've installed under a
+  name the dock doesn't know goes in **Settings › Terminal**, which tries it
+  first and keeps the rest of the list behind it.
 - **On Windows the dock holds a console window open for as long as it is open.**
   It's the ConPTY gap above, seen for longer. A release build has no console
   of its own, so a pty opened without the sideloaded runtime creates one. A
@@ -1423,11 +1422,13 @@ the backlog, and they're the minority.
   ordinary code, but not about all of it. A construct it misreads is colored
   wrongly instead of reported, because nothing here could report it. It
   knows Rust, TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML,
-  and TOML. Everything else renders plain with its label intact. That
-  includes HTML and CSS, which are common in a fenced block and whose syntax
-  isn't word-shaped. Growing the list is a `Grammar` each. Growing it to
-  *markup* is a second scanner, because a word-oriented one turned loose on
-  HTML produces confident nonsense.
+  TOML, C and C++, C#, Java, Kotlin, Swift, Ruby, PHP, Lua, CSS, HTML and
+  XML, Dockerfiles, Makefiles, config files and Markdown. Everything else
+  renders plain with its label intact. Growing the list is a `Grammar` each.
+  HTML is where the scanner stops being enough: it colors comments and
+  attribute values and leaves the tags alone, because a word-oriented
+  scanner can't tell where a tag ends. Coloring tags would take a second,
+  markup-aware scanner.
 - **An intra-line diff mark is a trim, not a diff.** The common words at each
   end of a replaced line come off, and whatever's left in the middle is
   marked. That's one region per line by construction. So a line with two
@@ -1452,12 +1453,14 @@ the backlog, and they're the minority.
   rate. Adding it means a price table per provider per model that somebody
   has to keep current. A table six months stale reporting dollars to two
   decimal places is worse than no dollars at all.
-- **There are five window shortcuts and two more inside one dialog.** ⌘K and
-  ⌘⇧P open the palette, ⌘N starts a conversation, ⌘L puts the cursor in the
-  composer, ⌘, opens Settings, and ⌃` shows the terminal. That's the whole
-  window list, and it's short on purpose. Every one is also a palette row
-  showing the key it answers to, so the palette is where you discover them.
-  Adding a sixth is cheap in a way adding the first wasn't.
+- **There are nine window shortcuts and two more inside one dialog.** ⌘K and
+  ⌘⇧P open the palette, ⌘P finds a file, ⌘N starts a conversation, ⌘L puts
+  the cursor in the composer, ⌘B shows or hides the sidebar, ⌘⇧D starts
+  dictation, ⌘, opens Settings, ⌃` shows the terminal, and ⌃R lists recent
+  workspaces. That's the whole window list, and it's short on purpose. Every
+  one is also a palette row showing the key it answers to, so the palette is
+  where you discover them. Adding a tenth is cheap in a way adding the first
+  wasn't.
 
   The permission dialog is the exception, and it's argued for, not an
   oversight. ⌘↵ allows once and ⌘⌫ denies, printed on the buttons. The window
@@ -1607,8 +1610,9 @@ the backlog, and they're the minority.
   that isn't Rust and TypeScript, could land differently. So the setting
   stays, and the default stays empty. Run the harness with your own reranker
   before trusting it.
-- **A theme sets fourteen colors, three typefaces, a wordmark and a corner
-  radius, and nothing else.** That's not a stub; the ceiling is the point.
+- **A theme sets fourteen colors, three typefaces, a wordmark and logo, a
+  corner radius and two column insets, and nothing else.** That's not a
+  stub; the ceiling is the point.
   Everything below the top of `src/styles.css` speaks in roles, so those
   fourteen values move the whole window. If a theme could restate a *rule*
   instead, it could break a layout in a way only its author could reproduce.
@@ -1617,7 +1621,9 @@ the backlog, and they're the minority.
   a constraint the stylesheet's own tests enforce, and a theme that could
   redefine it could make the app look like nobody measured anything. The
   cost is real: a theme can't change a font size, a weight, a shadow, or the
-  width of the rail.
+  width of the rail. It can set how far text sits from the rail's edge and
+  the center column's (`shape.rail-gutter` and `shape.gutter`), since those
+  read as brand, not layout.
 - **A theme can't bring a typeface with it.** `fonts` names families, and
   they have to be installed on the machine already. The window's CSP allows
   no remote stylesheet, so there's nothing to point a `@font-face` at.
@@ -1635,10 +1641,11 @@ the backlog, and they're the minority.
   turn. The cost is that problems in a *different* theme, in a file you
   aren't using, aren't reported until you open Settings › Appearance.
 - **Ending a child reaches its whole tree — everything that stayed inside
-  it.** A hook that hits its timeout and a background command that's Stopped
-  are both usually a shell. Killing the child alone would reach `/bin/sh` or
-  `cmd.exe` and leave the linter, the build or the watcher running while the
-  app reported it stopped. So each starts as a tree (`taurus_process::Tree`).
+  it.** A hook that hits its timeout, a background command that's Stopped,
+  and a skill's script are all usually a shell or an interpreter. Killing the
+  child alone would reach `/bin/sh` or `cmd.exe` and leave the linter, the
+  build or the watcher running while the app reported it stopped. So each
+  starts as a tree (`taurus_process::Tree`).
 
   On Unix that's a process group of its own, ended with
   `kill -KILL -- -<pgid>`. On Windows it's a Job Object: the child starts
@@ -1665,15 +1672,14 @@ the backlog, and they're the minority.
   on the child's behalf, such as a scheduled task or a service. Nothing short
   of a container catches those, and a hook or command that does it means to
   leave something running.
-- **Two other children are killed one process at a time.** A *foreground*
+- **A foreground command is killed one process at a time.** A *foreground*
   `run_command` stays in the parent's process group on purpose. That way a
   terminal's own Ctrl-C reaches the whole tree without anything in this code
   having to run first, which is worth more than a group would be. So its
-  timeout kills the shell alone. And a skill's script
-  (`taurus_skills::tools`) uses `kill_on_drop` with no tree kill at all. Both
-  would be the same small change as above, wherever it's wanted. Neither has
-  been made, because neither has the safety argument the hook timeout has: a
-  hook is a guard whose whole promise is that it stopped something.
+  timeout kills the shell alone. Making it a tree would be the same small
+  change as above. It hasn't been made, because it doesn't have the safety
+  argument the hook timeout has: a hook is a guard whose whole promise is
+  that it stopped something.
 - **The built-in voice is the operating system's.** It sounds different on
   each platform, and on Linux it's `espeak-ng`, which is robotic. One neural
   voice downloaded on first use, the way the speech model is, would sound the
@@ -1700,7 +1706,11 @@ the backlog, and they're the minority.
   CUDA and Vulkan backends aren't built in, because each needs an SDK on the
   build machine and a driver on yours. `base.en` should be quick enough on
   any recent CPU, but that's a guess until somebody times it, and `small.en`
-  will be noticeably slower.
+  will be noticeably slower. That's why `large-v3-turbo` is offered only on
+  macOS: timed on an M4 Max, it took 0.66–0.76 s a sentence on Metal and
+  8–9 s on the CPU, the way Windows and Linux would run it. Flash attention,
+  on for macOS, cut every model's time by 15–20% on Metal and made no
+  difference on the CPU.
 - **Speech is only transcribed on this computer.** There's no setting for a
   transcription service, such as OpenAI's `/v1/audio/transcriptions` or a
   local server with the same shape. That's an easy addition, and a machine

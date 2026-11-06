@@ -1,4 +1,5 @@
-// The Profile tab: who is using Taurus, and whether the model is told.
+// The Profile tab: who is using Taurus, whether the model is told, and the
+// credentials their MCP servers are given.
 
 import { useEffect, useState } from "react";
 
@@ -6,6 +7,7 @@ import * as api from "../../lib/api";
 import type { Profile, ProfileView } from "../../lib/api";
 import { useStore } from "../../state/store";
 import { Problem } from "../Problem";
+import { CredentialsSection } from "./CredentialsSection";
 import { Field } from "./Field";
 
 /**
@@ -108,6 +110,8 @@ export function ProfileTab() {
         <Problem key={p.message}>{p.message}</Problem>
       ))}
       {error && <Problem>{error}</Problem>}
+
+      <CredentialsSection />
     </>
   );
 }

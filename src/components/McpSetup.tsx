@@ -1,14 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
+import * as api from "../lib/api";
 import type { CatalogEntry, McpServerDraft, Scope } from "../lib/api";
 import {
+  credentialFor,
+  credentialHosts,
   fromCatalog,
   joinCommandLine,
+  keepsInKeychain,
   leaksSecret,
   missingInputs,
   scopeFor,
+  withReferences,
 } from "../lib/mcp";
+import { Problem } from "./Problem";
 
 /**
  * What a catalogue entry needs before it can be written down.
@@ -26,6 +32,11 @@ import {
  * nothing here is a route into `mcp.json` that the form does not already own.
  *
  * Skipped entirely for an entry with nothing to ask, which is most of them.
+ *
+ * A token is the one answer that doesn't go into the draft. Where a saved
+ * credential can reach the server, Continue stores it in the keychain first and
+ * the draft says `${secret:NAME}` in its place, so the file never holds it. See
+ * `keepsInKeychain` for where that is.
  */
 export function McpSetup({
   entry,
@@ -49,11 +60,47 @@ export function McpSetup({
    * was made rather than defaulted into.
    */
   const [acknowledged, setAcknowledged] = useState(false);
+  /** Asked once. Until it answers, tokens are treated as going in the file. */
+  const [keychain, setKeychain] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .keychainAvailable()
+      .then((available) => live && setKeychain(available))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const missing = missingInputs(entry, answers);
-  const leaks = leaksSecret(entry, scope);
-  const draft = fromCatalog(entry, answers, scope);
-  const blocked = missing.length > 0 || (leaks && !acknowledged);
+  const keep = keepsInKeychain(entry, scope, keychain);
+  const leaks = leaksSecret(entry, scope) && !keep;
+  const draft = fromCatalog(entry, keep ? withReferences(entry, answers) : answers, scope);
+  const blocked = missing.length > 0 || (leaks && !acknowledged) || saving;
+
+  /** Stores each token, then hands over a draft that names them. */
+  const proceed = async () => {
+    if (!keep) return onReady(draft);
+    setSaving(true);
+    setError(null);
+    try {
+      const hosts = credentialHosts(entry, answers);
+      for (const input of entry.inputs) {
+        const value = (answers[input.key] ?? "").trim();
+        if (input.kind !== "secret" || !value) continue;
+        await api.saveCredential(credentialFor(entry, input.key), hosts, value);
+      }
+      onReady(draft);
+    } catch (e) {
+      setError(`The token wasn't saved: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const set = (key: string, value: string) =>
     setAnswers((held) => ({ ...held, [key]: value }));
@@ -169,10 +216,19 @@ export function McpSetup({
         </pre>
         {draft.env.concat(draft.headers).map((value) => (
           <pre key={value.key}>
-            {value.key}={entry.inputs.some((i) => i.kind === "secret") ? "••••••" : value.value}
+            {value.key}=
+            {!keep && entry.inputs.some((i) => i.kind === "secret") ? "••••••" : value.value}
           </pre>
         ))}
+        {keep && (
+          <span className="field-help">
+            The token goes to your keychain as a saved credential, and the file only
+            names it. Settings › Profile lists it.
+          </span>
+        )}
       </div>
+
+      {error && <Problem>{error}</Problem>}
 
       <div className="actions">
         <button
@@ -185,9 +241,9 @@ export function McpSetup({
                 ? "Read the warning above first"
                 : undefined
           }
-          onClick={() => onReady(draft)}
+          onClick={() => void proceed()}
         >
-          Continue
+          {saving ? "Saving…" : "Continue"}
         </button>
         <button onClick={onCancel}>Cancel</button>
       </div>

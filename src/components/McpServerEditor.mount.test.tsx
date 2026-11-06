@@ -89,9 +89,14 @@ const tested = () =>
     | { previous?: { scope: string; name: string } }
     | undefined;
 
+let keychain = true;
+
 beforeEach(() => {
   invoke.mockReset();
-  invoke.mockResolvedValue([]);
+  keychain = true;
+  invoke.mockImplementation((command: string) =>
+    Promise.resolve(command === "keychain_available" ? keychain : []),
+  );
 });
 
 afterEach(() => {
@@ -280,6 +285,91 @@ describe("testing before saving", () => {
     await press(host, "Test");
     expect(host.innerHTML).toContain("test-result error");
     expect(host.innerHTML).toContain("PATH");
+    unmount();
+  });
+});
+
+describe("a token typed into the form", () => {
+  const remote = server({
+    name: "linear",
+    transport: "http",
+    command: "",
+    args: [],
+    env: [],
+    url: "https://mcp.linear.app/mcp",
+    headers: [{ key: "Authorization", value: "", secret: false }],
+  });
+
+  const box = (host: HTMLElement) =>
+    host.querySelector<HTMLInputElement>('[aria-label="Keep headers value 1 in the keychain"]');
+
+  it("is kept in the keychain unless unticked", async () => {
+    const { host, unmount } = mount(remote);
+    await act(async () => {});
+    await type(host, "Headers value 1", "Bearer lin_123");
+    expect(box(host)?.checked).toBe(true);
+    await press(host, "Save and reconnect");
+    const headers = saved()?.draft.headers as { value: string; keep?: boolean }[];
+    expect(headers[0]).toMatchObject({ value: "Bearer lin_123", keep: true });
+    unmount();
+  });
+
+  it("goes into the file when unticked", async () => {
+    const { host, unmount } = mount(remote);
+    await act(async () => {});
+    await type(host, "Headers value 1", "Bearer lin_123");
+    await act(async () => box(host)!.click());
+    await press(host, "Save and reconnect");
+    const headers = saved()?.draft.headers as { keep?: boolean }[];
+    expect(headers[0].keep).toBe(false);
+    unmount();
+  });
+
+  it("isn't offered on a value that only names one", async () => {
+    const { host, unmount } = mount(remote);
+    await act(async () => {});
+    await type(host, "Headers value 1", "Bearer ${secret:linear}");
+    expect(box(host)).toBeNull();
+    await press(host, "Save and reconnect");
+    const headers = saved()?.draft.headers as { keep?: boolean }[];
+    expect(headers[0].keep).toBeUndefined();
+    unmount();
+  });
+
+  it("isn't offered to a project's own program, and the hint says why", async () => {
+    const local = server({
+      scope: "workspace",
+      env: [{ key: "GITHUB_TOKEN", value: "", secret: false }],
+    });
+    const { host, unmount } = mount(local);
+    await act(async () => {});
+    await type(host, "Environment variables value 1", "ghp_abc");
+    expect(
+      host.querySelector('[aria-label="Keep environment variables value 1 in the keychain"]'),
+    ).toBeNull();
+    expect(host.textContent).toContain("a project's own program can't use a saved credential");
+    unmount();
+  });
+
+  it("isn't offered without a keychain", async () => {
+    keychain = false;
+    const { host, unmount } = mount(remote);
+    await act(async () => {});
+    await type(host, "Headers value 1", "Bearer lin_123");
+    expect(box(host)).toBeNull();
+    unmount();
+  });
+
+  it("leaves an environment variable that doesn't look like a token unticked", async () => {
+    const { host, unmount } = mount(
+      server({ env: [{ key: "LOG_LEVEL", value: "", secret: false }] }),
+    );
+    await act(async () => {});
+    await type(host, "Environment variables value 1", "debug");
+    const toggle = host.querySelector<HTMLInputElement>(
+      '[aria-label="Keep environment variables value 1 in the keychain"]',
+    );
+    expect(toggle?.checked).toBe(false);
     unmount();
   });
 });

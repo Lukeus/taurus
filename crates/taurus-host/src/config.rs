@@ -2315,6 +2315,9 @@ pub fn merge_mcp(layers: Vec<taurus_mcp::McpConfig>) -> (taurus_mcp::McpConfig, 
     (
         taurus_mcp::McpConfig {
             servers,
+            // Which layer wrote each is the caller's to say: this sees maps,
+            // not files. See `Host::mcp_layers`.
+            layers: BTreeMap::new(),
             invalid: BTreeMap::new(),
         },
         problems,

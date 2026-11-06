@@ -8,6 +8,7 @@
 pub mod attach;
 pub mod command;
 pub mod config;
+pub mod credentials;
 pub mod document;
 pub mod fork;
 pub mod freshness;

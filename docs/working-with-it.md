@@ -1571,9 +1571,11 @@ A scanner paints it, deliberately not a parser, and the same scanner handles
 every language. Languages differ in a short list of facts: how a comment
 opens, which delimiters quote a string, which words are the vocabulary. Those
 facts are data, and the walk over the characters is shared. It knows Rust,
-TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, and TOML.
-Anything else keeps its label and renders plain, which beats coloring it
-wrongly.
+TypeScript and JavaScript, Python, Go, shell, SQL, JSON, YAML, TOML, C and
+C++, C#, Java, Kotlin, Swift, Ruby, PHP, Lua, CSS, HTML and XML, Dockerfiles,
+Makefiles, config files and Markdown. HTML gets its comments and attribute
+values colored and not its tags. Anything else keeps its label and renders
+plain, which beats coloring it wrongly.
 
 A diff does one more thing. Where a removed line and an added line are the
 same line before and after, **the characters that actually differ are marked
