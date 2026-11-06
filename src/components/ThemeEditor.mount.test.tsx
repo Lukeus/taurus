@@ -14,6 +14,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { ThemeEditor } from "./ThemeEditor";
+import { forgetFonts } from "../lib/fonts";
+import { fakeFonts } from "../lib/fonts.fake";
 import type { CustomTheme } from "../lib/api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -76,6 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  forgetFonts();
   vi.restoreAllMocks();
 });
 
@@ -383,5 +386,32 @@ describe("contrast", () => {
       />,
     );
     expect(host.textContent).not.toMatch(/hard to read/);
+  });
+});
+
+describe("a typeface", () => {
+  it("says under its field when the family named isn't installed", () => {
+    fakeFonts(["Inter"]);
+    const host = mount(
+      <ThemeEditor editing={theme()} mode="dark" existing={[]} onClose={() => {}} onSaved={() => {}} />,
+    );
+    const field = (name: string) =>
+      [...host.querySelectorAll<HTMLLabelElement>("label.settings-field")].find(
+        (l) => l.querySelector(".micro")?.textContent === name,
+      )!;
+    const setFace = (name: string, value: string) => {
+      const input = field(name).querySelector("input")!;
+      act(() => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+
+    setFace("Body", "Inter");
+    expect(field("Body").textContent).toContain("Everything that is a sentence");
+    setFace("Mono", "Comic Mono");
+    expect(field("Mono").textContent).toContain(
+      "Comic Mono isn't installed on this machine, so the app's own face shows instead.",
+    );
   });
 });

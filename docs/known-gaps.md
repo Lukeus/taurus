@@ -1643,10 +1643,11 @@ the backlog, and they're the minority.
   no remote stylesheet, so there's nothing to point a `@font-face` at.
   Bundling a font file inside a theme would mean reading arbitrary binaries
   out of a config directory and injecting them as `data:` URIs, which is a
-  wider hole than the feature is worth. A theme naming a font nobody has
-  falls back to the stack the app ships instead of failing. So this is
-  quiet, not broken, and quiet is its own problem: nothing on screen says the
-  font wasn't found.
+  wider hole than the feature is worth. A theme naming a font this machine
+  doesn't have falls back to the stack the app ships instead of failing, and
+  **Settings › Appearance** names the face that's missing. That check measures
+  text drawn in the family against the generic families, so a font installed
+  while the app is open isn't seen until the window reloads.
 - **Themes are read fresh on every status, and only the active one carries its
   logo.** The picker's full scan happens when the picker opens. The split
   exists because a resolved theme carries its logo inlined as base64, and

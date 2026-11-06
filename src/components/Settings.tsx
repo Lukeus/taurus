@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AllowedRule,
   CustomTheme,
@@ -16,6 +16,7 @@ import {
   MAX_CONCURRENT_AGENTS_LIMIT,
   MAX_ITERATIONS_LIMIT,
 } from "../lib/limits";
+import { installed } from "../lib/fonts";
 import { applyTheme, resolveWith } from "../lib/theme";
 import { useStore } from "../state/store";
 import { CopyButton } from "./CopyButton";
@@ -786,6 +787,13 @@ export function ContextLimit({
  * and the only setting here that can change on its own, at dusk, without
  * anybody touching it.
  */
+/** A theme's three typefaces, with what each one sets, for saying which is missing. */
+const FACES = [
+  ["display", "headings"],
+  ["body", "text"],
+  ["mono", "code"],
+] as const;
+
 export function ThemePicker({
   theme,
   uiScale = 100,
@@ -882,6 +890,23 @@ export function ThemePicker({
   // than only in the app-wide list because this is the screen that can fix it,
   // which is what `ProblemSource::where_to_fix` says about them.
   const problems = (status?.problems ?? []).filter((p) => p.source === "themes");
+
+  /*
+   * The typefaces the theme in force names that this machine doesn't have.
+   * They fall back to the app's own without failing, which is right, and
+   * without a word, which isn't: someone who chose a theme for its face would
+   * otherwise be looking at a different one and taking it for the theme's.
+   */
+  const missingFaces = useMemo(
+    () =>
+      custom
+        ? FACES.flatMap(([key, use]) => {
+            const family = custom.fonts[key];
+            return family && installed(family) === false ? [{ family, use }] : [];
+          })
+        : [],
+    [custom],
+  );
 
   const pinned = custom !== null && custom.modes !== "both";
 
@@ -1027,6 +1052,21 @@ export function ThemePicker({
         {problems.map((problem) => (
           <Problem key={problem.message}>{problem.message}</Problem>
         ))}
+        {missingFaces.length > 0 && (
+          <Problem>
+            {custom!.name} sets{" "}
+            {missingFaces.map(({ family, use }, i) => (
+              <span key={use}>
+                {i > 0 && (i === missingFaces.length - 1 ? " and " : ", ")}
+                {use} in <b>{family}</b>
+              </span>
+            ))}
+            , which {missingFaces.length === 1 ? "isn't" : "aren't"} installed on this machine,
+            so the app's own {missingFaces.length === 1 ? "face shows" : "faces show"} instead.
+            Install {missingFaces.length === 1 ? "it" : "them"}, or edit the theme to name{" "}
+            {missingFaces.length === 1 ? "one" : "ones"} you have.
+          </Problem>
+        )}
         {error && <Problem>{error}</Problem>}
       </section>
 

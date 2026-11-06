@@ -17,6 +17,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { ThemePicker } from "./Settings";
+import { fakeFonts } from "../lib/fonts.fake";
+import { forgetFonts } from "../lib/fonts";
 import { useStore } from "../state/store";
 import type { AppStatus, CustomTheme } from "../lib/api";
 
@@ -96,6 +98,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  forgetFonts();
   vi.restoreAllMocks();
 });
 
@@ -190,5 +193,23 @@ describe("a theme that paints only one mode", () => {
       ...host.querySelectorAll<HTMLButtonElement>('[aria-label="Theme"] button'),
     ];
     expect(modes.some((b) => b.disabled)).toBe(false);
+  });
+});
+
+describe("a theme naming a face this machine doesn't have", () => {
+  it("says which, and what it sets, instead of falling back without a word", async () => {
+    fakeFonts(["Inter"]);
+    inForce(theme({ fonts: { display: "Fira Display", body: "Inter", mono: "Fira Code" } }));
+    const host = await open(<ThemePicker theme="dark" />);
+    expect(host.textContent).toContain(
+      "Midnight sets headings in Fira Display and code in Fira Code, which aren't installed on this machine",
+    );
+  });
+
+  it("says nothing when every face it names is there", async () => {
+    fakeFonts(["Inter"]);
+    inForce(theme({ fonts: { display: null, body: "Inter", mono: null } }));
+    const host = await open(<ThemePicker theme="dark" />);
+    expect(host.textContent).not.toContain("installed on this machine");
   });
 });

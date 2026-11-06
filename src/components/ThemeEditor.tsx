@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import * as api from "../lib/api";
 import type { CustomTheme, Scope, ThemeFile } from "../lib/api";
 import { failures, parseHex, type Result } from "../lib/contrast";
+import { installed } from "../lib/fonts";
 import {
   COLOR_GROUPS,
   livePalette,
@@ -267,7 +268,11 @@ export function ThemeEditor({
               placeholder="as shipped"
               onChange={(e) => set({ fonts: { ...draft.fonts, [key]: e.target.value } })}
             />
-            <span className="hint">{hint}</span>
+            <span className="hint">
+              {installed(draft.fonts[key]) === false
+                ? `${draft.fonts[key].trim()} isn't installed on this machine, so the app's own face shows instead.`
+                : hint}
+            </span>
           </label>
         ))}
       </section>

@@ -913,7 +913,7 @@ one:
 | --- | --- |
 | `name` | What the picker calls it. Falls back to the file name. |
 | `dark`, `light` | The fourteen colors, by the names in the table below. Hex only: `#rgb`, `#rrggbb` or `#rrggbbaa`. |
-| `fonts` | `display`, `body`, `mono`. A family name, not a stack. The fallbacks after it stay the app's, so naming a font you don't have degrades instead of breaking. It has to be **installed on the machine**. The window loads no remote stylesheets, so a theme can't bring a typeface with it. |
+| `fonts` | `display`, `body`, `mono`. A family name, not a stack. The fallbacks after it stay the app's, so naming a font you don't have degrades instead of breaking. **Settings › Appearance** names any it can't find, and the theme editor says so under the field as you type. It has to be **installed on the machine**. The window loads no remote stylesheets, so a theme can't bring a typeface with it. |
 | `brand.wordmark` | The word beside the mark. An empty string is a real answer and means a mark on its own. Leaving the key out keeps `taurus`. |
 | `brand.logo` | An SVG, PNG, JPEG or WebP up to 256KB. A bare name is read from the theme file's folder, so a logo committed beside it travels with it. |
 | `shape.radius` | Multiplier on the corner-radius ladder, 0 to 3. `0` is square, `1` is as shipped. |
