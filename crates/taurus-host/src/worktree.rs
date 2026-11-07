@@ -168,6 +168,18 @@ pub struct Worktrees {
     held: std::sync::Mutex<std::collections::HashMap<String, std::fs::File>>,
 }
 
+/// One apply or discard's hold on a run. See [`Worktrees::claim`].
+struct Claim<'a> {
+    trees: &'a Worktrees,
+    run: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.trees.release(&self.run);
+    }
+}
+
 impl Worktrees {
     pub fn new(home: impl Into<PathBuf>) -> Self {
         Self {
@@ -198,6 +210,41 @@ impl Worktrees {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run.to_string(), file);
         Ok(())
+    }
+
+    /// Takes `run`'s lock for one apply or discard, or says it's taken. The
+    /// same lock a working run holds, so the app and the CLI, or a person and
+    /// the model, can't both apply one run, or apply one being discarded.
+    fn claim(&self, run: &str) -> Result<Claim<'_>, String> {
+        let path = self.lock_path(run);
+        let dir = path.parent().expect("a lock has a folder");
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let busy = || {
+            format!("Run {run} is being applied or discarded already. Try again once that's done.")
+        };
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.contains_key(run) {
+            return Err(busy());
+        }
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(busy()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
+        }
+        held.insert(run.to_string(), file);
+        Ok(Claim {
+            trees: self,
+            run: run.to_string(),
+        })
     }
 
     fn release(&self, run: &str) {
@@ -1056,6 +1103,13 @@ impl Worktrees {
         recorder: Option<&taurus_tools::TurnRecorder>,
         dry_run: bool,
     ) -> Result<ApplyPlan, String> {
+        // Taken before the record is read, so the state checked below is the
+        // one this apply acts on.
+        let _claim = if dry_run {
+            None
+        } else {
+            Some(self.claim(run)?)
+        };
         let mut record = self.record(run)?;
         if record.session.as_deref() != session {
             return Err(format!(
@@ -1119,6 +1173,7 @@ impl Worktrees {
     /// Lets go of what `run` kept. Its folder is gone already; this lets git
     /// forget its commits too.
     pub async fn discard(&self, run: &str, session: Option<&str>) -> Result<(), String> {
+        let _claim = self.claim(run)?;
         let mut record = self.record(run)?;
         if record.session.as_deref() != session {
             return Err(format!(

@@ -534,6 +534,42 @@ async fn discarding_lets_git_forget_the_work() {
     assert!(after.contains("discarded"), "{after}");
 }
 
+#[tokio::test]
+async fn one_run_is_applied_once_however_many_ask_at_once() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "two\n").unwrap()
+    })
+    .await;
+    // Another process holding the run for its own apply.
+    let other = Worktrees::new(f.trees.home.clone());
+    let held = other.claim(&run).unwrap();
+    let refused = f
+        .trees
+        .apply(&run, Some("s1"), None, false)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("already"), "{refused}");
+    assert!(f.trees.discard(&run, Some("s1")).await.is_err());
+    // A look ahead writes nothing, so it needn't wait.
+    assert!(f.trees.apply(&run, Some("s1"), None, true).await.is_ok());
+    drop(held);
+
+    let (first, second) = tokio::join!(
+        f.trees.apply(&run, Some("s1"), None, false),
+        f.trees.apply(&run, Some("s1"), None, false),
+    );
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    assert_eq!(read(f.top.join("a.txt")), "two\n");
+}
+
 #[test]
 fn the_worktrees_are_beside_the_config_home_and_named_for_it() {
     assert_eq!(

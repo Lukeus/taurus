@@ -342,6 +342,16 @@ impl CheckpointStore {
         workspace: &Path,
         prompt: &str,
     ) -> Arc<TurnRecorder> {
+        self.recorder(session_id, workspace, prompt, TurnState::default())
+    }
+
+    fn recorder(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+        prompt: &str,
+        state: TurnState,
+    ) -> Arc<TurnRecorder> {
         Arc::new(TurnRecorder {
             path: self.log_path(session_id),
             session: session_id.to_string(),
@@ -352,8 +362,44 @@ impl CheckpointStore {
             branch: crate::sweep::branch(workspace),
             workspace: workspace.to_path_buf(),
             prompt: shorten(prompt),
-            state: Mutex::new(TurnState::default()),
+            state: Mutex::new(state),
         })
+    }
+
+    /// Opens a turn filed under conversation turn `id`, carrying on the log's
+    /// last turn when that is already `id`'s.
+    ///
+    /// For a change made between turns (a person applying a delegate's work)
+    /// that belongs to the turn before it. A second checkpoint under the same
+    /// id would make the log name one conversation turn twice, and a fork at
+    /// the second would cut before the first. Carried on, the change joins
+    /// that turn's checkpoint: a file it already recorded keeps its earlier,
+    /// older pre-image, so rewinding the turn undoes both.
+    pub fn begin_turn_under(
+        &self,
+        session_id: &str,
+        workspace: &Path,
+        prompt: &str,
+        id: &str,
+    ) -> Arc<TurnRecorder> {
+        let last = self
+            .log_path(session_id)
+            .and_then(|path| read_log::<()>(&path).ok())
+            .and_then(|log| log.turns.into_iter().last());
+        let mut state = TurnState {
+            id: Some(id.to_string()),
+            ..TurnState::default()
+        };
+        if let Some(turn) = last.filter(|turn| turn.id.as_deref() == Some(id)) {
+            state.opened = true;
+            state.moved_git = turn.moved_git;
+            state.seen = turn
+                .changes
+                .into_iter()
+                .map(|(path, ())| workspace.join(path))
+                .collect();
+        }
+        self.recorder(session_id, workspace, prompt, state)
     }
 
     /// Every turn in a session that changed a file, oldest first.
@@ -2412,6 +2458,44 @@ mod tests {
         assert_eq!(turns[0].prompt, "rename the widget");
         assert_eq!(turns[0].files, vec!["a.txt", "b.txt"]);
         assert!(turns[0].at > 0);
+    }
+
+    #[tokio::test]
+    async fn a_change_filed_under_the_last_turn_joins_its_checkpoint() {
+        let f = Fixture::new();
+        std::fs::write(f.path("a.txt"), "before the turn").unwrap();
+        std::fs::write(f.path("b.txt"), "before the apply").unwrap();
+        let turn = f.store.begin_turn("s1", &f.root, "edit a");
+        turn.name("t1").await;
+        turn.capture(&f.path("a.txt")).await;
+        std::fs::write(f.path("a.txt"), "the turn's edit").unwrap();
+
+        // Applied between turns, filed under the one before it.
+        let later = f.store.begin_turn_under("s1", &f.root, "applied", "t1");
+        later.capture(&f.path("a.txt")).await;
+        later.capture(&f.path("b.txt")).await;
+        std::fs::write(f.path("a.txt"), "applied").unwrap();
+        std::fs::write(f.path("b.txt"), "applied").unwrap();
+
+        // One checkpoint per conversation turn, or a fork at the second cuts
+        // before the first.
+        assert_eq!(f.store.turn_ids("s1").unwrap(), [Some("t1".to_string())]);
+        assert_eq!(f.store.turns("s1").unwrap()[0].files, ["a.txt", "b.txt"]);
+        // a.txt keeps the turn's older pre-image, so the rewind undoes both.
+        f.store.rewind("s1", &f.root, 1, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.path("a.txt")).unwrap(),
+            "before the turn"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.path("b.txt")).unwrap(),
+            "before the apply"
+        );
+
+        // A turn that changed nothing gets a checkpoint of its own.
+        let other = f.store.begin_turn_under("s1", &f.root, "applied", "t2");
+        other.capture(&f.path("b.txt")).await;
+        assert_eq!(f.store.turn_ids("s1").unwrap().len(), 2);
     }
 
     #[tokio::test]
