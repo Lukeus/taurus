@@ -186,6 +186,13 @@ fn backend() -> &'static Result<Backend, String> {
 pub struct Fence {
     backend: Backend,
     denied: Vec<PathBuf>,
+    /// Folders refused whole, apart from [`Self::except`]: the parent's
+    /// workspace, for a delegate working in a copy of it. See [`Fence::ask`].
+    kept_out: Vec<PathBuf>,
+    /// The git directories inside [`Self::kept_out`] a command in the copy has
+    /// to write to: a worktree's commits go into the repository it came from.
+    /// Their hooks are still on [`Self::denied`].
+    except: Vec<PathBuf>,
     /// Short names to look for in an error, to tell this from any other refusal.
     names: Vec<String>,
 }
@@ -240,18 +247,33 @@ fn quoted(path: &Path) -> String {
 /// g` followed by writing `g/hooks/x` and moving it back reaches the same file by
 /// a route no path rule sees. That's `file-write-unlink` alone, so creating
 /// something in those folders, or touching them, still works.
-fn profile(denied: &[PathBuf]) -> String {
+///
+/// A folder kept out is refused the same way, apart from the git directories
+/// excepted inside it, through `require-not`.
+fn profile(denied: &[PathBuf], kept_out: &[PathBuf], except: &[PathBuf]) -> String {
     let mut ancestors: Vec<&Path> = denied
         .iter()
+        .chain(kept_out)
         .flat_map(|path| path.ancestors().skip(1))
         .filter(|path| path.parent().is_some())
         .collect();
     ancestors.sort();
     ancestors.dedup();
-    let subpaths: String = denied
+    let mut subpaths: String = denied
         .iter()
         .map(|path| format!(" (subpath {})", quoted(path)))
         .collect();
+    for folder in kept_out {
+        let unless: String = except
+            .iter()
+            .filter(|dir| dir.starts_with(folder))
+            .map(|dir| format!(" (require-not (subpath {}))", quoted(dir)))
+            .collect();
+        subpaths.push_str(&format!(
+            " (require-all (subpath {}){unless})",
+            quoted(folder)
+        ));
+    }
     let literals: String = ancestors
         .iter()
         .map(|path| format!(" (literal {})", quoted(path)))
@@ -263,8 +285,22 @@ fn profile(denied: &[PathBuf]) -> String {
 
 /// The arguments for `bwrap`. Only what exists can be bound over, and a listed
 /// path inside another is covered by that one.
-fn bubblewrap_args(denied: &[PathBuf]) -> Vec<String> {
+///
+/// A folder kept out is bound read-only first, its excepted git directories are
+/// bound writable over that, and the list goes on top of both, so a hook inside
+/// an excepted directory is read-only again.
+fn bubblewrap_args(denied: &[PathBuf], kept_out: &[PathBuf], except: &[PathBuf]) -> Vec<String> {
     let mut args: Vec<String> = ["--dev-bind", "/", "/"].map(str::to_owned).to_vec();
+    let exists =
+        |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink());
+    for folder in kept_out.iter().filter(|p| exists(p)) {
+        let text = folder.to_string_lossy().into_owned();
+        args.extend(["--ro-bind".to_string(), text.clone(), text]);
+        for dir in except.iter().filter(|d| d.starts_with(folder) && exists(d)) {
+            let text = dir.to_string_lossy().into_owned();
+            args.extend(["--bind".to_string(), text.clone(), text]);
+        }
+    }
     let mut bound: Vec<&Path> = Vec::new();
     for path in denied {
         let plain = std::fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink());
@@ -281,7 +317,18 @@ fn bubblewrap_args(denied: &[PathBuf]) -> Vec<String> {
 
 impl Fence {
     /// The fence for a command in `root`, when one can be had.
-    pub(crate) fn ask(root: &Path, git_dirs: &[PathBuf], config_home: Option<&Path>) -> Asked {
+    ///
+    /// `keep_out` is the parent's workspace, for a command run by a delegate in
+    /// a copy of it. The file tools already can't reach it, and this is what
+    /// stops a granted command reaching it instead: `cp` and `>` don't go
+    /// through a path check. The repository's git directories inside it stay
+    /// writable, since a worktree's objects and refs live there.
+    pub(crate) fn ask(
+        root: &Path,
+        git_dirs: &[PathBuf],
+        config_home: Option<&Path>,
+        keep_out: Option<&Path>,
+    ) -> Asked {
         if turned_off() {
             return Asked::TurnedOff;
         }
@@ -294,16 +341,33 @@ impl Fence {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+        // Never the folder the command runs in, or one it's inside: a copy
+        // somebody put under the workspace would refuse itself everything.
+        let kept_out: Vec<PathBuf> = keep_out
+            .filter(|folder| !root.starts_with(folder))
+            .map(Path::to_path_buf)
+            .into_iter()
+            .collect();
         Asked::Fenced(Self::over(
             backend,
             denied_paths(root, git_dirs, config_home, user_home.as_deref()),
+            kept_out,
+            git_dirs.to_vec(),
         ))
     }
 
-    fn over(backend: Backend, denied: Vec<PathBuf>) -> Self {
+    fn over(
+        backend: Backend,
+        denied: Vec<PathBuf>,
+        kept_out: Vec<PathBuf>,
+        except: Vec<PathBuf>,
+    ) -> Self {
         let denied = resolved(denied);
+        let kept_out = resolved(kept_out);
+        let except = resolved(except);
         let mut names: Vec<String> = denied
             .iter()
+            .chain(&kept_out)
             .filter_map(|path| path.file_name())
             .map(|name| name.to_string_lossy().to_lowercase())
             .collect();
@@ -312,6 +376,8 @@ impl Fence {
         Self {
             backend,
             denied,
+            kept_out,
+            except,
             names,
         }
     }
@@ -322,12 +388,16 @@ impl Fence {
     pub fn wrap(&self, program: String, args: Vec<String>) -> (String, Vec<String>) {
         match &self.backend {
             Backend::Seatbelt => {
-                let mut all = vec!["-p".to_string(), profile(&self.denied), program];
+                let mut all = vec![
+                    "-p".to_string(),
+                    profile(&self.denied, &self.kept_out, &self.except),
+                    program,
+                ];
                 all.extend(args);
                 (SANDBOX_EXEC.to_string(), all)
             }
             Backend::Bubblewrap(bwrap) => {
-                let mut all = bubblewrap_args(&self.denied);
+                let mut all = bubblewrap_args(&self.denied, &self.kept_out, &self.except);
                 all.push(program);
                 all.extend(args);
                 (bwrap.to_string_lossy().into_owned(), all)
@@ -507,6 +577,60 @@ mod tests {
             std::fs::read_to_string(b.root.join(".git/hooks/keep")).unwrap(),
             "old\n"
         );
+    }
+
+    /// A delegate in a copy of the workspace, running a granted command: the
+    /// parent's folder is out of reach, apart from the git directory the copy's
+    /// commits go into, and that directory's hooks are still refused.
+    #[tokio::test]
+    async fn a_command_in_a_copy_cannot_write_the_folder_it_was_copied_from() {
+        if !usable("a_command_in_a_copy") {
+            return;
+        }
+        let b = bench(&["./x.sh"]);
+        let admin = b.root.join(".git/worktrees/wt");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(b.root.join(".git/objects")).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let copy = b.user.join("copies/wt");
+        std::fs::create_dir_all(&copy).unwrap();
+        std::fs::write(copy.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        let script = copy.join("x.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n\
+                 echo a > {main}/src.txt; echo main=$?\n\
+                 echo a > {main}/.git/objects/x; echo objects=$?\n\
+                 echo a > {main}/.git/worktrees/wt/index; echo admin=$?\n\
+                 echo a > {main}/.git/hooks/x; echo hook=$?\n\
+                 echo a > here.txt; echo here=$?\n",
+                main = b.root.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ctx = b.ctx.clone().rooted_at(&copy, None);
+
+        let text = b
+            .registry
+            .execute(
+                "run_command",
+                serde_json::json!({ "command": "./x.sh" }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_string();
+        for refused in ["main", "hook"] {
+            assert!(text.contains(&format!("{refused}=")), "{refused}: {text}");
+            assert!(!text.contains(&format!("{refused}=0")), "{refused}: {text}");
+        }
+        for allowed in ["objects=0", "admin=0", "here=0"] {
+            assert!(text.contains(allowed), "{allowed}: {text}");
+        }
+        assert!(!b.root.join("src.txt").exists());
+        assert!(copy.join("here.txt").exists());
     }
 
     /// A call somebody approved runs bare, because they said yes.
@@ -781,7 +905,7 @@ mod tests {
 
     #[test]
     fn a_path_cannot_break_out_of_a_profile() {
-        let profile = profile(&[PathBuf::from("/w/a\"b\\c/hooks")]);
+        let profile = profile(&[PathBuf::from("/w/a\"b\\c/hooks")], &[], &[]);
         assert!(
             profile.contains(r#"(subpath "/w/a\"b\\c/hooks")"#),
             "{profile}"
@@ -793,11 +917,52 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_kept_out_is_bound_read_only_under_its_writable_git_dir_and_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main");
+        let git = main.join(".git");
+        let hooks = git.join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let args = bubblewrap_args(
+            std::slice::from_ref(&hooks),
+            std::slice::from_ref(&main),
+            std::slice::from_ref(&git),
+        );
+        let at = |flag: &str, path: &Path| {
+            let text = path.to_string_lossy();
+            args.windows(3)
+                .position(|w| w[0] == flag && w[1] == text && w[2] == text)
+                .unwrap_or_else(|| panic!("{flag} {text} in {args:?}"))
+        };
+        // Later binds win, so the order is the rule.
+        assert!(at("--ro-bind", &main) < at("--bind", &git));
+        assert!(at("--bind", &git) < at("--ro-bind", &hooks));
+
+        let profile = profile(
+            std::slice::from_ref(&hooks),
+            std::slice::from_ref(&main),
+            std::slice::from_ref(&git),
+        );
+        assert!(
+            profile.contains(&format!(
+                "(require-all (subpath {}) (require-not (subpath {})))",
+                quoted(&main),
+                quoted(&git)
+            )),
+            "{profile}"
+        );
+    }
+
+    #[test]
     fn bubblewrap_binds_only_what_exists() {
         let dir = tempfile::tempdir().unwrap();
         let there = dir.path().join("there");
         std::fs::create_dir_all(there.join("in")).unwrap();
-        let args = bubblewrap_args(&[there.clone(), there.join("in"), dir.path().join("missing")]);
+        let args = bubblewrap_args(
+            &[there.clone(), there.join("in"), dir.path().join("missing")],
+            &[],
+            &[],
+        );
         let text = args.join(" ");
         assert!(text.starts_with("--dev-bind / /"), "{text}");
         assert_eq!(
@@ -836,7 +1001,12 @@ mod tests {
 
     #[test]
     fn a_refusal_is_told_from_any_other_permission_error() {
-        let fence = Fence::over(Backend::Seatbelt, vec![PathBuf::from("/w/.git/hooks")]);
+        let fence = Fence::over(
+            Backend::Seatbelt,
+            vec![PathBuf::from("/w/.git/hooks")],
+            vec![],
+            vec![],
+        );
         assert!(fence
             .refusal_in("sh: .git/hooks/x: Operation not permitted")
             .is_some());

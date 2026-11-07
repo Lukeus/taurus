@@ -17,7 +17,9 @@
 //!
 //! Two commands can't each keep their own picture. If B starts after A wrote a
 //! hook, B's picture has the hook in it, and when A's end removes it, B's end
-//! would put it back. So a workspace has one [`Watch`] with one baseline: the
+//! would put it back. So a workspace has one [`Watch`] with one baseline (a
+//! repository and its linked worktrees count as one, since they share
+//! `.git/hooks` and `config`): the
 //! first watched command takes it, later ones share it, and it goes when the
 //! last one ends. Whichever ends first repairs everything found so far, so the
 //! report can name a command that isn't the one that did it, and says so.
@@ -126,11 +128,74 @@ struct Entry {
 #[derive(Clone, Debug)]
 struct Snapshot {
     entries: BTreeMap<PathBuf, Entry>,
-    /// The git directories in use when this was taken. A `.git` that arrives
-    /// later isn't watched: `git init` and `git clone` make hooks of their own.
+    /// The git directories in use when this was taken, every cover's together.
+    /// A `.git` that arrives later isn't watched: `git init` and `git clone`
+    /// make hooks of their own.
     git_dirs: Vec<PathBuf>,
-    /// What this reading covers, for [`written_by_this_process`] to read again.
+    /// The folders this reading covers, each with the git directories it was
+    /// read with. One for a plain workspace. A repository and its worktrees
+    /// share one reading, because they share `.git/hooks` and `config`, and
+    /// each one that joins adds its own folder. See [`watch_key`].
+    covers: Vec<Cover>,
+}
+
+#[derive(Clone, Debug)]
+struct Cover {
     places: Places,
+    git_dirs: Vec<PathBuf>,
+}
+
+impl Cover {
+    fn of(places: &Places) -> Self {
+        Self {
+            places: places.clone(),
+            git_dirs: git_dirs(&places.root),
+        }
+    }
+
+    /// Whether `path` is one this cover's listing would read.
+    ///
+    /// Exact rather than "under the repository": a worktree's own git
+    /// directory sits inside the main one's, under `worktrees/`, and the main
+    /// folder's look must not count a worktree's `config.worktree` as a file of
+    /// its own that went missing.
+    fn holds(&self, path: &Path) -> bool {
+        if path.starts_with(self.places.root.join(".taurus")) {
+            return true;
+        }
+        let in_git = self
+            .git_dirs
+            .iter()
+            .any(|dir| path.starts_with(dir) && !path.starts_with(dir.join("worktrees")));
+        in_git
+            || self
+                .places
+                .home
+                .as_deref()
+                .is_some_and(|home| home_files(home).iter().any(|file| file == path))
+    }
+}
+
+/// Which reading a workspace shares: its repository's, when it has one.
+///
+/// A linked worktree's `.git` names the main repository's directory as the one
+/// it shares hooks and settings with, so a worktree and the folder it came from
+/// key to the same place. Two readings over one `.git/hooks` would each judge
+/// the other's approved write a change to undo.
+fn watch_key(root: &Path) -> PathBuf {
+    git_dirs(root).pop().unwrap_or_else(|| root.to_path_buf())
+}
+
+/// The files read in the config home.
+fn home_files(home: &Path) -> Vec<PathBuf> {
+    let mut files = vec![home.join("permissions.json"), home.join("hooks.json")];
+    if home.file_name().is_some_and(|name| name == ".taurus") {
+        if let Some(user) = home.parent() {
+            files.push(user.join(".gitconfig"));
+            files.push(user.join(".config/git/config"));
+        }
+    }
+    files
 }
 
 /// Where a workspace's watched files are, and where what's undone goes.
@@ -289,25 +354,59 @@ fn listing(places: &Places, git_dirs: &[PathBuf], hold: bool) -> BTreeMap<PathBu
         reader.git(dir);
     }
     if let Some(home) = &places.home {
-        for file in ["permissions.json", "hooks.json"] {
-            reader.one(&home.join(file), false, false);
-        }
-        if home.file_name().is_some_and(|name| name == ".taurus") {
-            if let Some(user) = home.parent() {
-                reader.one(&user.join(".gitconfig"), true, false);
-                reader.one(&user.join(".config/git/config"), true, false);
-            }
+        for (i, file) in home_files(home).iter().enumerate() {
+            // The first two are Taurus's own; the rest are git's settings.
+            reader.one(file, i >= 2, false);
         }
     }
     reader.entries
 }
 
 fn snapshot(places: &Places) -> Snapshot {
-    let git_dirs = git_dirs(&places.root);
+    let cover = Cover::of(places);
     Snapshot {
-        entries: listing(places, &git_dirs, true),
-        git_dirs,
-        places: places.clone(),
+        entries: listing(places, &cover.git_dirs, true),
+        git_dirs: cover.git_dirs.clone(),
+        covers: vec![cover],
+    }
+}
+
+impl Snapshot {
+    /// Reads `places` into this baseline, if it isn't covered already.
+    ///
+    /// What's already held stays as it was read. The shared part, the
+    /// repository's hooks and settings, was read when the first command
+    /// started, and reading it again now would absorb whatever has been
+    /// written to it since, which is the thing being watched for.
+    fn join(&mut self, places: &Places) {
+        if self.covers.iter().any(|c| c.places.root == places.root) {
+            return;
+        }
+        let cover = Cover::of(places);
+        for (path, entry) in listing(places, &cover.git_dirs, true) {
+            self.entries.entry(path).or_insert(entry);
+        }
+        for dir in &cover.git_dirs {
+            if !self.git_dirs.contains(dir) {
+                self.git_dirs.push(dir.clone());
+            }
+        }
+        self.covers.push(cover);
+    }
+
+    /// Every cover read again, for when the last approved call ends.
+    fn reread(&self) -> Self {
+        let mut covers = self.covers.iter();
+        let first = covers.next().expect("a baseline covers something");
+        let mut fresh = snapshot(&first.places);
+        for cover in covers {
+            fresh.join(&cover.places);
+        }
+        fresh
+    }
+
+    fn cover(&self, places: &Places) -> Option<&Cover> {
+        self.covers.iter().find(|c| c.places.root == places.root)
     }
 }
 
@@ -397,7 +496,10 @@ fn text_of(entry: Option<&Entry>, path: &Path, held: bool) -> String {
 }
 
 fn changes(baseline: &Snapshot, places: &Places) -> Vec<Change> {
-    let now = listing(places, &baseline.git_dirs, false);
+    let Some(cover) = baseline.cover(places) else {
+        return Vec::new();
+    };
+    let now = listing(places, &cover.git_dirs, false);
     // A repository removed altogether has nothing to put hooks back into.
     let gone = |path: &Path| {
         baseline
@@ -405,7 +507,14 @@ fn changes(baseline: &Snapshot, places: &Places) -> Vec<Change> {
             .iter()
             .any(|dir| path.starts_with(dir) && !dir.is_dir())
     };
-    let paths: BTreeSet<&PathBuf> = baseline.entries.keys().chain(now.keys()).collect();
+    // Only this folder's part of a shared reading. Another worktree's
+    // `.taurus` isn't listed now, and would otherwise read as removed.
+    let paths: BTreeSet<&PathBuf> = baseline
+        .entries
+        .keys()
+        .filter(|path| cover.holds(path))
+        .chain(now.keys())
+        .collect();
     let mut found = Vec::new();
     for path in paths {
         let was = baseline.entries.get(path);
@@ -689,13 +798,15 @@ pub fn written_by_this_process(path: &Path) {
         if let Some(baseline) = &mut state.baseline {
             // Listed afresh rather than read alone, so a settings file stays one
             // and a folder comes with everything in it.
-            let fresh = listing(&baseline.places, &baseline.git_dirs, true);
             baseline.entries.retain(|held, _| !held.starts_with(&path));
-            baseline.entries.extend(
-                fresh
-                    .into_iter()
-                    .filter(|(held, _)| held.starts_with(&path)),
-            );
+            for cover in &baseline.covers {
+                let fresh = listing(&cover.places, &cover.git_dirs, true);
+                for (held, entry) in fresh {
+                    if held.starts_with(&path) {
+                        baseline.entries.insert(held, entry);
+                    }
+                }
+            }
         }
     }
 }
@@ -744,14 +855,20 @@ impl Ticket {
     /// tool is about to say so.
     pub(crate) async fn watching(ctx: &ToolContext, line: Option<String>) -> Option<Self> {
         let places = places_of(ctx)?;
-        let watch = watch_of(&places.root);
+        let watch = watch_of(&watch_key(&places.root));
         let again = line.map(|line| (ctx.permissions.clone(), line));
         let fencing = ctx.fencing;
+        let keep_out = ctx.keep_out.clone();
         let session = ctx.session_id.clone();
         tokio::task::spawn_blocking(move || {
             let (fence, no_fence) = if fencing {
                 let dirs = git_dirs(&places.root);
-                match crate::sandbox::Fence::ask(&places.root, &dirs, places.home.as_deref()) {
+                match crate::sandbox::Fence::ask(
+                    &places.root,
+                    &dirs,
+                    places.home.as_deref(),
+                    keep_out.as_deref(),
+                ) {
                     crate::sandbox::Asked::Fenced(fence) => (Some(Arc::new(fence)), None),
                     crate::sandbox::Asked::Unavailable(why) => {
                         (None, crate::sandbox::say_once(session.as_deref(), &why))
@@ -764,8 +881,9 @@ impl Ticket {
             {
                 let mut state = locked(&watch);
                 state.watching += 1;
-                if state.baseline.is_none() {
-                    state.baseline = Some(snapshot(&places));
+                match &mut state.baseline {
+                    Some(baseline) => baseline.join(&places),
+                    None => state.baseline = Some(snapshot(&places)),
                 }
             }
             Self {
@@ -785,7 +903,7 @@ impl Ticket {
     /// For a call somebody approved: while it runs nothing is repaired.
     pub(crate) fn approved(ctx: &ToolContext) -> Option<Self> {
         let places = places_of(ctx)?;
-        let watch = watch_of(&places.root);
+        let watch = watch_of(&watch_key(&places.root));
         locked(&watch).approved += 1;
         Some(Self {
             watch,
@@ -856,7 +974,11 @@ impl Ticket {
             Kind::Approved => {
                 state.approved = state.approved.saturating_sub(1);
                 if state.approved == 0 {
-                    state.baseline = (state.watching > 0).then(|| snapshot(&self.places));
+                    state.baseline = match (&state.baseline, state.watching > 0) {
+                        (Some(baseline), true) => Some(baseline.reread()),
+                        (None, true) => Some(snapshot(&self.places)),
+                        (_, false) => None,
+                    };
                 }
                 None
             }
@@ -1265,6 +1387,64 @@ mod tests {
         std::fs::remove_file(&removed).unwrap();
         assert!(watching.finish().await.is_none());
         assert!(!removed.exists());
+    }
+
+    /// A linked worktree of the bench's repository, as `git worktree add`
+    /// lays one out, and a context working in it.
+    fn worktree_of(b: &Bench) -> (tempfile::TempDir, PathBuf, ToolContext) {
+        let main = b.path("");
+        let admin = main.join(".git/worktrees/wt");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::write(admin.join("config.worktree"), "[core]\n").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().canonicalize().unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        std::fs::create_dir_all(wt.join(".taurus")).unwrap();
+        std::fs::write(wt.join(".taurus/permissions.json"), "{}").unwrap();
+        let ctx = b.ctx.clone().rooted_at(&wt, None);
+        (dir, wt, ctx)
+    }
+
+    #[tokio::test]
+    async fn an_approved_write_in_the_main_folder_is_not_undone_by_its_worktree() {
+        let b = bench(Box::new(DenyAll), true, true);
+        let (_dir, _wt, worktree) = worktree_of(&b);
+        let watching = Ticket::watching(&worktree, None).await.unwrap();
+        let approved = Ticket::approved(&b.ctx).unwrap();
+        std::fs::write(b.path(".git/hooks/mine"), "x").unwrap();
+        approved.finish().await;
+        // Its own reading would have had no `mine` in it, and taken it out.
+        assert!(watching.finish().await.is_none());
+        assert!(b.path(".git/hooks/mine").exists());
+    }
+
+    #[tokio::test]
+    async fn a_worktree_s_look_still_undoes_a_hook_written_into_the_shared_repository() {
+        let b = bench(Box::new(DenyAll), true, true);
+        let (_dir, _wt, worktree) = worktree_of(&b);
+        let watching = Ticket::watching(&worktree, None).await.unwrap();
+        std::fs::write(b.path(".git/hooks/evil"), "x").unwrap();
+        assert!(watching.finish().await.is_some());
+        assert!(!b.path(".git/hooks/evil").exists());
+    }
+
+    #[tokio::test]
+    async fn a_shared_reading_judges_each_folder_by_its_own_files() {
+        let b = bench(Box::new(DenyAll), true, true);
+        let (_dir, wt, worktree) = worktree_of(&b);
+        let main = Ticket::watching(&b.ctx, None).await.unwrap();
+        let other = Ticket::watching(&worktree, None).await.unwrap();
+        // The main folder's look doesn't list the worktree's `.taurus` or its
+        // `config.worktree`, and mustn't take them for files it lost.
+        assert!(main.finish().await.is_none());
+        assert!(wt.join(".taurus/permissions.json").exists());
+        assert!(other.finish().await.is_none());
+        // And the worktree's own files are still watched.
+        let again = Ticket::watching(&worktree, None).await.unwrap();
+        std::fs::write(wt.join(".taurus/hooks.json"), "{}").unwrap();
+        assert!(again.finish().await.is_some());
+        assert!(!wt.join(".taurus/hooks.json").exists());
     }
 
     #[tokio::test]

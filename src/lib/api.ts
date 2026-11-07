@@ -22,6 +22,11 @@ import type { BackgroundJob } from "../bindings/BackgroundJob";
 import type { DelegateDisposition } from "../bindings/DelegateDisposition";
 import type { DelegateReport } from "../bindings/DelegateReport";
 import type { DelegateStep } from "../bindings/DelegateStep";
+import type { Kept } from "../bindings/Kept";
+import type { ApplyAction } from "../bindings/ApplyAction";
+import type { ApplyFile } from "../bindings/ApplyFile";
+import type { ApplyPlan } from "../bindings/ApplyPlan";
+import type { RunSummary } from "../bindings/RunSummary";
 import type { InterruptedTurn } from "../bindings/InterruptedTurn";
 import type { JobOutput } from "../bindings/JobOutput";
 import type { ChangedFiles } from "../bindings/ChangedFiles";
@@ -207,6 +212,11 @@ export type {
   DelegateDisposition,
   DelegateReport,
   DelegateStep,
+  Kept,
+  ApplyAction,
+  ApplyFile,
+  ApplyPlan,
+  RunSummary,
   InterruptedTurn,
   Checkpoint,
   CommandKind,
@@ -1287,6 +1297,21 @@ export const removePlugin = (name: string, project: boolean) =>
 /** Switches a plugin on or off, in your settings or the project's. */
 export const setPluginEnabled = (name: string, project: boolean, enabled: boolean) =>
   invoke<PluginSummary[]>("set_plugin_enabled", { name, project, enabled });
+
+/**
+ * Applies what a delegate kept in its own copy of the workspace, or with
+ * `dryRun` says what that would do. A plan with a conflict in it wasn't
+ * applied: nothing is, unless everything can be.
+ */
+export const applyDelegate = (sessionId: string, run: string, dryRun: boolean) =>
+  invoke<ApplyPlan>("apply_delegate", { sessionId, run, dryRun });
+
+/** Lets go of what a delegate kept, without applying it. */
+export const discardDelegate = (sessionId: string, run: string) =>
+  invoke<void>("discard_delegate", { sessionId, run });
+
+/** Delegates' work still waiting to be applied or discarded, on this machine. */
+export const delegateRuns = () => invoke<RunSummary[]>("delegate_runs");
 
 /**
  * Two branches of one conversation side by side, without switching: what

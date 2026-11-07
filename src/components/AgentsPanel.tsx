@@ -6,6 +6,7 @@ import { clip, duration, plural } from "../lib/format";
 import { useNow } from "../lib/useNow";
 import { useStore, type Entry } from "../state/store";
 import { DrawerHead } from "./Drawer";
+import { KeptWork } from "./KeptWork";
 import { Markdown } from "./Markdown";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -332,6 +333,7 @@ function AgentNode({
               <Markdown text={report.summary} streaming={false} keyBy="content" />
             </div>
           )}
+          {report?.kept && <KeptWork kept={report.kept} />}
           {run?.retrying && <p className="agents-doing warn">{run.retrying}</p>}
           {run?.error && <p className="agents-doing error">{run.error}</p>}
           {run && run.tools.length > 0 && (

@@ -131,6 +131,16 @@ pub struct Asking {
     /// calls that would have been asked about, and the only answer it gives is
     /// no.
     pub unattended: bool,
+    /// The folder the asking agent works in, when it isn't the one this engine
+    /// was made for: a delegate in a worktree of its own.
+    ///
+    /// What the call touches, the diff the dialog shows and the words a command
+    /// line names are all read against it, because that's where the call lands.
+    /// A diff of the main folder's copy of a file would show someone a change
+    /// that isn't the one they're approving. Grants still come from the
+    /// engine's own workspace: a worktree is the same project, and approving
+    /// in one is approving in the other. `None` means the engine's workspace.
+    pub root: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -338,6 +348,11 @@ impl PermissionEngine {
         self
     }
 
+    /// Where `asking`'s calls land: its own root, or this engine's workspace.
+    fn root_for<'a>(&'a self, asking: &'a Asking) -> &'a Path {
+        asking.root.as_deref().unwrap_or(&self.workspace)
+    }
+
     /// Decides whether `tool` may run with `input`, prompting if needed.
     ///
     /// `asking` is the turn's half of the question: which conversation wants
@@ -351,7 +366,9 @@ impl PermissionEngine {
         let touched: Vec<PathBuf> = if tool.effect() == Effect::Write {
             tool.touches(input)
                 .iter()
-                .filter_map(|candidate| crate::path_guard::resolve(&self.workspace, candidate).ok())
+                .filter_map(|candidate| {
+                    crate::path_guard::resolve(self.root_for(asking), candidate).ok()
+                })
                 .collect()
         } else {
             Vec::new()
@@ -375,7 +392,7 @@ impl PermissionEngine {
             return Ok(Cleared::Reads);
         }
 
-        let mut keys = keys_for(tool, input, touched, &self.workspace);
+        let mut keys = keys_for(tool, input, touched, self.root_for(asking));
         if tool.effect() == Effect::Execute {
             if let Some(line) = input.get("command").and_then(|c| c.as_str()) {
                 let again = self
@@ -417,7 +434,7 @@ impl PermissionEngine {
             tool: tool.name().to_string(),
             effect: tool.effect(),
             preview: tool.preview(input),
-            diff: tool.diff(input, &self.workspace).await,
+            diff: tool.diff(input, self.root_for(asking)).await,
             always_scope: describe_rules(&missing, tool.effect(), Scope::Workspace),
             offer_always: offer_workspace,
             always_global_scope: offer_global
@@ -989,6 +1006,7 @@ mod tests {
                 &Asking {
                     session: None,
                     unattended: true,
+                    root: None,
                 },
             )
             .await
@@ -1034,6 +1052,7 @@ mod tests {
                 &Asking {
                     session: None,
                     unattended: true,
+                    root: None,
                 },
             )
             .await
@@ -1061,6 +1080,7 @@ mod tests {
                 &Asking {
                     session: Some("conversation-7".into()),
                     unattended: false,
+                    root: None,
                 },
             )
             .await;
@@ -1606,6 +1626,7 @@ mod tests {
                 &Asking {
                     session: None,
                     unattended: true,
+                    root: None,
                 },
             )
             .await
@@ -1628,6 +1649,7 @@ mod tests {
         let here = Asking {
             session: Some("here".into()),
             unattended: false,
+            root: None,
         };
         engine
             .check(
@@ -2031,6 +2053,7 @@ mod tests {
                 &Asking {
                     session: None,
                     unattended: true,
+                    root: None,
                 },
             )
             .await

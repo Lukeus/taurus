@@ -305,6 +305,9 @@ pub struct ToolContext {
     /// Whether a covered call runs under [`crate::sandbox`]. Off only for tests of
     /// the look afterwards, which need the writes to land.
     pub(crate) fencing: bool,
+    /// The folder a context [`Self::rooted_at`] another came from, which its
+    /// granted commands may not write to. See [`crate::sandbox::Fence::ask`].
+    pub(crate) keep_out: Option<PathBuf>,
 }
 
 impl ToolContext {
@@ -334,6 +337,7 @@ impl ToolContext {
             spent: None,
             protected: None,
             fencing: true,
+            keep_out: None,
         }
     }
 
@@ -347,6 +351,53 @@ impl ToolContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()?
             .fence()
+    }
+
+    /// This context, working in another folder: a delegate's worktree.
+    ///
+    /// Everything that is about *where* changes land starts again for `root`,
+    /// and everything that is about *who decides* carries on. So the path
+    /// checks, the undo record, the cache of what commands read, and the
+    /// background commands are its own, and the permission engine, hooks,
+    /// session and the unattended switch are the parent's. And the parent's
+    /// folder is kept out of what its granted commands may write, where the
+    /// sandbox runs: see [`crate::sandbox::Fence::ask`].
+    ///
+    /// Each of the first group would be wrong shared. A path check against the
+    /// parent's folder lets an edit land there. The parent's undo record would
+    /// list the worktree's files under paths no rewind can put back. The
+    /// parent's cache holds the parent's files. And background commands are
+    /// reaped into whichever turn calls next, so a worktree's build would be
+    /// recorded into the parent's turn and the parent's into the worktree's.
+    ///
+    /// `recorder` is the undo record for `root`, `None` to have none. Without
+    /// one a command's changes aren't swept, so a delegate's report wouldn't
+    /// list what its builds and formatters wrote, which is most of what it
+    /// changes. A fresh [`crate::jobs::Jobs`] is given only where the parent
+    /// had one, and the caller has to stop it when the work is over: see
+    /// [`crate::jobs::Jobs::stop_all`].
+    #[must_use]
+    pub fn rooted_at(
+        mut self,
+        root: impl Into<PathBuf>,
+        recorder: Option<Arc<crate::checkpoint::TurnRecorder>>,
+    ) -> Self {
+        let parent = std::mem::replace(&mut self.workspace, root.into());
+        // The first folder, whatever was rooted since: what's kept out is the
+        // person's.
+        self.keep_out = self.keep_out.take().or(Some(parent));
+        self.root = crate::path_guard::HeldRoot::default();
+        self.sweeps = recorder
+            .as_ref()
+            .map(|_| Arc::new(crate::sweep::SweepCache::new()));
+        self.checkpoints = recorder;
+        self.jobs = self
+            .jobs
+            .as_ref()
+            .map(|_| Arc::new(crate::jobs::Jobs::new()));
+        self.protected = None;
+        self.touched = None;
+        self
     }
 
     /// Sizes this context's answers to a model's context window.
@@ -422,6 +473,7 @@ impl ToolContext {
         Asking {
             session: self.session_id.clone(),
             unattended: self.unattended(),
+            root: Some(self.workspace.clone()),
         }
     }
 

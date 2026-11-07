@@ -466,10 +466,11 @@ once:
 There's nothing to poll and nothing to check. The parent is told it can't
 read the report sooner and shouldn't ask.
 
-Only an agent that can't write runs in the background. That's `explorer`,
-or your own agent if every tool it names only reads. A background `coder`
-would be editing the working tree while the parent does too, and the call is
-refused with a message saying so.
+An agent that only reads, like `explorer`, runs in the background as it is.
+One that can write, like `coder`, gets its own copy of the workspace for it,
+so it isn't editing your files while the parent does: see
+[Delegates that write, side by side](#delegates-that-write-side-by-side). Where
+it can't have a copy, the call is refused with the reason.
 
 Background work belongs to the turn that started it. Stop reaches it. A
 turn that ends any other way (an error, the iteration ceiling, a stall)
@@ -502,6 +503,79 @@ next message you send uses the new number.
 
 The limit applies to each message separately. Two conversations working at
 the same time can each run their own delegates.
+
+### Delegates that write, side by side
+
+Two delegates that write can't share a folder: each would edit files the other
+is halfway through. So a writer runs on its own in the workspace unless it asks
+for `isolate`, and then it gets a copy of the workspace to itself, a git
+worktree, and can run beside the others. `background` asks for the same thing.
+
+The copy starts from your workspace as it is right now, not from a commit.
+Uncommitted edits, new files and the parent's own changes from earlier in the
+turn are all in it. Your staged work stays staged; the copy is made without
+touching your index. Files git ignores aren't copied, apart from the ones a
+`.worktreeinclude` at the top of the repository lists (it's the same file and
+format Claude Code reads, so `.env` is usually the one to put in it). Nothing
+is copied over a file that's there or through a link.
+
+While it works, it's held to the copy:
+
+- File tools resolve every path against the copy, and refuse anything outside it.
+- Its commands run there. A command a standing grant lets through runs under the
+  write deny-list (see [safety](safety.md#permissions)),
+  which for a copy also covers your workspace, apart from the repository's git
+  directory that the copy's commits go into. A command somebody approves runs
+  without the list, as it always does.
+- It only gets tools that work where they're told: the built-ins, and tools
+  that only read. An MCP server that writes, or a skill's script, works
+  wherever it was set up, so it's left out, and the card says which ones were.
+  `search_code` is left out too, because it refreshes the index kept for your
+  folder.
+
+When it stops, what it changed is kept as a commit in your repository under
+`refs/taurus/delegates/<run>`, and the copy is removed. Nothing in your
+workspace has changed. The card says **Kept in its own copy**, lists the
+files, and has two buttons:
+
+- **Apply to workspace** checks every file against your workspace as it is now.
+  A file you haven't touched since the delegate started takes its version. One
+  you've both changed is merged if the changes don't overlap. If any file can't
+  be applied, nothing is: the card lists which ones and why, and your files are
+  exactly as they were. No conflict markers are ever written into them. A git
+  hook or setting, or a Taurus setting, is never applied for you, because a
+  delegate could otherwise use Apply to hand itself what it was refused.
+  Applying is one change in the undo history, so rewinding the turn takes it
+  back out.
+- **Discard** lets the work go.
+
+The model can apply too, with `apply_delegate`, which is asked about like any
+other write. That's how one message can run three coders at once and then
+bring the results together. In the CLI, `taurus delegates` lists what's
+waiting, and `taurus delegates --apply <run>` applies one after showing what
+it would do.
+
+Some repositories don't get a copy, and their writers run alone in the
+workspace instead, with a note on the card saying why:
+
+- a folder that isn't in a git repository
+- a repository with submodules, which git only partly supports in a worktree
+- a repository whose `.gitattributes` names a filter, Git LFS included, because
+  a copy made without running it would hold pointer files
+
+Copies live in `~/.taurus-worktrees`, outside both your workspace and
+`~/.taurus`. Each one is a commit before anything is removed, and it's
+removed with plain `git worktree remove`, never forced. If Taurus quits while a
+delegate is working, the next start saves what that delegate had changed and
+removes the copy. Settings › General lists any work still waiting, so none of
+it piles up out of sight.
+
+`cargo run -p taurus-host --example parallel_writers -- <model> [runs]` runs
+two writers at once on a live model, and then a turn that applies them. On
+`qwen3.6:27b`, two coders each asked to change a different file overlapped by
+85–90% of their running time, changed the right file in their own copies, and
+left the workspace untouched. Asked to run both at once and then apply them,
+the parent did both in 2 of 2 turns.
 
 ### Watching delegates work
 

@@ -82,7 +82,10 @@ impl Host {
                 // transcript still records a delegation as one call and one answer
                 // — that is what delegating is for — but the work behind that
                 // answer is no longer thrown away with the tool result.
-                .with_recorder(Arc::new(logs)),
+                .with_recorder(Arc::new(logs))
+                // A delegate that writes can have a copy of the workspace, so
+                // it can run beside others and in the background.
+                .with_isolation(self.worktrees.clone()),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same
@@ -91,6 +94,12 @@ impl Host {
         // what keeps `ask_user` away from a worker that cannot ask anyone
         // anything, and keeps a delegate from drawing a chart into a transcript
         // it is not part of.
+        // Per turn, beside the spawn tool: what it applies is this
+        // conversation's own delegates' work, and a delegate has none of its
+        // own to apply.
+        registry.register(Arc::new(taurus_core::ApplyDelegate::new(
+            self.worktrees.clone(),
+        )));
         registry.register(Arc::new(ShowTable));
         registry.register(Arc::new(ShowChart));
         registry.register(Arc::new(ShowSequence));

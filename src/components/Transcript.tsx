@@ -21,6 +21,7 @@ import { useAgentsView } from "../state/agentsView";
 import { duration, plural } from "../lib/format";
 import { useStable } from "../lib/stable";
 import type { Answer, LineRange } from "../lib/api";
+import { KeptWork } from "./KeptWork";
 import { useStore, type Entry } from "../state/store";
 import { hooksFileIn } from "../lib/hooksFile";
 import { turnText, useSpeech } from "../state/speech";
@@ -1098,6 +1099,18 @@ function ToolRow({
           {step.report.owner === "user" ? "Needs you to: " : "Needs the agent to: "}
           {step.report.needs}
         </p>
+      )}
+
+      {/* A delegate that worked in a copy changed nothing here yet. Said on
+          the row, with the way to bring it in, because a card reading "Done"
+          over files that aren't in the workspace would be the one lie on it. */}
+      {step.report?.kept && status !== "running" && <KeptWork kept={step.report.kept} />}
+      {step.report && step.report.notes.length > 0 && status !== "running" && (
+        <ul className="run-row-notes">
+          {step.report.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
       )}
 
       {/* Pictures a tool handed back, shown without needing the row opened.

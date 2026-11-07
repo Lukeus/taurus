@@ -502,12 +502,31 @@ async fn launch_with(
     args: &[&str],
     input: Option<Vec<u8>>,
 ) -> Result<std::process::Output, String> {
+    let deadline = if args.first() == Some(&"commit") {
+        COMMIT_DEADLINE
+    } else {
+        READ_DEADLINE
+    };
+    launch_full(workspace, args, input, &[], deadline).await
+}
+
+/// [`launch_with`], with variables set for git alone and a deadline of the
+/// caller's choosing. For [`crate::worktree`], whose writes put whole trees in
+/// the object store and take as long as the repository is big.
+pub(crate) async fn launch_full(
+    workspace: &Path,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+    env: &[(&str, &std::ffi::OsStr)],
+    deadline: Duration,
+) -> Result<std::process::Output, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
     let mut command = Command::new("git");
     taurus_tools::login_path::apply(&mut command)
         .args(args)
+        .envs(env.iter().map(|(k, v)| (*k, *v)))
         .current_dir(workspace)
         // A commit must never open an editor or a credential prompt: there is
         // no terminal behind this, so one would hang the call until it timed
@@ -525,11 +544,6 @@ async fn launch_with(
         .kill_on_drop(true);
     taurus_tools::no_console(&mut command);
 
-    let deadline = if args.first() == Some(&"commit") {
-        COMMIT_DEADLINE
-    } else {
-        READ_DEADLINE
-    };
     let asked = async {
         let mut child = command.spawn()?;
         if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {

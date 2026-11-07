@@ -1336,6 +1336,19 @@ pub fn fork_point(session_id: &str, turn: &str) -> Result<ForkPoint, String> {
     })
 }
 
+/// The id of the last turn a conversation's transcript records, if it has one.
+///
+/// What a change made outside any turn is filed under in the checkpoint log, so
+/// the log's turns stay in the transcript's order: see `Host::apply_delegate`.
+pub fn last_turn_id(session_id: &str) -> Option<String> {
+    let source = find(session_id)?;
+    let contents = std::fs::read(&source).ok()?;
+    let contents = String::from_utf8_lossy(&contents);
+    let lines: Vec<&str> = contents.lines().collect();
+    let (_, turns) = turn_records(&lines);
+    turns.last().map(|(_, id, _)| id.clone())
+}
+
 /// A transcript's header, and each turn record's line, id, and whether it
 /// continued the one before.
 fn turn_records(lines: &[&str]) -> (Option<Header>, Vec<(usize, String, bool)>) {

@@ -46,12 +46,16 @@ fn fallback_home() -> &'static Path {
 /// An empty `~/.taurus` for one test, held for the length of the test body.
 pub struct HomeGuard {
     _lock: MutexGuard<'static, ()>,
-    dir: TempDir,
+    /// Holds the home, and what's kept beside it: delegates' worktrees live
+    /// in `<home>-worktrees`, so a home that was the temporary directory itself
+    /// would leave that sibling behind in the system's.
+    _dir: TempDir,
+    home: std::path::PathBuf,
 }
 
 impl HomeGuard {
     pub fn path(&self) -> &Path {
-        self.dir.path()
+        &self.home
     }
 }
 
@@ -71,6 +75,12 @@ impl Drop for HomeGuard {
 pub fn isolated_home() -> HomeGuard {
     let lock = lock();
     let dir = TempDir::new().expect("temp dir for isolated config");
-    std::env::set_var(HOME_ENV, dir.path());
-    HomeGuard { _lock: lock, dir }
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).expect("isolated config home");
+    std::env::set_var(HOME_ENV, &home);
+    HomeGuard {
+        _lock: lock,
+        _dir: dir,
+        home,
+    }
 }
