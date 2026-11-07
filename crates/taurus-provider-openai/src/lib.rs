@@ -647,18 +647,30 @@ impl OpenAiProvider {
 
             for call in delta.tool_calls {
                 let index = call.index.unwrap_or(0);
+                let name = call
+                    .function
+                    .as_ref()
+                    .and_then(|f| f.name.clone())
+                    .filter(|name| !name.is_empty());
                 // A new id at this index opens a call. The same id again doesn't:
-                // some servers repeat it on every fragment.
-                if let Some(id) = call
-                    .id
-                    .filter(|id| !id.is_empty() && open_calls.get(&index) != Some(id))
-                {
-                    let name = call
-                        .function
-                        .as_ref()
-                        .and_then(|f| f.name.clone())
-                        .unwrap_or_default();
-                    open_calls.insert(index, id.clone());
+                // some servers repeat it on every fragment. A server that sends
+                // no id names the call on its first frame, and gets one of ours,
+                // as the Responses, Ollama and Gemini adapters give.
+                let opening = match call.id.filter(|id| !id.is_empty()) {
+                    Some(id) => (open_calls.get(&index) != Some(&id)).then_some(id),
+                    None if name.is_some() && !open_calls.contains_key(&index) => {
+                        Some(taurus_provider::new_tool_use_id())
+                    }
+                    None => None,
+                };
+                if let Some(id) = opening {
+                    // A server that leaves `index` out puts every call at 0, so
+                    // a new id there closes the one before it rather than
+                    // leaving it unfinished.
+                    if let Some(previous) = open_calls.insert(index, id.clone()) {
+                        send(&tx, StreamEvent::ToolUseEnd { id: previous }).await?;
+                    }
+                    let name = name.unwrap_or_default();
                     send(&tx, StreamEvent::ToolUseStart { id, name }).await?;
                 }
                 let Some(id) = open_calls.get(&index).cloned() else {
@@ -1053,6 +1065,35 @@ mod tests {
             inputs,
             vec![serde_json::json!({"p": 1}), serde_json::json!({"q": 2})]
         );
+    }
+
+    #[tokio::test]
+    async fn calls_with_no_index_each_finish_and_a_call_with_no_id_is_kept() {
+        // No `index`: both calls read as index 0, and the first must still
+        // close. No `id`: the call is named, and its arguments must not drop.
+        let body = concat!(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"c1","function":{"name":"read","arguments":"{\"p\":1}"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"c2","function":{"name":"read","arguments":"{\"p\":2}"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"grep","arguments":"{\"q\":"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"3}"}}]},"finish_reason":"tool_calls"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (message, bad) = folded(body).await;
+        assert!(bad.is_empty(), "{bad:?}");
+        let calls: Vec<_> = message
+            .tool_uses()
+            .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
+            .collect();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(calls[0].2, serde_json::json!({"p": 1}));
+        assert_eq!(calls[1].2, serde_json::json!({"p": 2}));
+        assert_eq!(calls[2].1, "grep");
+        assert_eq!(calls[2].2, serde_json::json!({"q": 3}));
+        assert!(!calls[2].0.is_empty());
     }
 
     #[tokio::test]
