@@ -35,6 +35,7 @@ pub mod theme;
 pub mod traces;
 pub mod trust;
 pub mod usage;
+pub mod worktree;
 
 pub use attach::Attachment;
 pub use command::{CommandError, CommandKind, CommandSummary, Invocation};
