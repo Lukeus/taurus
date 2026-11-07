@@ -836,7 +836,50 @@ The split comes from the walk itself, not from a list of blessed names. Every
 directory the walk enters is also read flat, which turns up the entries the
 walk would skip. A directory it never enters is never read either. So `.env`
 beside a `Cargo.toml` is covered, and `target/` beside it isn't. On this
-repository the two passes cost about 21 ms and 8 ms.
+repository the two passes cost about 14 ms and 6 ms.
+
+**In a git repository, a file watcher stands in for the walk.** Walking is
+cheap on a small project and isn't on a large one. Measured on shallow clones,
+a command's two passes cost about 480 ms on vscode (21,000 files) and 700 ms on
+kubernetes (32,000) with one thread walking. Spreading the walk over four threads
+halved that. A watcher brings it to about 70 ms and 95 ms.
+
+The first command in a workspace starts the watcher in the background and
+walks as usual, so no command waits for it. Once it's running, a sweep asks it
+what changed since the last one, stats only those paths, and keeps the rest of
+its picture of the workspace. Before answering, it writes a small file under
+`.git/taurus-cookies/` and waits for that file's own event. Events arrive in
+order, so once that one is in, so is everything the command did. This is how
+Watchman and git's own fsmonitor daemon know they've caught up.
+
+The watcher only answers when it's sure. Any of these sends the sweep back to a
+full walk:
+
+- the operating system reports dropped events, or the watcher reports an error;
+- the cookie doesn't come back within a second;
+- a `.gitignore` or `.ignore` changed, which can change what the walk covers.
+
+And every sixteenth answer is checked against a full walk. If the walk finds
+something the watcher missed, the watcher is switched off for that workspace,
+the log names the file, and every command walks from then on. Every tool we
+looked at that leans on a watcher has shipped a fix for one that missed changes
+without saying so, and a missed change here is a turn you can't undo.
+
+Some workspaces never get a watcher and always walk:
+
+- a folder that isn't a git repository, since the cookie needs somewhere to go
+  that isn't your working tree;
+- a network share, FUSE mount, or WSL view of a Windows drive, where the
+  operating system can't report every change;
+- anything on Windows for now. The watcher library Taurus uses can lose a
+  Windows buffer overflow without reporting it, and only its next major
+  release fixes that.
+
+On Linux, Taurus watches each directory the walk enters and nothing else.
+inotify watches are a per-user kernel budget, and a recursive watch into
+`node_modules/` spends it for every other program on the machine. If the
+budget runs out anyway, the watcher stops, the log names
+`fs.inotify.max_user_watches`, and sweeps walk.
 
 Because `.env` is held, the checkpoint log holds it too, so those logs are
 readable by their owner and nobody else. A file kept out of version control on

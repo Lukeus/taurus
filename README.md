@@ -490,6 +490,7 @@ crates/
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
   taurus-index/             Local semantic search: chunking, embedding, ranking
+  taurus-watch/             Workspace file watching that says what changed or admits it can't
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-voice/             Dictation: microphone capture, whisper.cpp transcription
   taurus-speech/            Reading aloud: the speakable-text filter, voices, playback

@@ -99,6 +99,9 @@ use std::time::SystemTime;
 
 use crate::checkpoint::{read_state, State, TurnRecorder};
 
+mod watched;
+pub use watched::Watching;
+
 /// Largest file whose contents a sweep holds.
 ///
 /// A source file is kilobytes. Something past this is a database, a bundled
@@ -146,6 +149,9 @@ pub struct Sweep {
     git: Option<GitState>,
     /// Set when nothing was indexed, carrying the reason to report.
     abandoned: Option<String>,
+    /// Where the second pass asks, so a watched workspace is not walked
+    /// again. See [`watched`].
+    cache: Option<Arc<SweepCache>>,
 }
 
 /// What a sweep found, for the caller to report.
@@ -220,14 +226,18 @@ impl Sweep {
     /// read everything afresh. See [`SweepCache`].
     pub async fn before(root: &Path, cache: Option<Arc<SweepCache>>) -> Self {
         let root = root.to_path_buf();
-        tokio::task::spawn_blocking(move || index(&root, cache.as_deref()))
-            .await
-            .unwrap_or_else(|e| {
-                Sweep::abandoned(format!(
-                    "The workspace could not be read before this command ({e}), so whatever it \
+        tokio::task::spawn_blocking(move || {
+            let mut sweep = index(&root, cache.as_deref());
+            sweep.cache = cache;
+            sweep
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Sweep::abandoned(format!(
+                "The workspace could not be read before this command ({e}), so whatever it \
                      changes cannot be undone."
-                ))
-            })
+            ))
+        })
     }
 
     fn abandoned(reason: String) -> Self {
@@ -236,6 +246,7 @@ impl Sweep {
             ignores: HashMap::new(),
             git: None,
             abandoned: Some(reason),
+            cache: None,
         }
     }
 
@@ -261,7 +272,11 @@ impl Sweep {
 
         let scan = {
             let root = root.to_path_buf();
-            tokio::task::spawn_blocking(move || (current(&root), git_state(&root))).await
+            let cache = self.cache.clone();
+            tokio::task::spawn_blocking(move || {
+                (current(&root, cache.as_deref()), git_state(&root))
+            })
+            .await
         };
         let Ok((Some(now), git_now)) = scan else {
             return Diffed::abandoned(
@@ -465,12 +480,26 @@ type Stamped = (PathBuf, u64, Option<SystemTime>);
 /// `None` when the workspace holds more than [`MAX_FILES`], which is a
 /// different answer from holding none.
 fn sweepable(root: &Path) -> Option<Vec<Stamped>> {
+    walk(root).map(|walked| walked.files)
+}
+
+/// What one walk found: the files a pass covers, and every directory it
+/// entered to find them. The directories are what a watched workspace keeps
+/// so that a later change can be placed without walking; see [`watched`].
+struct Walked {
+    files: Vec<Stamped>,
+    dirs: Vec<PathBuf>,
+}
+
+/// The walk behind [`sweepable`], keeping the directories too.
+fn walk(root: &Path) -> Option<Walked> {
     let found: Mutex<Vec<Stamped>> = Mutex::new(Vec::new());
+    let entered: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     let count = AtomicUsize::new(0);
     let over = AtomicBool::new(false);
 
     parallel_walker(root).run(|| {
-        let (found, count, over) = (&found, &count, &over);
+        let (found, entered, count, over) = (&found, &entered, &count, &over);
         Box::new(move |entry| {
             let Ok(entry) = entry else {
                 return WalkState::Continue;
@@ -517,6 +546,11 @@ fn sweepable(root: &Path) -> Option<Vec<Stamped>> {
                     Err(poisoned) => poisoned.into_inner().append(&mut here),
                 }
             }
+            let dir = entry.into_path();
+            match entered.lock() {
+                Ok(mut entered) => entered.push(dir),
+                Err(poisoned) => poisoned.into_inner().push(dir),
+            }
             WalkState::Continue
         })
     });
@@ -524,11 +558,14 @@ fn sweepable(root: &Path) -> Option<Vec<Stamped>> {
     if over.load(Ordering::Relaxed) {
         return None;
     }
-    Some(
-        found
+    Some(Walked {
+        files: found
             .into_inner()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    )
+        dirs: entered
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    })
 }
 
 /// Threads one pass walks on.
@@ -549,7 +586,11 @@ const WALK_THREADS: usize = 4;
 /// sequential — the files are independent, and the one decision that is not
 /// (which of them fit under the byte cap) is made before any read starts.
 fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
-    let Some(mut stamped) = sweepable(root) else {
+    let found = match cache {
+        Some(cache) => cache.watched.files(root),
+        None => sweepable(root),
+    };
+    let Some(mut stamped) = found else {
         return Sweep::abandoned(format!(
             "This workspace holds more than {MAX_FILES} files, too many to record a command's \
              changes against, so this one cannot be undone."
@@ -636,6 +677,7 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
         ignores,
         git: git_state(root),
         abandoned: None,
+        cache: None,
     }
 }
 
@@ -685,6 +727,8 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
 #[derive(Default)]
 pub struct SweepCache {
     held: Mutex<HashMap<PathBuf, Cached>>,
+    /// The workspace's watcher, once a sweep has started one. See [`watched`].
+    watched: watched::Slot,
 }
 
 /// One file's pre-image, and what has to still be true for it to be usable.
@@ -709,6 +753,14 @@ impl SweepCache {
             Ok(mut held) => held.clear(),
             Err(poisoned) => poisoned.into_inner().clear(),
         }
+        self.watched.clear();
+    }
+
+    /// Whether sweeps in `root` are answered from a file watcher, and if not,
+    /// why. The first sweep in a workspace starts one on a thread of its own;
+    /// sweeps walk until it is ready.
+    pub fn watching(&self, root: &Path) -> Watching {
+        self.watched.watching(root)
     }
 
     /// Fills in every wanted slot the cache can still vouch for.
@@ -842,9 +894,16 @@ fn read_held(stamped: &[(PathBuf, u64, Option<SystemTime>)], states: &mut [Optio
 ///
 /// `None` when the workspace grew past [`MAX_FILES`] while the command ran,
 /// which makes the comparison meaningless rather than merely incomplete.
-fn current(root: &Path) -> Option<HashMap<PathBuf, (u64, Option<SystemTime>)>> {
+fn current(
+    root: &Path,
+    cache: Option<&SweepCache>,
+) -> Option<HashMap<PathBuf, (u64, Option<SystemTime>)>> {
+    let found = match cache {
+        Some(cache) => cache.watched.files(root),
+        None => sweepable(root),
+    };
     Some(
-        sweepable(root)?
+        found?
             .into_iter()
             .map(|(path, len, modified)| (path, (len, modified)))
             .collect(),
