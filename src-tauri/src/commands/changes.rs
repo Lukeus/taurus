@@ -76,6 +76,49 @@ pub async fn rewind_to(
     Ok(rewind)
 }
 
+/// Applies what a delegate kept in its own copy of the workspace, or with
+/// `dry_run` says what that would do. See `Host::apply_delegate`.
+///
+/// Refused under a running turn: the turn may be writing the same files, and
+/// the model can apply from inside one with `apply_delegate`.
+#[tauri::command]
+pub async fn apply_delegate(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    run: String,
+    dry_run: bool,
+) -> CmdResult<taurus_tools::ApplyPlan> {
+    if let Ok(entry) = state.session(&session_id) {
+        let _ = entry.idle("stop it before applying")?;
+    }
+    let plan = state
+        .host
+        .apply_delegate(&session_id, &run, dry_run)
+        .await?;
+    if plan.applied {
+        emit_changed(&state, &session_id).await;
+    }
+    Ok(plan)
+}
+
+/// Lets go of what a delegate kept, without applying it.
+#[tauri::command]
+pub async fn discard_delegate(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    run: String,
+) -> CmdResult<()> {
+    Ok(state.host.discard_delegate(&session_id, &run).await?)
+}
+
+/// Delegates' work still waiting, on this machine. See `Host::delegate_runs`.
+#[tauri::command]
+pub async fn delegate_runs(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<Vec<taurus_host::worktree::RunSummary>> {
+    Ok(state.host.delegate_runs())
+}
+
 /// Starts a new conversation from just before `turn`, keeping this one.
 ///
 /// Refused under a running turn for the reason a rewind is: its tool calls

@@ -33,7 +33,9 @@ pub use checkpoint::{Checkpoint, CheckpointStore, Restored, Rewind, TurnChange, 
 pub use delegate::{now_ms, DelegateReport, DelegateStep, Disposition, Owner, Touched};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use env::{expand, expand_env, Credentials, Destination, Secrets};
-pub use isolation::{Closed, Isolation, Kept, Opened, Requester};
+pub use isolation::{
+    ApplyAction, ApplyFile, ApplyPlan, Closed, Isolation, Kept, Opened, Requester,
+};
 pub use jobs::{BackgroundJob, JobOutput, Jobs};
 pub use login_path::Outcome as LoginPath;
 pub use pending::{Arrival, Pending, Ticket};

@@ -1494,6 +1494,52 @@ body.resizing-y * {
   margin: 0 12px 10px;
 }
 
+/* A delegate's work kept in a copy of the workspace: what it is, and the two
+   things to do with it. Indented with the row's other parts. */
+.run-row-kept {
+  margin: 0 12px 6px var(--run-indent);
+  font-size: 11.5px;
+}
+.run-row-kept .run-row-links {
+  margin-left: 0;
+}
+.run-row-kept-head {
+  margin: 0 0 4px;
+  color: var(--text);
+}
+.run-row-kept[data-state="discarded"] .run-row-kept-head {
+  color: var(--text-dim);
+}
+.run-row-kept-files,
+.run-row-notes {
+  margin: 0 0 4px;
+  padding-left: 16px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.run-row-notes {
+  margin-left: var(--run-indent);
+  font-family: inherit;
+}
+.run-row-kept-outside {
+  margin: 0 0 4px;
+  color: var(--text-dim);
+}
+.run-row-kept-refused {
+  margin: 0 0 4px;
+  color: var(--warn);
+}
+.run-row-kept-refused ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+.run-row-activity:disabled {
+  opacity: 0.5;
+  cursor: default;
+  text-decoration: none;
+}
+
 /* A command's own output, streaming under its row.
    Short by default: enough to see the command is alive and how it is going,
    without a build log pushing the conversation off the screen. Opening the row

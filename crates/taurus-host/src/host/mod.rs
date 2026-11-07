@@ -1469,6 +1469,7 @@ fn located(agent: &AgentDefinition) -> String {
 
 mod catalog;
 mod data;
+mod delegates;
 mod library;
 mod mcp;
 mod notes;

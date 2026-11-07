@@ -80,6 +80,108 @@ pub struct Closed {
     pub left_behind: Option<String>,
 }
 
+/// What applying a run would do, or did, to one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ApplyAction {
+    /// The workspace's copy hadn't changed since the delegate started, so it
+    /// takes the delegate's.
+    Take,
+    /// Both changed it, and the two merged without a conflict.
+    Merge,
+    /// The delegate removed it, and the workspace's copy hadn't changed.
+    Delete,
+    /// The workspace already has what the delegate left.
+    Same,
+    /// It can't be applied. [`ApplyFile::why`] says why.
+    Conflict,
+}
+
+/// One file in an [`ApplyPlan`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApplyFile {
+    /// Workspace-relative.
+    pub path: String,
+    pub action: ApplyAction,
+    /// Set for a conflict.
+    #[ts(optional)]
+    pub why: Option<String>,
+}
+
+/// What applying a run comes to, file by file. Nothing is written unless
+/// every file can be: one conflict refuses the lot, so a workspace is never
+/// left with half a delegate's change in it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApplyPlan {
+    pub run: String,
+    pub files: Vec<ApplyFile>,
+    /// Changed outside the workspace. Never applied.
+    pub outside: Vec<String>,
+    /// Whether it was written. False for a look ahead, and for a refusal.
+    pub applied: bool,
+}
+
+impl ApplyPlan {
+    pub fn conflicts(&self) -> impl Iterator<Item = &ApplyFile> {
+        self.files
+            .iter()
+            .filter(|f| f.action == ApplyAction::Conflict)
+    }
+
+    /// The plan as a model or a CLI reads it.
+    pub fn describe(&self) -> String {
+        let conflicts: Vec<String> = self
+            .conflicts()
+            .map(|f| {
+                format!(
+                    "- {}: {}",
+                    f.path,
+                    f.why.as_deref().unwrap_or("it can't be applied")
+                )
+            })
+            .collect();
+        if !conflicts.is_empty() {
+            return format!(
+                "Nothing was applied from run {}, because {} of its files can't be:\n{}\nThe rest \
+                 are still kept. Make those changes by hand, or ask for the work again from the \
+                 workspace as it is now.",
+                self.run,
+                conflicts.len(),
+                conflicts.join("\n")
+            );
+        }
+        let count = |action| self.files.iter().filter(|f| f.action == action).count();
+        let verb = if self.applied {
+            "Applied"
+        } else {
+            "Would apply"
+        };
+        let mut text = format!(
+            "{verb} run {}: {} taken, {} merged, {} deleted, {} already the same.",
+            self.run,
+            count(ApplyAction::Take),
+            count(ApplyAction::Merge),
+            count(ApplyAction::Delete),
+            count(ApplyAction::Same)
+        );
+        if self.applied {
+            text.push_str(
+                " It's one change in the undo history, so rewinding this turn undoes it.",
+            );
+        }
+        if !self.outside.is_empty() {
+            text.push_str(&format!(
+                " Not applied, because they're outside the workspace: {}.",
+                self.outside.join(", ")
+            ));
+        }
+        text
+    }
+}
+
 /// Provides delegates with folders of their own. See the module note.
 #[async_trait::async_trait]
 pub trait Isolation: Send + Sync {
@@ -89,4 +191,16 @@ pub trait Isolation: Send + Sync {
 
     /// Saves what the delegation changed, and removes its folder.
     async fn close(&self, run: &str) -> Result<Closed, String>;
+
+    /// Applies what `run` kept to its workspace, or with `dry_run` says what
+    /// that would do. Each file is captured into `recorder` before it's
+    /// written, so the change is undoable. `session` has to be the
+    /// conversation the run was made in.
+    async fn apply(
+        &self,
+        run: &str,
+        session: Option<&str>,
+        recorder: Option<&crate::checkpoint::TurnRecorder>,
+        dry_run: bool,
+    ) -> Result<ApplyPlan, String>;
 }

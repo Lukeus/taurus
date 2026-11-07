@@ -2127,6 +2127,16 @@ mod tests {
                 left_behind: None,
             })
         }
+
+        async fn apply(
+            &self,
+            run: &str,
+            _session: Option<&str>,
+            _recorder: Option<&taurus_tools::TurnRecorder>,
+            _dry_run: bool,
+        ) -> Result<taurus_tools::ApplyPlan, String> {
+            Err(format!("{run}: the copies in this test can't be applied"))
+        }
     }
 
     fn isolated(asks: &str) -> serde_json::Value {

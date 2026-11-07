@@ -269,8 +269,19 @@ async fn a_run_whose_owner_died_is_closed_on_the_next_start_and_its_work_kept() 
     f.trees.held.lock().unwrap().clear();
 
     let next = Worktrees::new(f.trees.home.clone());
-    assert!(next.tidy().await.is_empty());
-    let record = next.record(&opened.run).unwrap();
+    // Another test's git, forked in the instant before it execs, can hold the
+    // lock for a moment after it's let go. Tidying errs towards leaving a run
+    // alone, so it may take more than one look; a real start sees the lock of
+    // a process that's gone.
+    let mut record = next.record(&opened.run).unwrap();
+    for _ in 0..50 {
+        assert!(next.tidy().await.is_empty());
+        record = next.record(&opened.run).unwrap();
+        if record.state != State::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(record.state, State::Kept);
     assert!(!opened.root.exists());
     let result = Worktrees::result_ref(&opened.run);
@@ -319,4 +330,189 @@ async fn a_run_being_opened_is_never_mistaken_for_one_a_crash_left() {
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     tidier.await.unwrap();
+}
+
+/// A run that has stopped, having done `work` in its copy.
+async fn kept_run(f: &Fixture, work: impl FnOnce(&Path)) -> String {
+    let opened = f.trees.open(&f.top, &who()).await.unwrap();
+    work(&opened.root);
+    let closed = f.trees.close(&opened.run).await.unwrap();
+    assert!(closed.kept.is_some(), "the work changed nothing");
+    opened.run
+}
+
+fn read(path: PathBuf) -> String {
+    std::fs::read_to_string(path).unwrap()
+}
+
+#[tokio::test]
+async fn applying_takes_what_the_workspace_left_alone_and_records_it_for_undo() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        std::fs::create_dir_all(root.join("new/dir")).unwrap();
+        std::fs::write(root.join("new/dir/b.sh"), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                root.join("new/dir/b.sh"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        std::fs::remove_file(root.join("app/src/lib.rs")).unwrap();
+    })
+    .await;
+    let logs = TempDir::new().unwrap();
+    let recorder =
+        taurus_tools::CheckpointStore::new(logs.path()).begin_turn("s1", &f.top, "apply");
+
+    let plan = f
+        .trees
+        .apply(&run, Some("s1"), Some(&recorder), false)
+        .await
+        .unwrap();
+
+    assert!(plan.applied, "{plan:?}");
+    assert_eq!(read(f.top.join("a.txt")), "two\n");
+    assert!(!f.top.join("app/src/lib.rs").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(f.top.join("new/dir/b.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "{mode:o}");
+    }
+    assert_eq!(
+        recorder.changed_paths().await,
+        ["a.txt", "app/src/lib.rs", "new/dir/b.sh"]
+    );
+    // The index and branch are the person's, untouched.
+    assert_eq!(sh(&f.top, &["diff", "--cached"]), "");
+    assert_eq!(sh(&f.top, &["branch", "--show-current"]), "main");
+    // Once is all.
+    let again = f
+        .trees
+        .apply(&run, Some("s1"), None, false)
+        .await
+        .unwrap_err();
+    assert!(again.contains("already been applied"), "{again}");
+}
+
+#[tokio::test]
+async fn both_sides_changing_a_file_merges_when_the_changes_do_not_overlap() {
+    let f = fixture();
+    std::fs::write(f.top.join("a.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+    sh(&f.top, &["commit", "-qam", "five lines"]);
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "one\ntwo\nthree\nfour\nFIVE\n").unwrap();
+    })
+    .await;
+    std::fs::write(f.top.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\n").unwrap();
+
+    let plan = f.trees.apply(&run, Some("s1"), None, false).await.unwrap();
+    assert_eq!(plan.files[0].action, ApplyAction::Merge);
+    assert_eq!(read(f.top.join("a.txt")), "ONE\ntwo\nthree\nfour\nFIVE\n");
+}
+
+#[tokio::test]
+async fn one_conflict_refuses_the_whole_apply_and_writes_no_markers() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "theirs\n").unwrap();
+        std::fs::write(root.join("clean.txt"), "would be fine\n").unwrap();
+    })
+    .await;
+    std::fs::write(f.top.join("a.txt"), "mine\n").unwrap();
+
+    let plan = f.trees.apply(&run, Some("s1"), None, false).await.unwrap();
+    assert!(!plan.applied);
+    let conflicts: Vec<&str> = plan.conflicts().map(|c| c.path.as_str()).collect();
+    assert_eq!(conflicts, ["a.txt"]);
+    assert!(
+        plan.describe().contains("Nothing was applied"),
+        "{}",
+        plan.describe()
+    );
+    assert_eq!(read(f.top.join("a.txt")), "mine\n");
+    assert!(!f.top.join("clean.txt").exists(), "half applied");
+    // Still there to try again, or apply by hand.
+    assert_eq!(f.trees.record(&run).unwrap().state, State::Kept);
+}
+
+#[tokio::test]
+async fn a_file_that_decides_what_runs_is_never_applied() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::create_dir_all(root.join(".taurus")).unwrap();
+        std::fs::write(
+            root.join(".taurus/permissions.json"),
+            r#"{"allowed":["run_command"]}"#,
+        )
+        .unwrap();
+    })
+    .await;
+    let plan = f.trees.apply(&run, Some("s1"), None, false).await.unwrap();
+    assert!(!plan.applied);
+    assert!(plan.files[0]
+        .why
+        .as_deref()
+        .unwrap()
+        .contains("decides what runs"));
+    assert!(!f.top.join(".taurus/permissions.json").exists());
+}
+
+#[tokio::test]
+async fn a_look_ahead_writes_nothing_and_another_conversation_cannot_apply() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "two\n").unwrap()
+    })
+    .await;
+    let plan = f.trees.apply(&run, Some("s1"), None, true).await.unwrap();
+    assert_eq!(plan.files[0].action, ApplyAction::Take);
+    assert!(!plan.applied);
+    assert_eq!(read(f.top.join("a.txt")), "one\n");
+
+    let other = f
+        .trees
+        .apply(&run, Some("s2"), None, false)
+        .await
+        .unwrap_err();
+    assert!(other.contains("another conversation"), "{other}");
+    assert_eq!(read(f.top.join("a.txt")), "one\n");
+}
+
+#[tokio::test]
+async fn discarding_lets_git_forget_the_work() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "two\n").unwrap()
+    })
+    .await;
+    f.trees.discard(&run, Some("s1")).await.unwrap();
+    assert_eq!(sh(&f.top, &["for-each-ref", "refs/taurus/"]), "");
+    assert_eq!(f.trees.record(&run).unwrap().state, State::Discarded);
+    let after = f
+        .trees
+        .apply(&run, Some("s1"), None, false)
+        .await
+        .unwrap_err();
+    assert!(after.contains("discarded"), "{after}");
+}
+
+#[test]
+fn the_worktrees_are_beside_the_config_home_and_named_for_it() {
+    assert_eq!(
+        Worktrees::home_beside(Path::new("/u/.taurus")),
+        Path::new("/u/.taurus-worktrees")
+    );
+    // Two homes in one folder don't share.
+    assert_ne!(
+        Worktrees::home_beside(Path::new("/tmp/.tmpA")),
+        Worktrees::home_beside(Path::new("/tmp/.tmpB"))
+    );
 }

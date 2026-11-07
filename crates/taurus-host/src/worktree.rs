@@ -40,9 +40,23 @@
 //! here writes to the person's folder. Applying is somebody's choice, made
 //! elsewhere.
 //!
+//! # Applying
+//!
+//! Applying writes files and nothing else: no index, no branch, no checkout in
+//! the person's folder. Each file is judged against the commit the delegate
+//! started from. If the workspace's copy is unchanged since then, it takes the
+//! delegate's. If both changed it, `git merge-file` decides, and only a clean
+//! merge counts. Anything else is a conflict, and **one conflict refuses the
+//! whole apply**, so nothing is half applied and no conflict markers are ever
+//! written into the person's files. A file that decides what runs (a hook, a
+//! Taurus setting) is never applied, because a delegate could otherwise use
+//! Apply to grant itself what it was refused. Every file written is captured
+//! into the undo record first.
+//!
 //! # Where they live
 //!
-//! In `.taurus-worktrees` beside the config home, never inside it and never
+//! In `.taurus-worktrees` beside the config home (`<home>-worktrees` for a
+//! home somewhere else), never inside it and never
 //! inside the workspace. Inside the workspace, the parent's searches and
 //! command sweeps would find a second copy of every file. Inside the config
 //! home, the sandbox reads the folder as a plugin being written, which loosens
@@ -53,7 +67,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use taurus_tools::isolation::{Closed, Isolation, Kept, Opened, Requester};
+use taurus_tools::isolation::{
+    ApplyAction, ApplyFile, ApplyPlan, Closed, Isolation, Kept, Opened, Requester,
+};
 
 /// How long one git command here may take. A snapshot of a big working tree
 /// writes every untracked file into the object store, so this is the size of
@@ -124,6 +140,23 @@ impl Record {
     fn short_base(&self) -> String {
         short(&self.base)
     }
+}
+
+/// One run, as a list of what's waiting shows it.
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct RunSummary {
+    pub run: String,
+    pub agent: String,
+    pub workspace: String,
+    pub session: Option<String>,
+    /// Unix seconds.
+    #[ts(type = "number")]
+    pub created: u64,
+    /// `running`, `kept`, `applied`, `discarded` or `empty`.
+    pub state: String,
+    /// Why its folder is still on disk, when it is.
+    pub left_behind: Option<String>,
 }
 
 /// The worktrees on this machine, and what Taurus knows of each.
@@ -198,6 +231,39 @@ impl Worktrees {
         }
     }
 
+    /// Runs that still hold something: work kept and not yet applied or
+    /// discarded, a delegate still working, or a folder that wouldn't go.
+    /// Newest first.
+    pub fn list(&self) -> Vec<RunSummary> {
+        let Ok(listed) = std::fs::read_dir(self.home.join("runs")) else {
+            return Vec::new();
+        };
+        let mut runs: Vec<RunSummary> = listed
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let run = name.strip_suffix(".json")?.to_string();
+                let record = self.record(&run).ok()?;
+                let waiting = matches!(record.state, State::Kept | State::Running)
+                    || record.left_behind.is_some();
+                waiting.then(|| RunSummary {
+                    run: record.run,
+                    agent: record.agent,
+                    workspace: record.workspace.to_string_lossy().into_owned(),
+                    session: record.session,
+                    created: record.created,
+                    state: serde_json::to_value(record.state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                    left_behind: record.left_behind,
+                })
+            })
+            .collect();
+        runs.sort_by(|a, b| b.created.cmp(&a.created).then(a.run.cmp(&b.run)));
+        runs
+    }
+
     /// What a crash left behind, put right. Run when the host starts.
     ///
     /// A run still marked running whose owner is gone is closed the usual way,
@@ -242,10 +308,18 @@ impl Worktrees {
         problems
     }
 
-    /// `.taurus-worktrees` beside the config home. See the module note for why
-    /// not inside it.
+    /// Beside the config home, named after it: `~/.taurus-worktrees` for
+    /// `~/.taurus`. See the module note for why not inside it. Named after it
+    /// rather than fixed, so two config homes in one folder (two
+    /// `TAURUS_HOME`s, every test's own) never share each other's runs.
     pub fn default_home() -> PathBuf {
-        crate::config::home_dir().with_file_name(".taurus-worktrees")
+        Self::home_beside(&crate::config::home_dir())
+    }
+
+    fn home_beside(config_home: &Path) -> PathBuf {
+        let mut name = config_home.as_os_str().to_os_string();
+        name.push("-worktrees");
+        PathBuf::from(name)
     }
 
     fn base_ref(run: &str) -> String {
@@ -748,6 +822,343 @@ impl Worktrees {
     }
 }
 
+/// One file's three sides, as applying sees them.
+struct Sides {
+    base: Option<Blob>,
+    theirs: Option<Blob>,
+    mine: Option<Vec<u8>>,
+}
+
+struct Blob {
+    bytes: Vec<u8>,
+    mode: String,
+}
+
+/// What to do to one file, decided before anything is written.
+enum Step {
+    Write { bytes: Vec<u8>, executable: bool },
+    Delete,
+    Nothing,
+}
+
+fn text(bytes: &[u8]) -> bool {
+    !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
+}
+
+impl Worktrees {
+    async fn git_bytes(&self, dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+        let output = crate::git::launch_full(dir, args, None, &[], DEADLINE).await?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    }
+
+    /// A file as one commit holds it, or `None` where it doesn't.
+    async fn blob(&self, top: &Path, commit: &str, path: &str) -> Result<Option<Blob>, String> {
+        let listed = self
+            .git(top, &["ls-tree", "-z", commit, "--", path], &[])
+            .await?;
+        let Some(entry) = listed.split('\0').find(|e| !e.is_empty()) else {
+            return Ok(None);
+        };
+        let mode = entry.split(' ').next().unwrap_or_default().to_string();
+        let spec = format!("{commit}:{path}");
+        let bytes = self.git_bytes(top, &["cat-file", "blob", &spec]).await?;
+        Ok(Some(Blob { bytes, mode }))
+    }
+
+    /// Both sides' changes to one text file, if they merge cleanly.
+    async fn merged(&self, scratch: &Path, sides: (&[u8], &[u8], &[u8])) -> Option<Vec<u8>> {
+        std::fs::create_dir_all(scratch).ok()?;
+        let (mine, base, theirs) = (
+            scratch.join("mine"),
+            scratch.join("base"),
+            scratch.join("theirs"),
+        );
+        std::fs::write(&mine, sides.0).ok()?;
+        std::fs::write(&base, sides.1).ok()?;
+        std::fs::write(&theirs, sides.2).ok()?;
+        let args = [
+            "merge-file",
+            "-p",
+            mine.to_str()?,
+            base.to_str()?,
+            theirs.to_str()?,
+        ];
+        let output = crate::git::launch_full(scratch, &args, None, &[], DEADLINE)
+            .await
+            .ok()?;
+        // Zero is clean. A positive count is conflicts, and negative is git
+        // failing: neither is something to write into the person's file.
+        (output.status.code() == Some(0)).then_some(output.stdout)
+    }
+
+    /// What applying `record` would do to each file.
+    async fn plan(&self, record: &Record) -> Result<(ApplyPlan, Vec<(PathBuf, Step)>), String> {
+        let result = record
+            .result
+            .as_deref()
+            .ok_or_else(|| format!("Run {} kept nothing to apply.", record.run))?;
+        let listed = self
+            .git(
+                &record.top,
+                &[
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-renames",
+                    &record.base,
+                    result,
+                ],
+                &[],
+            )
+            .await?;
+        let scratch = self.home.join("runs").join(format!("{}.merge", record.run));
+        let mut files = Vec::new();
+        let mut steps = Vec::new();
+        let mut outside = Vec::new();
+        for name in listed.split('\0').filter(|n| !n.is_empty()) {
+            let Some(inside) = name.strip_prefix(record.prefix.as_str()) else {
+                outside.push(name.to_string());
+                continue;
+            };
+            let target = record.workspace.join(inside);
+            let conflict = |why: &str| ApplyFile {
+                path: inside.to_string(),
+                action: ApplyAction::Conflict,
+                why: Some(why.to_string()),
+            };
+            if taurus_tools::path_guard::decides_what_runs(&record.workspace, &target) {
+                files.push(conflict(
+                    "it decides what runs (a git hook or setting, or a Taurus setting), so it's \
+                     never applied for you. Copy it by hand if you want it.",
+                ));
+                continue;
+            }
+            let sides = Sides {
+                base: self.blob(&record.top, &record.base, name).await?,
+                theirs: self.blob(&record.top, result, name).await?,
+                mine: match std::fs::symlink_metadata(&target) {
+                    Ok(meta) if meta.file_type().is_file() => {
+                        Some(std::fs::read(&target).map_err(|e| format!("{inside}: {e}"))?)
+                    }
+                    Ok(_) => {
+                        files.push(conflict(
+                            "in the workspace it isn't a plain file any more (a link or a folder)",
+                        ));
+                        continue;
+                    }
+                    Err(_) => None,
+                },
+            };
+            let link =
+                |blob: &Option<Blob>| blob.as_ref().is_some_and(|b| !b.mode.starts_with("100"));
+            if link(&sides.base) || link(&sides.theirs) {
+                files.push(conflict(
+                    "it's a link or a submodule, which apply leaves for you to make by hand",
+                ));
+                continue;
+            }
+            let base = sides.base.as_ref().map(|b| b.bytes.as_slice());
+            let mine = sides.mine.as_deref();
+            let (action, step) = match (&sides.theirs, mine) {
+                (Some(theirs), Some(mine)) if theirs.bytes == mine => {
+                    (ApplyAction::Same, Step::Nothing)
+                }
+                (None, None) => (ApplyAction::Same, Step::Nothing),
+                (Some(theirs), _) if mine == base => (
+                    ApplyAction::Take,
+                    Step::Write {
+                        bytes: theirs.bytes.clone(),
+                        executable: theirs.mode == "100755",
+                    },
+                ),
+                (None, Some(_)) if mine == base => (ApplyAction::Delete, Step::Delete),
+                (None, Some(_)) => {
+                    files.push(conflict(
+                        "it deleted a file that's changed in the workspace since",
+                    ));
+                    continue;
+                }
+                (Some(_), None) => {
+                    files.push(conflict(
+                        "it changed a file that's been deleted from the workspace since",
+                    ));
+                    continue;
+                }
+                (Some(theirs), Some(mine)) => {
+                    let Some(base) = base else {
+                        files.push(conflict(
+                            "both it and the workspace created it, differently",
+                        ));
+                        continue;
+                    };
+                    if !(text(mine) && text(base) && text(&theirs.bytes)) {
+                        files.push(conflict(
+                            "it's changed in the workspace since, and it isn't text, so the two \
+                             can't be merged",
+                        ));
+                        continue;
+                    }
+                    match self.merged(&scratch, (mine, base, &theirs.bytes)).await {
+                        Some(bytes) => (
+                            ApplyAction::Merge,
+                            Step::Write {
+                                bytes,
+                                executable: theirs.mode == "100755",
+                            },
+                        ),
+                        None => {
+                            files.push(conflict(
+                                "it's changed in the workspace since, and the two changes \
+                                 overlap",
+                            ));
+                            continue;
+                        }
+                    }
+                }
+            };
+            files.push(ApplyFile {
+                path: inside.to_string(),
+                action,
+                why: None,
+            });
+            steps.push((target, step));
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        outside.sort();
+        Ok((
+            ApplyPlan {
+                run: record.run.clone(),
+                files,
+                outside,
+                applied: false,
+            },
+            steps,
+        ))
+    }
+
+    async fn apply_run(
+        &self,
+        run: &str,
+        session: Option<&str>,
+        recorder: Option<&taurus_tools::TurnRecorder>,
+        dry_run: bool,
+    ) -> Result<ApplyPlan, String> {
+        let mut record = self.record(run)?;
+        if record.session.as_deref() != session {
+            return Err(format!(
+                "Run {run} belongs to another conversation, so it can't be applied from this one."
+            ));
+        }
+        match record.state {
+            State::Kept => {}
+            State::Running => return Err(format!("Run {run} is still working.")),
+            State::Applied => return Err(format!("Run {run} has already been applied.")),
+            State::Discarded => return Err(format!("Run {run} was discarded.")),
+            State::Empty => {
+                return Err(format!(
+                    "Run {run} changed nothing, so there's nothing to apply."
+                ))
+            }
+        }
+        let (mut plan, steps) = self.plan(&record).await?;
+        if dry_run || plan.conflicts().next().is_some() {
+            return Ok(plan);
+        }
+        let mut written: Vec<String> = Vec::new();
+        for (target, step) in steps {
+            if matches!(step, Step::Nothing) {
+                continue;
+            }
+            if let Some(recorder) = recorder {
+                recorder.capture(&target).await;
+            }
+            let wrote = match step {
+                Step::Write { bytes, executable } => write_file(&target, &bytes, executable),
+                Step::Delete => std::fs::remove_file(&target),
+                Step::Nothing => Ok(()),
+            };
+            taurus_tools::protected::written_by_this_process(&target);
+            if let Err(e) = wrote {
+                return Err(format!(
+                    "Applying run {run} stopped at {}: {e}. {} Rewinding this turn puts them back.",
+                    target.display(),
+                    if written.is_empty() {
+                        "Nothing had been written yet.".to_string()
+                    } else {
+                        format!("Already written: {}.", written.join(", "))
+                    }
+                ));
+            }
+            written.push(
+                target
+                    .strip_prefix(&record.workspace)
+                    .unwrap_or(&target)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        record.state = State::Applied;
+        self.save(&record)?;
+        plan.applied = true;
+        Ok(plan)
+    }
+
+    /// Lets go of what `run` kept. Its folder is gone already; this lets git
+    /// forget its commits too.
+    pub async fn discard(&self, run: &str, session: Option<&str>) -> Result<(), String> {
+        let mut record = self.record(run)?;
+        if record.session.as_deref() != session {
+            return Err(format!(
+                "Run {run} belongs to another conversation, so it can't be discarded from this one."
+            ));
+        }
+        if record.state == State::Running {
+            return Err(format!("Run {run} is still working."));
+        }
+        for name in [Self::base_ref(run), Self::result_ref(run)] {
+            let _ = self
+                .git(&record.top, &["update-ref", "-d", &name], &[])
+                .await;
+        }
+        if record.left_behind.is_some() {
+            record.left_behind = self.remove_folder(&record).await;
+        }
+        if record.state == State::Kept {
+            record.state = State::Discarded;
+        }
+        self.save(&record)
+    }
+}
+
+/// Replaces `path` through a temporary file beside it, so a reader never sees
+/// half of it.
+fn write_file(path: &Path, bytes: &[u8], executable: bool) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = match std::fs::metadata(path) {
+            Ok(meta) => meta.permissions().mode(),
+            Err(_) => 0o644,
+        };
+        let mode = if executable { mode | 0o111 } else { mode };
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    file.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl Isolation for Worktrees {
     async fn open(&self, workspace: &Path, who: &Requester) -> Result<Opened, String> {
@@ -756,6 +1167,16 @@ impl Isolation for Worktrees {
 
     async fn close(&self, run: &str) -> Result<Closed, String> {
         self.close_run(run).await
+    }
+
+    async fn apply(
+        &self,
+        run: &str,
+        session: Option<&str>,
+        recorder: Option<&taurus_tools::TurnRecorder>,
+        dry_run: bool,
+    ) -> Result<ApplyPlan, String> {
+        self.apply_run(run, session, recorder, dry_run).await
     }
 }
 

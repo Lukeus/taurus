@@ -4,6 +4,7 @@
 //! which is what makes the loop testable against a scripted provider.
 
 pub mod agent;
+pub mod apply;
 pub mod event;
 pub mod finish;
 pub mod propose;
@@ -14,6 +15,7 @@ pub mod telemetry;
 pub mod testing;
 
 pub use agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
+pub use apply::{ApplyDelegate, APPLY_TOOL};
 pub use event::UiEvent;
 pub use finish::FINISH_TOOL;
 pub use propose::{ProposeAgent, PROPOSE_AGENT_TOOL};

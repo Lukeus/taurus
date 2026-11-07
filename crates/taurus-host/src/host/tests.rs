@@ -4995,4 +4995,44 @@ async fn two_writers_in_one_round_run_at_once_in_copies_and_leave_the_workspace_
     assert_eq!(git(&["worktree", "list"]).lines().count(), 1);
     assert_eq!(git(&["branch", "--list"]), "* main");
     assert_eq!(git(&["status", "--short"]), "");
+
+    // Both are waiting where somebody can see them.
+    let waiting: Vec<String> = host.delegate_runs().into_iter().map(|r| r.run).collect();
+    for kept in &kept {
+        assert!(waiting.contains(&kept.run), "{waiting:?}");
+    }
+    // Applied from its card: the first takes, a second identical one finds
+    // the workspace already has it.
+    let plan = host
+        .apply_delegate("conversation1", &kept[0].run, false)
+        .await
+        .unwrap();
+    assert!(plan.applied, "{plan:?}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+        "new\n"
+    );
+    if let Some(second) = kept.get(1) {
+        let plan = host
+            .apply_delegate("conversation1", &second.run, false)
+            .await
+            .unwrap();
+        assert_eq!(plan.files[0].action, taurus_tools::ApplyAction::Same);
+    }
+    // And it's one change in the undo history.
+    let turns = host
+        .checkpoints_for(&workspace)
+        .turns("conversation1")
+        .unwrap();
+    assert!(
+        turns
+            .iter()
+            .any(|t| t.prompt.starts_with("Applied what coder kept") && t.files == ["a.txt"]),
+        "{turns:#?}"
+    );
+    assert!(
+        host.delegate_runs().is_empty(),
+        "{:?}",
+        host.delegate_runs()
+    );
 }

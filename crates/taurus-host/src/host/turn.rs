@@ -94,6 +94,12 @@ impl Host {
         // what keeps `ask_user` away from a worker that cannot ask anyone
         // anything, and keeps a delegate from drawing a chart into a transcript
         // it is not part of.
+        // Per turn, beside the spawn tool: what it applies is this
+        // conversation's own delegates' work, and a delegate has none of its
+        // own to apply.
+        registry.register(Arc::new(taurus_core::ApplyDelegate::new(
+            self.worktrees.clone(),
+        )));
         registry.register(Arc::new(ShowTable));
         registry.register(Arc::new(ShowChart));
         registry.register(Arc::new(ShowSequence));
