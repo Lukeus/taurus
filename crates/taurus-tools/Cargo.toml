@@ -14,6 +14,7 @@ taurus-provider.workspace = true
 async-trait.workspace = true
 globset.workspace = true
 ignore.workspace = true
+reflink-copy.workspace = true
 regex = "1"
 schemars.workspace = true
 serde.workspace = true
@@ -28,6 +29,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-registry.workspace = true

@@ -5,6 +5,7 @@ pub mod budget;
 pub mod builtin;
 pub mod capture;
 pub mod checkpoint;
+pub mod clones;
 pub mod coerce;
 pub mod delegate;
 pub mod diff;

@@ -125,7 +125,12 @@ windows-registry = "0.6"
 notify = "=8.2.1"
 # `statfs`, to refuse watching a network or FUSE mount whose changes the
 # operating system cannot report. Already in the tree, under tempfile.
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
+# Copy-on-write clones for pre-images a checkpoint couldn't otherwise keep, in
+# `taurus-tools::clones`. Its strict `reflink` only: the `_or_copy` fallback
+# copies every byte without saying so. Not used on Windows, where its ReFS path
+# is self-described as untested and has an open zero-fill bug.
+reflink-copy = "0.1.32"
 # In-process embeddings, in `taurus-embed` and only there. Pure Rust: candle's
 # CPU kernels are `gemm`, and the tokenizer is built with `fancy-regex` alone,
 # because its defaults pull Oniguruma (C) and a C++ suffix array. macOS adds
