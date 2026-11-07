@@ -14,14 +14,23 @@
 //! command costs, since the host holds the cache for the workspace. If the two
 //! are the same number, the cache is not working.
 //!
-//! It writes nothing to the workspace. The checkpoint log it records into is a
-//! temporary directory that goes away when the process does.
+//! In a git repository it then waits for the file watcher the first command
+//! started and reports two more commands answered from it, which is what every
+//! command after a workspace's first costs once the watcher is up. Anywhere
+//! else it says why there is no watcher.
+//!
+//! It writes nothing to the workspace's files. The checkpoint log it records
+//! into is a temporary directory that goes away when the process does; the
+//! watcher's cookies come and go under `.git/taurus-cookies/`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use taurus_tools::{sweep::Sweep, CheckpointStore, SweepCache};
+use taurus_tools::{
+    sweep::{Sweep, Watching},
+    CheckpointStore, SweepCache,
+};
 
 #[tokio::main]
 async fn main() {
@@ -69,6 +78,32 @@ async fn main() {
             started.elapsed()
         );
         change = Some(found);
+    }
+
+    // The watcher the first command started, if this workspace gets one.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while cache.watching(&root) == Watching::Starting && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    match cache.watching(&root) {
+        Watching::Live => {
+            // The first of these takes the watcher's picture with a walk; the
+            // ones after answer from it.
+            for label in ["picture taken ", "watched       ", "watched again "] {
+                let started = Instant::now();
+                let sweep = Sweep::before(&root, Some(Arc::clone(&cache))).await;
+                let indexed = started.elapsed();
+                let started = Instant::now();
+                let found = sweep.after(&root, &recorder).await;
+                println!(
+                    "  {label}   index {indexed:>8.1?}   compare {:>8.1?}",
+                    started.elapsed()
+                );
+                change = Some(found);
+            }
+        }
+        Watching::Off(reason) => println!("  no watcher: {reason}"),
+        other => println!("  no watcher: {other:?}"),
     }
 
     let change = change.expect("three sweeps ran");

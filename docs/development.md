@@ -644,8 +644,15 @@ cargo run -p taurus-host --example notes -- --check
 # is not working. The second is also what the next turn's first command costs,
 # because the host holds the cache for the workspace rather than for a turn. `READ_THREADS` is a measured ceiling and not a core count — past a
 # handful of readers a sweep gets slower, and by eight it is slower than one
-# thread.
-cargo run -p taurus-tools --example sweep -- .
+# thread. `WALK_THREADS` is the same kind of ceiling for the walk.
+#
+# In a git repository it then waits for the file watcher and reports three
+# more commands: the one that takes the watcher's picture, then two answered
+# from it. Those last two are what a command costs once a workspace is
+# watched; if they match the walking numbers, the watcher isn't answering.
+# Elsewhere it prints why there's no watcher. Measure on something large: a
+# shallow clone of vscode or kubernetes is 20,000–30,000 files.
+cargo run --release -p taurus-tools --example sweep -- .
 
 # Whether trimming old tool output cuts what the model goes on to need.
 # Replays every saved conversation through the real trimming at 16k, 32k, 64k

@@ -16,6 +16,7 @@ members = [
     "crates/taurus-data",
     "crates/taurus-hooks",
     "crates/taurus-process",
+    "crates/taurus-watch",
     "crates/taurus-host",
     "crates/taurus-telemetry",
     "crates/taurus-voice",
@@ -47,6 +48,7 @@ taurus-index = { path = "crates/taurus-index" }
 taurus-data = { path = "crates/taurus-data" }
 taurus-hooks = { path = "crates/taurus-hooks" }
 taurus-process = { path = "crates/taurus-process" }
+taurus-watch = { path = "crates/taurus-watch" }
 taurus-host = { path = "crates/taurus-host" }
 taurus-telemetry = { path = "crates/taurus-telemetry" }
 taurus-voice = { path = "crates/taurus-voice" }
@@ -114,6 +116,14 @@ dunce = "1"
 # Windows Terminal tab gets and the one a long-running GUI process falls behind.
 # Already in the tree through Tauri, and only compiled on Windows.
 windows-registry = "0.6"
+# Watching a workspace for changes, in `taurus-watch` and only there. Held at
+# 8.2.1, the stable release: 9.0's release candidates carry the fix that makes
+# a Windows `ReadDirectoryChangesW` overflow report itself, which is why the
+# sweep keeps walking on Windows until 9.0 is final. See taurus-watch's header.
+notify = "=8.2.1"
+# `statfs`, to refuse watching a network or FUSE mount whose changes the
+# operating system cannot report. Already in the tree, under tempfile.
+rustix = { version = "1", features = ["fs"] }
 ignore = "0.4"
 globset = "0.4"
 # Hook matchers from Claude Code, Codex and Copilot files, which are regexes.

@@ -53,19 +53,7 @@ const MAX_GREP_OUTPUT_BYTES: usize = 512 * 1024;
 /// have to agree: a file the agent cannot find with `grep` but can silently
 /// destroy with `sed` would be the worst of both.
 fn walker(root: &std::path::Path) -> ignore::Walk {
-    walker_skipping(root, &[".git"])
-}
-
-/// The same traversal, with the skip list passed in.
-///
-/// [`crate::sweep`] skips one directory more than search does — see the list it
-/// passes. Sharing the builder rather than copying it is what keeps the two
-/// from drifting apart on everything else.
-pub(crate) fn walker_skipping(
-    root: &std::path::Path,
-    skip: &'static [&'static str],
-) -> ignore::Walk {
-    walk_builder(root, skip).build()
+    walk_builder(root, &[".git"]).build()
 }
 
 /// The same traversal, spread over threads, for [`Grep`].
@@ -79,7 +67,11 @@ fn parallel_walker(root: &std::path::Path) -> ignore::WalkParallel {
 }
 
 /// The one set of rules every traversal here is built from.
-fn walk_builder(root: &std::path::Path, skip: &'static [&'static str]) -> WalkBuilder {
+///
+/// [`crate::sweep`] builds from it too, skipping one directory more than search
+/// does — see the list it passes. Sharing the builder rather than copying it is
+/// what keeps the two from drifting apart on everything else.
+pub(crate) fn walk_builder(root: &std::path::Path, skip: &'static [&'static str]) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)

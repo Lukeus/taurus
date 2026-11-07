@@ -367,6 +367,24 @@ the backlog, and they're the minority.
   rewrite in the window between two commands. And a file the turn already
   recorded is unaffected, because a turn keeps its first pre-image. The fix
   is the same: read every file twice, in the same place.
+- **A watched sweep trusts the watcher between checks.** In a git repository a
+  file watcher tells the sweep what changed, and every sixteenth answer is
+  checked against a full walk. A miss switches the watcher off for good. But
+  a miss in one of the fifteen commands before that check is already in those
+  turns' records: a file the watcher never reported has no pre-image, so a
+  rewind of that turn leaves it as the command left it. On macOS this rests on
+  FSEvents delivering events in order, which Apple doesn't strictly promise.
+  The tests haven't caught it out of order, and the cookie wait plus the
+  periodic check are what stand between that and a wrong turn. See
+  [Rewinding a turn](safety.md#rewinding-a-turn).
+
+  Windows, folders that aren't git repositories, and network or FUSE mounts
+  don't get a watcher and walk every time. A watched command still does work
+  that grows with the number of files (sorting and hashing every path, not
+  reading them), about 70 ms on a 21,000-file repository. And on a development
+  machine whose `target/` holds hundreds of thousands of files, a debug build
+  can take seconds to start its macOS watcher. That happens in the background
+  and doesn't delay a command, but it does make the watcher tests slow locally.
 - **A pty command's stdout and stderr can't be told apart.** A terminal has
   one stream, so `pty: true` gives up the `[stderr]` split the piped path
   reports. That's the format, not the implementation, and it's why the pty is
