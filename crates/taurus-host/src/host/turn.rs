@@ -358,7 +358,7 @@ impl Host {
         // The loaded skills' own directories, so a reviewer following a
         // procedure's "see references/…" can read it. Read-only, and it widens
         // nothing that may be written.
-        let roots = self.catalog.read().await.dirs();
+        let roots = self.catalog.read().await.dirs(&workspace);
         let hooks = self.hooks.read().await.clone();
         ToolContext::new(workspace, permissions, cancel)
             .with_readable_roots(roots)
@@ -446,7 +446,7 @@ impl Host {
         // under the home directory, and the place a cut command's output was
         // written. Both are outside the workspace the guard otherwise confines
         // everything to, and neither widens what may be written.
-        let mut readable = self.catalog.read().await.dirs();
+        let mut readable = self.catalog.read().await.dirs(&workspace);
         readable.push(command_output.clone());
         ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
             .with_readable_roots(readable)

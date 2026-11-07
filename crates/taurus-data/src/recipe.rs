@@ -248,6 +248,17 @@ pub fn find(workspace: &Path, name: &str) -> Result<Recipe, RecipeError> {
 
     let relative = format!("{RECIPE_DIR}/{name}.sql");
     let path = workspace.join(&relative);
+    // A link out of the workspace is a file the repository chose, anywhere on
+    // this machine, and its text would reach the model as a query, or its
+    // first line as the error about one.
+    if let (Ok(resolved), Ok(within)) = (path.canonicalize(), workspace.canonicalize()) {
+        if !resolved.starts_with(&within) {
+            return Err(RecipeError::Unreadable {
+                path: relative,
+                detail: "it's a link to somewhere outside this workspace, so it isn't read".into(),
+            });
+        }
+    }
     let text = std::fs::read_to_string(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             let (all, _) = load(workspace);
@@ -830,6 +841,20 @@ mod tests {
         // Overridden, not duplicated: two entries under one name would have the
         // engine register whichever came last and nobody could say which.
         assert_eq!(tables.iter().filter(|(n, _)| n == "items").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recipe_that_is_a_link_out_of_the_workspace_is_not_read() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, "the first line of somebody's file\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(RECIPE_DIR)).unwrap();
+        std::os::unix::fs::symlink(&secret, dir.path().join(RECIPE_DIR).join("clean.sql")).unwrap();
+        let message = find(dir.path(), "clean").unwrap_err().to_string();
+        assert!(message.contains("outside this workspace"), "{message}");
+        assert!(!message.contains("somebody's file"), "{message}");
     }
 
     /// A path in a committed file is still a path somebody pulled.

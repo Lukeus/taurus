@@ -163,8 +163,28 @@ impl SkillCatalog {
     /// outside the workspace, so without this the model is told to read a file
     /// the path guard will refuse — which reads as a broken tool rather than a
     /// boundary doing its job.
-    pub fn dirs(&self) -> Vec<PathBuf> {
-        self.skills.values().map(|s| s.dir.clone()).collect()
+    ///
+    /// Not every skill's. A command file bundles nothing, and its folder is
+    /// every other command beside it. And a project skill's folder is one the
+    /// repository chose: linked to `~`, it would make the whole home folder
+    /// readable without a question, so one that resolves outside `workspace`
+    /// isn't handed over. A plugin's is where its installer put it.
+    pub fn dirs(&self, workspace: &Path) -> Vec<PathBuf> {
+        let within = workspace.canonicalize().ok();
+        self.skills
+            .values()
+            .filter(|s| s.command_file.is_none())
+            .filter(|s| {
+                s.tier != SkillTier::Project
+                    || s.origin == SkillOrigin::Plugin
+                    || within.as_ref().is_some_and(|within| {
+                        s.dir
+                            .canonicalize()
+                            .is_ok_and(|dir| dir.starts_with(within))
+                    })
+            })
+            .map(|s| s.dir.clone())
+            .collect()
     }
 
     /// Skills a person can run directly as `/name`, in catalog order.
@@ -411,6 +431,31 @@ mod tests {
             MAX_RESOURCES,
             "the listing is still capped"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_project_skill_linked_out_of_the_workspace_widens_no_reads() {
+        let workspace = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let skills = workspace.path().join(".claude/skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        write_skill(&skills, "inside", "when inside", "");
+        // A whole folder elsewhere, with a SKILL.md in it so it loads.
+        write_skill(elsewhere.path(), "home", "when home", "");
+        std::os::unix::fs::symlink(elsewhere.path().join("home"), skills.join("home")).unwrap();
+        let mine = TempDir::new().unwrap();
+        write_skill(mine.path(), "personal", "when personal", "");
+
+        let (catalog, _) = SkillCatalog::discover(&sources(vec![
+            (SkillTier::Project, skills.as_path()),
+            (SkillTier::User, mine.path()),
+        ]));
+        assert!(catalog.get("home").is_some(), "it still loads");
+        let dirs = catalog.dirs(workspace.path());
+        assert!(dirs.iter().any(|d| d.ends_with("inside")), "{dirs:?}");
+        assert!(dirs.iter().any(|d| d.ends_with("personal")), "{dirs:?}");
+        assert!(!dirs.iter().any(|d| d.ends_with("home")), "{dirs:?}");
     }
 
     #[test]
