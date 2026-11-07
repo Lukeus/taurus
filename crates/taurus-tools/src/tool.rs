@@ -349,6 +349,48 @@ impl ToolContext {
             .fence()
     }
 
+    /// This context, working in another folder: a delegate's worktree.
+    ///
+    /// Everything that is about *where* changes land starts again for `root`,
+    /// and everything that is about *who decides* carries on. So the path
+    /// checks, the undo record, the cache of what commands read, and the
+    /// background commands are its own, and the permission engine, hooks,
+    /// session and the unattended switch are the parent's.
+    ///
+    /// Each of the first group would be wrong shared. A path check against the
+    /// parent's folder lets an edit land there. The parent's undo record would
+    /// list the worktree's files under paths no rewind can put back. The
+    /// parent's cache holds the parent's files. And background commands are
+    /// reaped into whichever turn calls next, so a worktree's build would be
+    /// recorded into the parent's turn and the parent's into the worktree's.
+    ///
+    /// `recorder` is the undo record for `root`, `None` to have none. Without
+    /// one a command's changes aren't swept, so a delegate's report wouldn't
+    /// list what its builds and formatters wrote, which is most of what it
+    /// changes. A fresh [`crate::jobs::Jobs`] is given only where the parent
+    /// had one, and the caller has to stop it when the work is over: see
+    /// [`crate::jobs::Jobs::stop_all`].
+    #[must_use]
+    pub fn rooted_at(
+        mut self,
+        root: impl Into<PathBuf>,
+        recorder: Option<Arc<crate::checkpoint::TurnRecorder>>,
+    ) -> Self {
+        self.workspace = root.into();
+        self.root = crate::path_guard::HeldRoot::default();
+        self.sweeps = recorder
+            .as_ref()
+            .map(|_| Arc::new(crate::sweep::SweepCache::new()));
+        self.checkpoints = recorder;
+        self.jobs = self
+            .jobs
+            .as_ref()
+            .map(|_| Arc::new(crate::jobs::Jobs::new()));
+        self.protected = None;
+        self.touched = None;
+        self
+    }
+
     /// Sizes this context's answers to a model's context window.
     #[must_use]
     pub fn with_budget(mut self, budget: OutputBudget) -> Self {
@@ -422,6 +464,7 @@ impl ToolContext {
         Asking {
             session: self.session_id.clone(),
             unattended: self.unattended(),
+            root: Some(self.workspace.clone()),
         }
     }
 

@@ -632,6 +632,158 @@ mod tests {
         assert!(!root.join("a.txt").exists());
     }
 
+    /// A dialog that says yes and keeps what it was shown.
+    struct Shown(Arc<std::sync::Mutex<Vec<crate::permission::PermissionRequest>>>);
+
+    #[async_trait::async_trait]
+    impl crate::permission::PermissionPrompt for Shown {
+        async fn request(
+            &self,
+            request: crate::permission::PermissionRequest,
+        ) -> crate::permission::PermissionDecision {
+            self.0.lock().unwrap().push(request);
+            crate::permission::PermissionDecision::AllowOnce
+        }
+    }
+
+    /// A parent folder and a second one, each with its own `a.txt`, and a
+    /// context for the parent with an undo record and background commands.
+    struct TwoRoots {
+        _dirs: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
+        main: std::path::PathBuf,
+        other: std::path::PathBuf,
+        store: crate::checkpoint::CheckpointStore,
+        shown: Arc<std::sync::Mutex<Vec<crate::permission::PermissionRequest>>>,
+        parent: ToolContext,
+    }
+
+    impl TwoRoots {
+        fn new() -> Self {
+            let (a, b, c) = (
+                tempfile::tempdir().unwrap(),
+                tempfile::tempdir().unwrap(),
+                tempfile::tempdir().unwrap(),
+            );
+            let main = a.path().canonicalize().unwrap();
+            let other = b.path().canonicalize().unwrap();
+            std::fs::write(main.join("a.txt"), "main copy\n").unwrap();
+            std::fs::write(other.join("a.txt"), "worktree copy\n").unwrap();
+            let shown = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let permissions = Arc::new(crate::permission::PermissionEngine::new(
+                &main,
+                main.join(".taurus"),
+                Box::new(Shown(shown.clone())),
+            ));
+            let store = crate::checkpoint::CheckpointStore::new(c.path());
+            let parent = ToolContext::new(
+                main.clone(),
+                permissions,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .with_checkpoints(store.begin_turn("parent", &main, "parent turn"))
+            .with_jobs(Arc::new(crate::jobs::Jobs::new()));
+            Self {
+                _dirs: (a, b, c),
+                main,
+                other,
+                store,
+                shown,
+                parent,
+            }
+        }
+
+        fn child(&self) -> ToolContext {
+            let recorder = self.store.begin_turn("child", &self.other, "child turn");
+            self.parent
+                .clone()
+                .rooted_at(self.other.clone(), Some(recorder))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rerooted_context_writes_in_its_own_folder_and_shows_that_folder_s_diff() {
+        let roots = TwoRoots::new();
+        let child = roots.child();
+        ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "edited\n"}),
+                &child,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(roots.other.join("a.txt")).unwrap(),
+            "edited\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(roots.main.join("a.txt")).unwrap(),
+            "main copy\n"
+        );
+        // The dialog showed the file that was about to change, not the main
+        // folder's copy of it, which would have been approving a different edit.
+        let shown = roots.shown.lock().unwrap();
+        let diff = shown[0].diff.as_ref().expect("a write shows its diff");
+        let removed: Vec<&str> = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == crate::diff::DiffLineKind::Removed)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(removed, ["worktree copy"], "{diff:?}");
+    }
+
+    #[tokio::test]
+    async fn a_rerooted_context_cannot_reach_back_into_the_parent_s_folder() {
+        let roots = TwoRoots::new();
+        let child = roots.child();
+        let outcome = ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({
+                    "path": roots.main.join("a.txt").to_string_lossy(),
+                    "content": "escaped\n",
+                }),
+                &child,
+            )
+            .await;
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert_eq!(
+            std::fs::read_to_string(roots.main.join("a.txt")).unwrap(),
+            "main copy\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rerooted_context_records_into_its_own_turn_and_not_the_parent_s() {
+        let roots = TwoRoots::new();
+        let child = roots.child();
+        ToolRegistry::with_builtins()
+            .execute(
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "edited\n"}),
+                &child,
+            )
+            .await
+            .unwrap();
+
+        let parent = roots.parent.checkpoints.as_ref().unwrap();
+        assert_eq!(parent.changed_count().await, 0);
+        let own = child.checkpoints.as_ref().unwrap();
+        assert_eq!(own.changed_paths().await, ["a.txt"]);
+        // Its own background commands, so a reap can't cross between them.
+        assert!(!Arc::ptr_eq(
+            child.jobs.as_ref().unwrap(),
+            roots.parent.jobs.as_ref().unwrap()
+        ));
+        assert!(!Arc::ptr_eq(
+            child.sweeps.as_ref().unwrap(),
+            roots.parent.sweeps.as_ref().unwrap()
+        ));
+    }
+
     /// A hook that is a shell one-liner, written where it can be run from.
     #[cfg(unix)]
     fn hook_script(dir: &std::path::Path, name: &str, body: &str) -> String {
