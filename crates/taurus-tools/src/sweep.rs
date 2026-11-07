@@ -60,6 +60,12 @@
 //! command's indexing from 100ms to 36ms, and what is left is the walk rather
 //! than the reading.
 //!
+//! So the walk is spread over threads too, and stats each file where it finds
+//! it. On a large repository it is most of what a warm command pays: measured
+//! with the `sweep` example on shallow clones, a second command's sweep (index
+//! plus compare) went from 481ms to 226ms on vscode (21,000 files) and from
+//! 702ms to 324ms on kubernetes (32,000 files). See [`WALK_THREADS`].
+//!
 //! Because `.env` is now held, the checkpoint log holds it too. That is why
 //! [`crate::checkpoint`] keeps its logs readable by their owner and nobody
 //! else: a file kept out of version control on purpose should not become
@@ -85,7 +91,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+use ignore::WalkState;
 use std::time::SystemTime;
 
 use crate::checkpoint::{read_state, State, TurnRecorder};
@@ -430,35 +439,56 @@ impl Diffed {
     }
 }
 
-/// Every file one pass covers.
+/// One file as a pass found it: where it is, its length, and its
+/// modification time.
+type Stamped = (PathBuf, u64, Option<SystemTime>);
+
+/// Every file one pass covers, with the length and modification time both
+/// passes compare.
 ///
 /// The walk, plus a flat read of each directory it enters. The second half is
 /// what brings in a file an ignore rule excludes by name; see the module
 /// header for why a directory it excludes stays out.
 ///
+/// Only the flat reads produce files. Every file the walk itself would yield
+/// sits in a directory the walk entered, and so arrives from that directory's
+/// flat read too — taking it from both would record it twice, and taking it
+/// from the walk alone would miss what the flat read is there for. So each
+/// file is found exactly once, by the one thread that read its directory, and
+/// no thread has to ask another what it has seen.
+///
+/// Spread over [`WALK_THREADS`], and statted where it is found. Opening
+/// directories and asking for metadata is the whole cost of a pass, and none of
+/// it depends on any other directory. The order files come back in is
+/// whatever the threads made of it, so a caller that needs one sorts.
+///
 /// `None` when the workspace holds more than [`MAX_FILES`], which is a
 /// different answer from holding none.
-fn sweepable(root: &Path) -> Option<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    // The walk yields a directory before descending into it, so nearly every
-    // file arrives from the flat read first and again from the walk. Which one
-    // found it does not matter; recording it twice would.
-    let mut seen: HashSet<PathBuf> = HashSet::new();
+fn sweepable(root: &Path) -> Option<Vec<Stamped>> {
+    let found: Mutex<Vec<Stamped>> = Mutex::new(Vec::new());
+    let count = AtomicUsize::new(0);
+    let over = AtomicBool::new(false);
 
-    for entry in walker(root) {
-        let Ok(entry) = entry else { continue };
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-
-        if file_type.is_dir() {
-            let Ok(listing) = std::fs::read_dir(entry.path()) else {
-                continue;
+    parallel_walker(root).run(|| {
+        let (found, count, over) = (&found, &count, &over);
+        Box::new(move |entry| {
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
             };
+            if !entry.file_type().is_some_and(|t| t.is_dir()) {
+                return WalkState::Continue;
+            }
+            let Ok(listing) = std::fs::read_dir(entry.path()) else {
+                return WalkState::Continue;
+            };
+
+            let mut here: Vec<Stamped> = Vec::new();
             for entry in listing.flatten() {
-                // Files only, and never a descent: an ignored directory shows
-                // up here as an entry and is passed over exactly like the walk
-                // passes over it.
+                // Regular files only, and never a descent: an ignored directory
+                // shows up here as an entry and is passed over exactly like the
+                // walk passes over it. A symlink belongs to whatever it points
+                // at, and restoring one as text would replace the link with a
+                // file.
                 if !entry.file_type().is_ok_and(|t| t.is_file()) {
                     continue;
                 }
@@ -469,33 +499,46 @@ fn sweepable(root: &Path) -> Option<Vec<PathBuf>> {
                 if skipped(&entry.file_name()) {
                     continue;
                 }
-                if files.len() >= MAX_FILES {
-                    return None;
-                }
-                let path = entry.path();
-                if seen.insert(path.clone()) {
-                    files.push(path);
+                // Read through the entry rather than the path, which on unix
+                // asks relative to the directory already open. A file is not a
+                // symlink here, so this is the same answer `Path::metadata`
+                // gives.
+                let Ok(meta) = entry.metadata() else { continue };
+                here.push((entry.path(), meta.len(), meta.modified().ok()));
+            }
+
+            if count.fetch_add(here.len(), Ordering::Relaxed) + here.len() > MAX_FILES {
+                over.store(true, Ordering::Relaxed);
+                return WalkState::Quit;
+            }
+            if !here.is_empty() {
+                match found.lock() {
+                    Ok(mut found) => found.append(&mut here),
+                    Err(poisoned) => poisoned.into_inner().append(&mut here),
                 }
             }
-            continue;
-        }
+            WalkState::Continue
+        })
+    });
 
-        // Regular files only. A symlink belongs to whatever it points at, and
-        // restoring one as text would replace the link with a file.
-        if !file_type.is_file() {
-            continue;
-        }
-        if files.len() >= MAX_FILES {
-            return None;
-        }
-        let path = entry.into_path();
-        if seen.insert(path.clone()) {
-            files.push(path);
-        }
+    if over.load(Ordering::Relaxed) {
+        return None;
     }
-
-    Some(files)
+    Some(
+        found
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
+
+/// Threads one pass walks on.
+///
+/// Measured on shallow clones of two large repositories, walking and statting
+/// everything a pass covers: vscode (21,000 files) went from 255ms on one
+/// thread to 82ms on four and 91ms on eight; kubernetes (32,000 files) from
+/// 325ms to 113ms on four and 123ms on eight. As with [`READ_THREADS`], more
+/// is not better past four — the threads end up waiting on the same filesystem.
+const WALK_THREADS: usize = 4;
 
 /// The first pass: everything, with contents where they fit.
 ///
@@ -506,7 +549,7 @@ fn sweepable(root: &Path) -> Option<Vec<PathBuf>> {
 /// sequential — the files are independent, and the one decision that is not
 /// (which of them fit under the byte cap) is made before any read starts.
 fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
-    let Some(mut paths) = sweepable(root) else {
+    let Some(mut stamped) = sweepable(root) else {
         return Sweep::abandoned(format!(
             "This workspace holds more than {MAX_FILES} files, too many to record a command's \
              changes against, so this one cannot be undone."
@@ -515,21 +558,11 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
 
     // The byte cap decides which files are held and which are only noted, so
     // the order it walks them in decides what a rewind can put back. A
-    // directory walk does not promise an order; sorting means the same
-    // workspace makes the same choice twice, and that a caveat about a file is
-    // reproducible rather than a coin toss.
-    paths.sort();
-
-    // Stat first. It is cheap next to reading, and the cap cannot say which
-    // files fit until it knows how big they all are.
-    let stamped: Vec<(PathBuf, u64, Option<SystemTime>)> = paths
-        .into_iter()
-        .filter_map(|path| {
-            let meta = path.metadata().ok()?;
-            let modified = meta.modified().ok();
-            Some((path, meta.len(), modified))
-        })
-        .collect();
+    // directory walk does not promise an order, and a parallel one changes it
+    // every run; sorting means the same workspace makes the same choice twice,
+    // and that a caveat about a file is reproducible rather than a coin toss.
+    // The lengths the cap needs came with the walk.
+    stamped.sort_by(|(a, ..), (b, ..)| a.cmp(b));
 
     // What each file gets, decided in order and in one thread: everything
     // below either reads a file or does not, and none of it can change what
@@ -810,12 +843,12 @@ fn read_held(stamped: &[(PathBuf, u64, Option<SystemTime>)], states: &mut [Optio
 /// `None` when the workspace grew past [`MAX_FILES`] while the command ran,
 /// which makes the comparison meaningless rather than merely incomplete.
 fn current(root: &Path) -> Option<HashMap<PathBuf, (u64, Option<SystemTime>)>> {
-    let mut now = HashMap::new();
-    for path in sweepable(root)? {
-        let Ok(meta) = path.metadata() else { continue };
-        now.insert(path, (meta.len(), meta.modified().ok()));
-    }
-    Some(now)
+    Some(
+        sweepable(root)?
+            .into_iter()
+            .map(|(path, len, modified)| (path, (len, modified)))
+            .collect(),
+    )
 }
 
 /// Where git stood, in the three places a command usually moves it.
@@ -927,8 +960,10 @@ fn skipped(name: &std::ffi::OsStr) -> bool {
 /// directory this enters. The asymmetry only runs one way — a file the agent
 /// cannot grep may still be recorded, never the reverse — so nothing the agent
 /// can destroy goes unrecorded.
-fn walker(root: &Path) -> ignore::Walk {
-    crate::builtin::search::walker_skipping(root, SKIP)
+fn parallel_walker(root: &Path) -> ignore::WalkParallel {
+    crate::builtin::search::walk_builder(root, SKIP)
+        .threads(WALK_THREADS)
+        .build_parallel()
 }
 
 fn is_ignore_file(path: &Path) -> bool {
