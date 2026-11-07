@@ -705,7 +705,16 @@ impl Worktrees {
         })
     }
 
+    /// Closes `run` and lets go of its lock, however the close went. A close
+    /// that failed partway leaves the run `Running`, and held, the next
+    /// start's `tidy` would take it for one still working and never retry.
     async fn close_run(&self, run: &str) -> Result<Closed, String> {
+        let closed = self.close_held(run).await;
+        self.release(run);
+        closed
+    }
+
+    async fn close_held(&self, run: &str) -> Result<Closed, String> {
         let mut record = self.record(run)?;
         if record.state != State::Running {
             return Ok(Closed {
@@ -752,7 +761,6 @@ impl Worktrees {
         }
         record.left_behind = self.remove_folder(&record).await;
         self.save(&record)?;
-        self.release(run);
         let _ = std::fs::remove_dir_all(self.scratch_of(run));
         Ok(Closed {
             kept: self.kept_of(&record).await,

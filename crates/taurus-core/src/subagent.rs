@@ -296,7 +296,13 @@ impl Tool for SpawnSubagent {
         else {
             return false;
         };
-        if self.reads_only(definition) {
+        // Tried, not waited for: this is sync, and a busy registry answering
+        // "alone" only costs time.
+        if self
+            .registry
+            .try_read()
+            .is_ok_and(|registry| reads_only_in(&registry, definition))
+        {
             return true;
         }
         let asked = |key: &str| input.get(key).and_then(|v| v.as_bool()) == Some(true);
@@ -333,7 +339,7 @@ impl Tool for SpawnSubagent {
             ));
         }
 
-        let writes = !self.reads_only(definition);
+        let writes = !self.reads_only(definition).await;
         let mut notes = Vec::new();
         let opened = if writes && (input.isolate || input.background) {
             let tried = match &self.isolation {
@@ -376,7 +382,22 @@ impl Tool for SpawnSubagent {
             None
         };
 
-        let mut launch = self.prepare(definition, ctx, opened).await?;
+        // A refusal here comes after the copy was made, and nothing else will
+        // close it: the launch that would have is never built.
+        let made = opened
+            .as_ref()
+            .map(|(isolation, opened)| (isolation.clone(), opened.run.clone()));
+        let mut launch = match self.prepare(definition, ctx, opened).await {
+            Ok(launch) => launch,
+            Err(e) => {
+                if let Some((isolation, run)) = made {
+                    if let Err(why) = isolation.close(&run).await {
+                        tracing::warn!(%run, error = %why, "couldn't close a copy nobody used");
+                    }
+                }
+                return Err(e);
+            }
+        };
         launch.notes.extend(notes);
         if writes && launch.isolated.is_none() {
             launch.alone = Some(self.alone.clone());
@@ -387,11 +408,14 @@ impl Tool for SpawnSubagent {
         }
 
         let Some(pending) = ctx.pending.clone() else {
-            return Err(ToolError::InvalidInput(
-                "Background delegation isn't available here: nothing would be waiting for the \
-                 report. Run it without `background`."
-                    .into(),
-            ));
+            // Refused after its copy was made: close it, or the copy and its
+            // lock stay for the life of the process with nobody to close them.
+            if let Some((isolation, opened)) = launch.isolated.take() {
+                if let Err(why) = isolation.close(&opened.run).await {
+                    tracing::warn!(run = %opened.run, error = %why, "couldn't close a copy nobody used");
+                }
+            }
+            return Err(no_background());
         };
         // Counted before this call returns, so the turn never sees the work
         // out but uncounted.
@@ -418,6 +442,26 @@ impl Tool for SpawnSubagent {
     }
 }
 
+/// Whether every tool `definition` names only reads, in `registry`.
+fn reads_only_in(registry: &ToolRegistry, definition: &AgentDefinition) -> bool {
+    let Some(tools) = &definition.frontmatter.tools else {
+        return false;
+    };
+    tools.iter().all(|name| {
+        registry
+            .get(name)
+            .is_none_or(|tool| tool.effect().is_concurrent_safe())
+    })
+}
+
+fn no_background() -> ToolError {
+    ToolError::InvalidInput(
+        "Background delegation isn't available here: nothing would be waiting for the report. \
+         Run it without `background`."
+            .into(),
+    )
+}
+
 /// Everything one delegation needs, owned, so it can run where the call that
 /// started it can't follow: in a task, after that call has returned.
 struct Launch {
@@ -440,18 +484,11 @@ struct Launch {
 impl SpawnSubagent {
     /// Whether every tool this agent names only reads. See
     /// [`Tool::runs_concurrently`] for why the doubtful cases answer no.
-    fn reads_only(&self, definition: &AgentDefinition) -> bool {
-        let Some(tools) = &definition.frontmatter.tools else {
-            return false;
-        };
-        let Ok(registry) = self.registry.try_read() else {
-            return false;
-        };
-        tools.iter().all(|name| {
-            registry
-                .get(name)
-                .is_none_or(|tool| tool.effect().is_concurrent_safe())
-        })
+    ///
+    /// Waits for the registry rather than trying it: a reload holding it would
+    /// otherwise turn a read-only agent into a writer for this one call.
+    async fn reads_only(&self, definition: &AgentDefinition) -> bool {
+        reads_only_in(&*self.registry.read().await, definition)
     }
 
     async fn prepare(
@@ -2268,6 +2305,51 @@ mod tests {
         assert!(!running.is_finished(), "it wrote beside the other writer");
         drop(held);
         running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_copy_made_for_a_delegate_that_is_then_refused_is_closed() {
+        // Scoped to a tool a copy can't hold it to, so nothing it names is
+        // left once the copy is made.
+        let (tool, _provider, ctx, _dir) = fixture_with(
+            vec![],
+            Some(vec![custom(
+                "coder",
+                "You write code for the parent agent.",
+                Some(vec!["remote_write"]),
+            )]),
+        );
+        tool.registry
+            .write()
+            .await
+            .register(Arc::new(Elsewhere("remote_write", Effect::Write)));
+        let copies = Arc::new(Copies::default());
+        let tool = tool.with_isolation(copies.clone());
+        let err = tool.execute(isolated("isolate"), &ctx).await.unwrap_err();
+        assert!(err.to_string().contains("refused"), "{err}");
+        assert_eq!(
+            copies.closed.lock().unwrap().len(),
+            copies.open.lock().unwrap().len(),
+            "a copy was opened and left open"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_work_with_nobody_to_wait_for_it_closes_its_copy() {
+        let (tool, ctx, _dir) = fixture(vec![]);
+        assert!(ctx.pending.is_none());
+        let copies = Arc::new(Copies::default());
+        let tool = tool.with_isolation(copies.clone());
+        let err = tool
+            .execute(isolated("background"), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("without `background`"), "{err}");
+        assert_eq!(
+            copies.closed.lock().unwrap().len(),
+            copies.open.lock().unwrap().len(),
+            "a copy was opened and left open"
+        );
     }
 
     #[tokio::test]

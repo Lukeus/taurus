@@ -292,6 +292,36 @@ async fn a_run_whose_owner_died_is_closed_on_the_next_start_and_its_work_kept() 
 }
 
 #[tokio::test]
+async fn a_close_that_fails_lets_go_so_the_next_start_retries_it() {
+    let f = fixture();
+    let opened = f.trees.open(&f.top, &who()).await.unwrap();
+    std::fs::write(opened.root.join("a.txt"), "work worth keeping\n").unwrap();
+    // git can't read the copy, so the close stops partway.
+    let dot_git = opened.root.join(".git");
+    let pointer = std::fs::read_to_string(&dot_git).unwrap();
+    std::fs::write(&dot_git, "not a pointer\n").unwrap();
+    assert!(f.trees.close(&opened.run).await.is_err());
+    assert!(
+        !f.trees.owned(&opened.run),
+        "a failed close kept the lock, so tidy would never retry it"
+    );
+    assert_eq!(f.trees.record(&opened.run).unwrap().state, State::Running);
+
+    // Once git can read it again, the next tidy closes it with the work kept.
+    std::fs::write(&dot_git, pointer).unwrap();
+    let mut state = State::Running;
+    for _ in 0..50 {
+        f.trees.tidy().await;
+        state = f.trees.record(&opened.run).unwrap().state;
+        if state != State::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(state, State::Kept);
+}
+
+#[tokio::test]
 async fn a_run_another_process_has_open_is_left_alone() {
     let f = fixture();
     let opened = f.trees.open(&f.top, &who()).await.unwrap();
