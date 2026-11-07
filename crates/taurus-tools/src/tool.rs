@@ -658,6 +658,17 @@ pub trait Tool: Send + Sync {
         Vec::new()
     }
 
+    /// Whether this call writes files, named in advance or not. For the
+    /// order of checks and writes in one round: a check that ran before a
+    /// write didn't check it.
+    ///
+    /// [`Tool::touches`] by default. A tool that writes files it can only
+    /// learn as it goes, and records them itself (`apply_delegate`), says yes
+    /// here without naming any.
+    fn changes_files(&self, input: &serde_json::Value) -> bool {
+        !self.touches(input).is_empty()
+    }
+
     /// Whether this tool can change files in the workspace without being able
     /// to name them first.
     ///

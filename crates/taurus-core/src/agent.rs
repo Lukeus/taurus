@@ -587,13 +587,23 @@ impl Agent {
         // Before the message is pushed, so a hook that refuses one leaves the
         // conversation exactly as it was rather than with a message in it that
         // was never answered.
-        if let Some(refusal) = self.before_prompt(&user_message).await {
-            let _ = ui
-                .send(UiEvent::Error {
-                    message: refusal.clone(),
-                })
-                .await;
-            return Err(AgentError::Refused(refusal));
+        let mut user_message = user_message;
+        match self.before_prompt(&user_message).await {
+            Err(refusal) => {
+                let _ = ui
+                    .send(UiEvent::Error {
+                        message: refusal.clone(),
+                    })
+                    .await;
+                return Err(AgentError::Refused(refusal));
+            }
+            // Each its own block, after what was typed, marked as the
+            // harness's the way a tool hook's note is.
+            Ok(notes) => user_message.content.extend(
+                notes
+                    .into_iter()
+                    .map(|note| ContentBlock::text(format!("[taurus] {note}"))),
+            ),
         }
 
         // Parent to every model call and tool call the turn makes — and, for
@@ -702,13 +712,17 @@ impl Agent {
     /// and prints something has that carried into the message the model reads,
     /// which is what makes "attach the current branch to every prompt" a
     /// three-line script rather than a feature.
-    async fn before_prompt(&self, message: &Message) -> Option<String> {
+    ///
+    /// `Ok` carries what passing hooks printed; `Err`, the refusal.
+    async fn before_prompt(&self, message: &Message) -> Result<Vec<String>, String> {
         if !self.config.turn_hooks {
-            return None;
+            return Ok(Vec::new());
         }
-        let runner = self.tools.hooks.as_ref()?;
+        let Some(runner) = self.tools.hooks.as_ref() else {
+            return Ok(Vec::new());
+        };
         if !runner.has(taurus_hooks::HookEvent::UserPromptSubmit) {
-            return None;
+            return Ok(Vec::new());
         }
 
         let mut payload = taurus_hooks::HookPayload::new(
@@ -719,7 +733,11 @@ impl Agent {
         if let Some(session) = &self.tools.session_id {
             payload = payload.with_session(session.clone());
         }
-        runner.run(&payload, &self.tools.cancel).await.denied
+        let outcome = runner.run(&payload, &self.tools.cancel).await;
+        match outcome.denied {
+            Some(refusal) => Err(refusal),
+            None => Ok(outcome.notes),
+        }
     }
 
     /// Runs the `stop` hooks. Nothing can be refused here — the turn is over —
@@ -1670,7 +1688,7 @@ impl Agent {
                 if let Some(command) = input.get("command").and_then(|c| c.as_str()) {
                     commands.push(command.to_string());
                 }
-            } else if !tool.touches(input).is_empty() {
+            } else if tool.changes_files(input) {
                 wrote = true;
                 commands.clear();
             }
@@ -1689,7 +1707,7 @@ impl Agent {
             };
             if tool.checks_work() {
                 checked = true;
-            } else if !tool.touches(input).is_empty() {
+            } else if tool.changes_files(input) {
                 checked = false;
             }
         }
@@ -1887,10 +1905,18 @@ impl Agent {
                     symptoms = relay.symptoms,
                     "handing over early"
                 );
+                self.persist(session).await;
                 self.hand_over(session, ui, relay, spent).await;
             }
             return summarizing;
         }
+
+        // Written down before anything is taken out. A round that ended
+        // without tool calls and went on (a delegate's report, a nudge) left
+        // its messages unwritten, and a compaction that dropped them would
+        // put the transcript's numbering and the session's out of step: the
+        // next write started from the summary, as if it were the transcript.
+        self.persist(session).await;
 
         // Before anything is trimmed or summarized, because neither touches
         // this: if what a request carries besides its messages already fills
