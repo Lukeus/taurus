@@ -30,9 +30,13 @@ pub async fn rewind_to(
     // A turn holds this lock for its whole run. Rewinding underneath one would
     // race the tool calls still writing, and the disabled button in the UI is
     // not something the backend should have to trust.
-    if let Ok(entry) = state.session(&session_id) {
-        let _ = entry.idle("stop it before rewinding")?;
-    }
+    // Held to the end, not dropped at once: a turn starting in the middle of
+    // this would run beside it.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("stop it before rewinding"))
+        .transpose()?;
 
     // The conversation's own folder, which is where its pre-images came from.
     // Resolved against the open one instead, a rewind reached for a log that
@@ -88,9 +92,13 @@ pub async fn apply_delegate(
     run: String,
     dry_run: bool,
 ) -> CmdResult<taurus_tools::ApplyPlan> {
-    if let Ok(entry) = state.session(&session_id) {
-        let _ = entry.idle("stop it before applying")?;
-    }
+    // Held to the end, not dropped at once: a turn starting in the middle of
+    // this would run beside it.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("stop it before applying"))
+        .transpose()?;
     let plan = state
         .host
         .apply_delegate(&session_id, &run, dry_run)
@@ -108,6 +116,12 @@ pub async fn discard_delegate(
     session_id: String,
     run: String,
 ) -> CmdResult<()> {
+    // The model can apply the same run from inside a turn.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("stop it before discarding"))
+        .transpose()?;
     state.host.discard_delegate(&session_id, &run).await
 }
 
@@ -129,9 +143,13 @@ pub async fn fork_turn(
     session_id: String,
     turn: u32,
 ) -> CmdResult<taurus_host::Forked> {
-    if let Ok(entry) = state.session(&session_id) {
-        let _ = entry.idle("stop it before forking")?;
-    }
+    // Held to the end, not dropped at once: a turn starting in the middle of
+    // this would run beside it.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("stop it before forking"))
+        .transpose()?;
     let workspace = session_workspace(&state, &session_id).await;
     let store = state.host.checkpoints_for(&workspace);
     let forked = {
@@ -156,9 +174,13 @@ pub async fn fork_before(
     session_id: String,
     turn_id: String,
 ) -> CmdResult<taurus_host::Forked> {
-    if let Ok(entry) = state.session(&session_id) {
-        let _ = entry.idle("stop it before forking")?;
-    }
+    // Held to the end, not dropped at once: a turn starting in the middle of
+    // this would run beside it.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("stop it before forking"))
+        .transpose()?;
     let workspace = session_workspace(&state, &session_id).await;
     let store = state.host.checkpoints_for(&workspace);
     let forked = {
@@ -201,11 +223,11 @@ pub async fn switch_to(
         let (store, id) = (store.clone(), session_id.clone());
         off_runtime(move || store.away(&id)).await?
     };
-    if let Some(other) = &away {
-        if let Ok(entry) = state.session(other) {
-            let _ = entry.idle("stop it before switching away from it")?;
-        }
-    }
+    let other = away.as_ref().and_then(|other| state.session(other).ok());
+    let _idle = other
+        .as_ref()
+        .map(|e| e.idle("stop it before switching away from it"))
+        .transpose()?;
     let switched = {
         let session_id = session_id.clone();
         off_runtime(move || taurus_host::fork::switch(&store, &workspace, &session_id, false))
@@ -454,9 +476,13 @@ pub async fn commit_turn(
     // The same rule `rewind_to` applies: a turn holds this lock for its whole
     // run, and committing underneath one would capture a tree that is still
     // being written.
-    if let Ok(entry) = state.session(&session_id) {
-        let _ = entry.idle("wait for it to finish before committing")?;
-    }
+    // Held to the end, not dropped at once: a turn starting in the middle of
+    // this would run beside it.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("wait for it to finish before committing"))
+        .transpose()?;
 
     // The conversation's own folder, which is the repository its turns changed
     // files in — not whichever one is open now.
