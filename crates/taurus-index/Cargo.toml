@@ -25,6 +25,8 @@ tracing.workspace = true
 taurus-provider-ollama.workspace = true
 # Only `retrieval`, for the reranked column: rerankers sit behind this adapter.
 taurus-provider-openai.workspace = true
+# Only `retrieval`, for the in-process columns.
+taurus-embed.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
 

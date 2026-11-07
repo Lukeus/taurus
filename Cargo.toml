@@ -17,6 +17,7 @@ members = [
     "crates/taurus-hooks",
     "crates/taurus-process",
     "crates/taurus-watch",
+    "crates/taurus-embed",
     "crates/taurus-host",
     "crates/taurus-telemetry",
     "crates/taurus-voice",
@@ -49,6 +50,7 @@ taurus-data = { path = "crates/taurus-data" }
 taurus-hooks = { path = "crates/taurus-hooks" }
 taurus-process = { path = "crates/taurus-process" }
 taurus-watch = { path = "crates/taurus-watch" }
+taurus-embed = { path = "crates/taurus-embed" }
 taurus-host = { path = "crates/taurus-host" }
 taurus-telemetry = { path = "crates/taurus-telemetry" }
 taurus-voice = { path = "crates/taurus-voice" }
@@ -124,6 +126,15 @@ notify = "=8.2.1"
 # `statfs`, to refuse watching a network or FUSE mount whose changes the
 # operating system cannot report. Already in the tree, under tempfile.
 rustix = { version = "1", features = ["fs"] }
+# In-process embeddings, in `taurus-embed` and only there. Pure Rust: candle's
+# CPU kernels are `gemm`, and the tokenizer is built with `fancy-regex` alone,
+# because its defaults pull Oniguruma (C) and a C++ suffix array. macOS adds
+# Apple's Accelerate framework, which is part of the OS. See taurus-embed's
+# header for why not onnxruntime.
+candle-core = "0.11.1"
+candle-nn = "0.11.1"
+candle-transformers = "0.11.1"
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 ignore = "0.4"
 globset = "0.4"
 # Hook matchers from Claude Code, Codex and Copilot files, which are regexes.

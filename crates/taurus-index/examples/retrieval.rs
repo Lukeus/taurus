@@ -13,6 +13,19 @@
 //!     cargo run -p taurus-index --example retrieval -- . nomic-embed-text
 //! ```
 //!
+//! In-process engines are scored in the same run too, one column per model,
+//! beside the Ollama column. `PREFIXED=1` adds an Ollama column with nomic's
+//! task prefixes, which the shipping index doesn't send:
+//!
+//! ```sh
+//! LOCAL_MODELS=~/models/bge-small=bge-small-en-v1.5,~/models/nomic=nomic-embed-text-v1.5 \
+//! PREFIXED=1 cargo run --release -p taurus-index --example retrieval -- . nomic-embed-text
+//! ```
+//!
+//! Each directory holds a model's `config.json`, `tokenizer.json` and
+//! `model.safetensors`, and the id is one `taurus_embed::MODELS` names, which is
+//! where its pooling and prefixes come from.
+//!
 //! `index-probe` next door prints hits for a reader to judge by eye, which is the
 //! right check for "is this any good at all" and no check at all for "is this
 //! better than what it replaced". This answers the second question with a
@@ -255,7 +268,136 @@ async fn main() {
         columns.push(("rerank".to_string(), ranks));
     }
 
+    // Every other engine, against the same passages in the same order: the
+    // corpus is chunked once above and only the vectors differ.
+    let mut others: Vec<(String, Engine)> = Vec::new();
+    if std::env::var("PREFIXED").is_ok() {
+        others.push((
+            "+prefix".into(),
+            Engine::Ollama {
+                provider: Arc::clone(&provider),
+                model: model.clone(),
+                query: "search_query: ",
+                document: "search_document: ",
+            },
+        ));
+    }
+    for entry in std::env::var("LOCAL_MODELS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|e| !e.is_empty())
+    {
+        let (dir, id) = entry
+            .split_once('=')
+            .expect("LOCAL_MODELS entries are dir=id");
+        let spec = taurus_embed::spec(id).unwrap_or_else(|| panic!("{id} isn't a known model"));
+        let started = Instant::now();
+        let embedder = taurus_embed::Embedder::load(std::path::Path::new(dir), spec)
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        println!("loaded {id} in {:.1?}", started.elapsed());
+        others.push((short(id), Engine::Local(embedder)));
+    }
+
+    for (name, engine) in &others {
+        let questions: Vec<String> = QUERIES.iter().map(|(q, _)| q.to_string()).collect();
+        let query_vectors = engine.embed(&questions, true).await;
+        let started = Instant::now();
+        let texts: Vec<String> = passages.iter().map(|p| p.text.clone()).collect();
+        let vectors = engine.embed(&texts, false).await;
+        println!(
+            "{name}: {} passages embedded in {:.1?}",
+            vectors.len(),
+            started.elapsed()
+        );
+        let theirs: Vec<Passage> = passages
+            .iter()
+            .zip(vectors)
+            .map(|(p, vector)| Passage {
+                path: p.path.clone(),
+                text: p.text.clone(),
+                vector,
+            })
+            .collect();
+        let ranks = query_vectors
+            .iter()
+            .zip(QUERIES)
+            .map(|(vector, (_, expected))| {
+                rank_in(
+                    cosine_order(&theirs, vector).iter().map(|(p, _)| *p),
+                    expected,
+                )
+            })
+            .collect();
+        columns.push((name.clone(), ranks));
+    }
+    println!();
+
     report(&columns);
+}
+
+/// A column's name, short enough for the table.
+fn short(id: &str) -> String {
+    id.split('-').next().unwrap_or(id).chars().take(7).collect()
+}
+
+/// Where a column's vectors come from.
+enum Engine {
+    /// The same server as the first column, with prefixes the first column
+    /// doesn't send.
+    Ollama {
+        provider: Arc<dyn Provider>,
+        model: String,
+        query: &'static str,
+        document: &'static str,
+    },
+    /// In this process, with the prefixes its spec names.
+    Local(taurus_embed::Embedder),
+}
+
+impl Engine {
+    async fn embed(&self, texts: &[String], query: bool) -> Vec<Vec<f32>> {
+        match self {
+            Engine::Ollama {
+                provider,
+                model,
+                query: q,
+                document: d,
+            } => {
+                let prefix = if query { q } else { d };
+                let mut out = Vec::with_capacity(texts.len());
+                for batch in texts.chunks(16) {
+                    let batch: Vec<String> = batch.iter().map(|t| format!("{prefix}{t}")).collect();
+                    out.extend(
+                        provider
+                            .embed(model, &batch)
+                            .await
+                            .unwrap_or_else(|e| panic!("embedding failed: {e}")),
+                    );
+                }
+                out
+            }
+            Engine::Local(embedder) => {
+                let spec = embedder.spec();
+                let prefix = if query {
+                    spec.query_prefix
+                } else {
+                    spec.document_prefix
+                };
+                let mut out = Vec::with_capacity(texts.len());
+                // Large slices, because the embedder sorts by length within
+                // what it is handed and batches from there.
+                for batch in texts.chunks(512) {
+                    let batch: Vec<String> = batch.iter().map(|t| format!("{prefix}{t}")).collect();
+                    out.extend(
+                        embedder
+                            .embed(&batch)
+                            .unwrap_or_else(|e| panic!("embedding failed: {e}")),
+                    );
+                }
+                out
+            }
+        }
+    }
 }
 
 async fn embed_corpus(
