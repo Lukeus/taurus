@@ -159,6 +159,21 @@ pub struct RunSummary {
     pub left_behind: Option<String>,
 }
 
+fn summary(record: Record) -> RunSummary {
+    RunSummary {
+        run: record.run,
+        agent: record.agent,
+        workspace: record.workspace.to_string_lossy().into_owned(),
+        session: record.session,
+        created: record.created,
+        state: serde_json::to_value(record.state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        left_behind: record.left_behind,
+    }
+}
+
 /// The worktrees on this machine, and what Taurus knows of each.
 pub struct Worktrees {
     home: PathBuf,
@@ -166,6 +181,18 @@ pub struct Worktrees {
     /// lets go when the process ends, however it ends, so a lock nobody holds
     /// is a run whose owner is gone. See [`Self::tidy`].
     held: std::sync::Mutex<std::collections::HashMap<String, std::fs::File>>,
+}
+
+/// One apply or discard's hold on a run. See [`Worktrees::claim`].
+struct Claim<'a> {
+    trees: &'a Worktrees,
+    run: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.trees.release(&self.run);
+    }
 }
 
 impl Worktrees {
@@ -198,6 +225,41 @@ impl Worktrees {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run.to_string(), file);
         Ok(())
+    }
+
+    /// Takes `run`'s lock for one apply or discard, or says it's taken. The
+    /// same lock a working run holds, so the app and the CLI, or a person and
+    /// the model, can't both apply one run, or apply one being discarded.
+    fn claim(&self, run: &str) -> Result<Claim<'_>, String> {
+        let path = self.lock_path(run);
+        let dir = path.parent().expect("a lock has a folder");
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let busy = || {
+            format!("Run {run} is being applied or discarded already. Try again once that's done.")
+        };
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.contains_key(run) {
+            return Err(busy());
+        }
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(busy()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
+        }
+        held.insert(run.to_string(), file);
+        Ok(Claim {
+            trees: self,
+            run: run.to_string(),
+        })
     }
 
     fn release(&self, run: &str) {
@@ -246,22 +308,19 @@ impl Worktrees {
                 let record = self.record(&run).ok()?;
                 let waiting = matches!(record.state, State::Kept | State::Running)
                     || record.left_behind.is_some();
-                waiting.then(|| RunSummary {
-                    run: record.run,
-                    agent: record.agent,
-                    workspace: record.workspace.to_string_lossy().into_owned(),
-                    session: record.session,
-                    created: record.created,
-                    state: serde_json::to_value(record.state)
-                        .ok()
-                        .and_then(|v| v.as_str().map(str::to_owned))
-                        .unwrap_or_default(),
-                    left_behind: record.left_behind,
-                })
+                waiting.then(|| summary(record))
             })
             .collect();
         runs.sort_by(|a, b| b.created.cmp(&a.created).then(a.run.cmp(&b.run)));
         runs
+    }
+
+    /// Where one run stands, whatever that is: applied and discarded runs
+    /// too, which [`Self::list`] leaves out. For a delegate's card drawn again
+    /// after a reload, which would otherwise offer Apply on work that was
+    /// applied from Settings, the CLI, or by the model.
+    pub fn summary_of(&self, run: &str) -> Option<RunSummary> {
+        self.record(run).ok().map(summary)
     }
 
     /// What a crash left behind, put right. Run when the host starts.
@@ -705,7 +764,16 @@ impl Worktrees {
         })
     }
 
+    /// Closes `run` and lets go of its lock, however the close went. A close
+    /// that failed partway leaves the run `Running`, and held, the next
+    /// start's `tidy` would take it for one still working and never retry.
     async fn close_run(&self, run: &str) -> Result<Closed, String> {
+        let closed = self.close_held(run).await;
+        self.release(run);
+        closed
+    }
+
+    async fn close_held(&self, run: &str) -> Result<Closed, String> {
         let mut record = self.record(run)?;
         if record.state != State::Running {
             return Ok(Closed {
@@ -752,7 +820,6 @@ impl Worktrees {
         }
         record.left_behind = self.remove_folder(&record).await;
         self.save(&record)?;
-        self.release(run);
         let _ = std::fs::remove_dir_all(self.scratch_of(run));
         Ok(Closed {
             kept: self.kept_of(&record).await,
@@ -937,6 +1004,16 @@ impl Worktrees {
                 ));
                 continue;
             }
+            // Only the last part is checked for being a link below. A folder
+            // on the way that's a link (`src` pointing at `~/.ssh`) would take
+            // the write somewhere outside the workspace.
+            if let Some(link) = linked_folder(&record.workspace, inside) {
+                files.push(conflict(&format!(
+                    "{link} is a link in the workspace, so writing through it could land \
+                     anywhere. Copy the file by hand if you want it."
+                )));
+                continue;
+            }
             let sides = Sides {
                 base: self.blob(&record.top, &record.base, name).await?,
                 theirs: self.blob(&record.top, result, name).await?,
@@ -1048,6 +1125,13 @@ impl Worktrees {
         recorder: Option<&taurus_tools::TurnRecorder>,
         dry_run: bool,
     ) -> Result<ApplyPlan, String> {
+        // Taken before the record is read, so the state checked below is the
+        // one this apply acts on.
+        let _claim = if dry_run {
+            None
+        } else {
+            Some(self.claim(run)?)
+        };
         let mut record = self.record(run)?;
         if record.session.as_deref() != session {
             return Err(format!(
@@ -1111,6 +1195,7 @@ impl Worktrees {
     /// Lets go of what `run` kept. Its folder is gone already; this lets git
     /// forget its commits too.
     pub async fn discard(&self, run: &str, session: Option<&str>) -> Result<(), String> {
+        let _claim = self.claim(run)?;
         let mut record = self.record(run)?;
         if record.session.as_deref() != session {
             return Err(format!(
@@ -1178,6 +1263,27 @@ impl Isolation for Worktrees {
     ) -> Result<ApplyPlan, String> {
         self.apply_run(run, session, recorder, dry_run).await
     }
+}
+
+/// The first folder on the way from `workspace` to `inside`'s file that is a
+/// symbolic link, as a relative path. The file itself isn't looked at.
+fn linked_folder(workspace: &Path, inside: &str) -> Option<String> {
+    let parent = Path::new(inside).parent()?;
+    let mut at = workspace.to_path_buf();
+    let mut shown = PathBuf::new();
+    for part in parent.components() {
+        at.push(part);
+        shown.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Some(shown.display().to_string());
+            }
+            Ok(_) => {}
+            // Not there yet, so nothing further down is either.
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// A run's id is twelve hex characters, so it can be a file name and a ref

@@ -1310,6 +1310,9 @@ export const applyDelegate = (sessionId: string, run: string, dryRun: boolean) =
 export const discardDelegate = (sessionId: string, run: string) =>
   invoke<void>("discard_delegate", { sessionId, run });
 
+/** Where one delegate run stands, applied or discarded included; `null` if it's gone. */
+export const delegateRun = (run: string) => invoke<RunSummary | null>("delegate_run", { run });
+
 /** Delegates' work still waiting to be applied or discarded, on this machine. */
 export const delegateRuns = () => invoke<RunSummary[]>("delegate_runs");
 

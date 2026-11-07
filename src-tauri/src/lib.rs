@@ -439,6 +439,7 @@ pub fn run() {
             commands::apply_delegate,
             commands::discard_delegate,
             commands::delegate_runs,
+            commands::delegate_run,
             commands::fork_before,
             commands::list_plugins,
             commands::add_plugin,

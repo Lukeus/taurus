@@ -101,6 +101,9 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::present::OPEN_FILE_TOOL,
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
     taurus_tools::builtin::terminal::READ_TERMINAL_TOOL,
+    taurus_core::APPLY_TOOL,
+    crate::memory::REMEMBER_TOOL,
+    crate::notebook::OPEN_NOTE_TOOL,
 ];
 
 /// Makes a permission prompt on demand.
@@ -606,7 +609,6 @@ impl Host {
         // no notes gets an empty read and a message saying so.
         registry.register(Arc::new(notebook::ReadNote::new(&workspace)));
         registry.register(Arc::new(notebook::WriteNote::new(&workspace)));
-        registry.register(Arc::new(notebook::OpenNote::new(&workspace)));
 
         // Semantic search, when an embedding model is named. Off by default and
         // on the same rule the web tools follow: a tool the model can see is a
@@ -1392,6 +1394,38 @@ fn provider_freshness(workspace: &Path) -> Freshness {
     Freshness::of_files(files.iter().map(PathBuf::as_path))
 }
 
+/// `wanted` with each name another agent's dialect gives a Taurus tool read as
+/// that tool, once. A name no dialect knows stays as it was.
+fn in_taurus_names(wanted: &[String], available: &[String]) -> Vec<String> {
+    use taurus_hooks::dialect::{tool_names, Dialect};
+    let mut out: Vec<String> = Vec::new();
+    for name in wanted {
+        let mapped: Vec<&String> = if available.contains(name) {
+            vec![name]
+        } else {
+            available
+                .iter()
+                .filter(|tool| {
+                    [Dialect::Claude, Dialect::Copilot]
+                        .into_iter()
+                        .any(|dialect| tool_names(dialect, tool).contains(&name.as_str()))
+                })
+                .collect()
+        };
+        let mapped = if mapped.is_empty() {
+            vec![name]
+        } else {
+            mapped
+        };
+        for tool in mapped {
+            if !out.contains(tool) {
+                out.push(tool.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Intersects every agent's `tools:` list with the finished registry, returning
 /// a message for each agent that had to be refused.
 ///
@@ -1412,6 +1446,11 @@ fn cross_check_tools(agents: &mut AgentCatalog, available: &[String]) -> Vec<Str
         let Some(wanted) = agent.frontmatter.tools.clone() else {
             continue;
         };
+        // An agent borrowed from Claude Code or Copilot names their tools:
+        // `tools: Read, Glob, Grep`. Each is read as the Taurus tool that goes
+        // by that name there, through the table the hooks match with.
+        let wanted = in_taurus_names(&wanted, available);
+        agent.frontmatter.tools = Some(wanted.clone());
         let missing: Vec<String> = wanted
             .iter()
             .filter(|name| !available.contains(name))

@@ -110,6 +110,11 @@ impl Host {
         // conversation. A delegate opening a file would put it on a screen
         // nobody had asked to change, in the middle of work they cannot see.
         registry.register(Arc::new(OpenFile));
+        // A card in the conversation, like the charts: a delegate's would land
+        // in a transcript nobody is reading.
+        registry.register(Arc::new(crate::notebook::OpenNote::new(
+            &self.workspace().await,
+        )));
         // Per turn for the canvas's reason: the dock is the person's own shell,
         // in this window. A delegate has no window, and reading what somebody
         // typed is a step past anything it was sent to do.
@@ -358,7 +363,7 @@ impl Host {
         // The loaded skills' own directories, so a reviewer following a
         // procedure's "see references/…" can read it. Read-only, and it widens
         // nothing that may be written.
-        let roots = self.catalog.read().await.dirs();
+        let roots = self.catalog.read().await.dirs(&workspace);
         let hooks = self.hooks.read().await.clone();
         ToolContext::new(workspace, permissions, cancel)
             .with_readable_roots(roots)
@@ -446,7 +451,7 @@ impl Host {
         // under the home directory, and the place a cut command's output was
         // written. Both are outside the workspace the guard otherwise confines
         // everything to, and neither widens what may be written.
-        let mut readable = self.catalog.read().await.dirs();
+        let mut readable = self.catalog.read().await.dirs(&workspace);
         readable.push(command_output.clone());
         ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
             .with_readable_roots(readable)

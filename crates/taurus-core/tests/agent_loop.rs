@@ -3952,3 +3952,55 @@ async fn an_id_in_a_reopened_conversation_is_taken() {
     assert_eq!(calls[0].0, "x", "old history stays as it is");
     assert_ne!(calls[1].0, "x");
 }
+
+/// A `user_prompt_submit` hook that passes and prints something has it carried
+/// into the message the model reads: "attach the current branch to every
+/// prompt" as a three-line script.
+#[cfg(unix)]
+#[tokio::test]
+async fn what_a_prompt_hook_prints_reaches_the_model_with_the_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let script = workspace.join("branch.sh");
+    std::fs::write(&script, "#!/bin/sh\necho 'on branch main'\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let runner = taurus_hooks::HookRunner::new(vec![(
+        "branch".to_string(),
+        taurus_hooks::Hook {
+            on: taurus_hooks::HookEvent::UserPromptSubmit,
+            command: script.display().to_string(),
+            args: vec![],
+            matches: None,
+            timeout_seconds: 5,
+            foreign: None,
+            disabled: false,
+        },
+    )]);
+    let provider = FakeProvider::with_context_length(vec![ScriptedTurn::text("Hi.")], 128_000);
+    let permissions = Arc::new(PermissionEngine::new(
+        &workspace,
+        workspace.join(".taurus"),
+        Box::new(AllowAll),
+    ));
+    let tools = ToolContext::new(workspace.clone(), permissions, CancellationToken::new())
+        .with_hooks(Arc::new(runner));
+    let agent = Agent::new(
+        provider.clone(),
+        ToolRegistry::with_builtins(),
+        tools,
+        AgentConfig::default(),
+    );
+    let mut session = Session::new("fake");
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    agent
+        .run_turn(&mut session, Message::user("what's here?"), tx)
+        .await
+        .unwrap();
+
+    let sent = provider.last_request().await.unwrap();
+    let asked = sent.messages.last().unwrap().text();
+    assert!(asked.contains("what's here?"), "{asked}");
+    assert!(asked.contains("hook 'branch': on branch main"), "{asked}");
+}

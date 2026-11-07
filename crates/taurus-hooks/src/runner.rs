@@ -589,6 +589,7 @@ async fn execute(
         }
     };
 
+    let stdout_cut = stdout.cut();
     let stdout = stdout.text();
     let stderr = stderr.text();
     let code = status.code();
@@ -599,6 +600,16 @@ async fn execute(
             // Another agent's hook may refuse in JSON and exit 0. Read as a
             // pass, that refusal would let through the very call it was
             // written to stop.
+            //
+            // And an answer cut off at the cap can't be read at all: its JSON
+            // no longer parses, and read as a pass a refusal past the cap
+            // would let the call through. So it fails closed.
+            Some(_) if stdout_cut => Verdict::Denied(format!(
+                "it printed more than {} KB, so its answer was cut off and couldn't be read. \
+                 A hook whose answer can't be read is taken as refusing; have it print only \
+                 its JSON, and send logs to stderr or a file.",
+                MAX_OUTPUT_BYTES / 1024
+            )),
             Some(_) => match crate::dialect::answer(payload.event, &stdout) {
                 crate::dialect::Answer::Passed(note) => Verdict::Passed(note),
                 crate::dialect::Answer::Denied(reason) => Verdict::Denied(reason),
@@ -697,6 +708,11 @@ impl Captured {
     /// Waits for the pipe to close, for at most `grace`.
     async fn settle(&mut self, grace: Duration) {
         let _ = tokio::time::timeout(grace, &mut self.reading).await;
+    }
+
+    /// Whether anything was left out.
+    fn cut(&self) -> bool {
+        self.kept.lock().unwrap_or_else(PoisonError::into_inner).1 > 0
     }
 
     /// What was kept, with a line saying how much was not.
@@ -1628,6 +1644,36 @@ mod tests {
             Some(crate::config::HookEntry::Hook(hook)) => (**hook).clone(),
             _ => panic!("{name} wasn't translated: {t:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_foreign_hook_whose_answer_is_cut_off_is_taken_as_refusing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A deny whose reason runs past the cap: cut, the JSON doesn't parse.
+        let guard = script(
+            dir.path(),
+            "guard.sh",
+            r#"cat > /dev/null
+printf '{"decision":"block","reason":"'
+head -c 40000 /dev/zero | tr '\0' x
+printf '"}'
+exit 0"#,
+        );
+        let hook = translated(
+            serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash",
+                "hooks": [{"type": "command", "command": format!("\"{guard}\"")}]}]}}),
+            "PreToolUse#1",
+        );
+        let runner = HookRunner::new(vec![("guard".into(), hook)]);
+        let call = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+            "run_command",
+            serde_json::json!({"command": "git push"}),
+            vec![],
+        );
+        let outcome = runner.run(&call, &CancellationToken::new()).await;
+        let denied = outcome.denied.expect("a cut-off answer passed");
+        assert!(denied.contains("cut off"), "{denied}");
     }
 
     #[cfg(unix)]

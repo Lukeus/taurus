@@ -167,8 +167,9 @@ pub enum BlockDelta {
     ThinkingDelta {
         thinking: String,
     },
-    /// The proof of origin for the open thinking block, arriving in fragments
-    /// like tool input does.
+    /// The proof of origin for the open thinking block. Sent whole, in one
+    /// frame just before the block closes: Anthropic's own SDKs assign it
+    /// rather than append it, which is what `StreamAccumulator` does too.
     SignatureDelta {
         signature: String,
     },

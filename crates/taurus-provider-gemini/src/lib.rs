@@ -482,7 +482,9 @@ impl Provider for GeminiProvider {
                     continue;
                 }
 
-                let Some(text) = part.text else { continue };
+                // A thought's signature can come on a part of its own, with no
+                // text, after the thought's last chunk.
+                let text = part.text.unwrap_or_default();
                 if part.thought.unwrap_or(false) {
                     send(&tx, StreamEvent::ThinkingDelta { text }).await?;
                     if let Some(signature) = part.thought_signature {
@@ -770,6 +772,26 @@ mod tests {
             }
         );
         // The reasoning must not leak into what the user reads.
+        assert_eq!(message.text(), "the answer");
+    }
+
+    #[tokio::test]
+    async fn a_thought_signature_on_a_part_with_no_text_is_kept() {
+        let (message, _) = replay(&[
+            r#"{"candidates":[{"content":{"parts":[
+                {"text":"weighing it","thought":true}],"role":"model"}}]}"#,
+            r#"{"candidates":[{"content":{"parts":[
+                {"thought":true,"thoughtSignature":"sig-2"},
+                {"text":"the answer"}],"role":"model"}}]}"#,
+        ])
+        .await;
+        assert_eq!(
+            message.content[0],
+            ContentBlock::Thinking {
+                text: "weighing it".into(),
+                signature: Some(format!("{}sig-2", taurus_provider::GEMINI_THOUGHT_PREFIX)),
+            }
+        );
         assert_eq!(message.text(), "the answer");
     }
 

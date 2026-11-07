@@ -206,11 +206,24 @@ struct Places {
     keep_to: Option<PathBuf>,
 }
 
+/// The `.git` git uses for `root`: the nearest one at or above it, a folder or
+/// a file naming one. A workspace opened on `repo/packages/app`, or a delegate's
+/// worktree of that folder, has none of its own, and looking only at
+/// `root/.git` left its hooks and settings unwatched and off the sandbox's
+/// deny-list.
+pub(crate) fn dot_git(root: &Path) -> Option<PathBuf> {
+    root.ancestors()
+        .map(|dir| dir.join(".git"))
+        .find(|path| std::fs::symlink_metadata(path).is_ok())
+}
+
 /// The git directories behind a workspace: `.git`, or where a `.git` file says
 /// it is, and for a linked worktree the directory it shares hooks and settings
 /// with.
 fn git_dirs(root: &Path) -> Vec<PathBuf> {
-    let dot_git = root.join(".git");
+    let Some(dot_git) = dot_git(root) else {
+        return Vec::new();
+    };
     if dot_git.is_dir() {
         return dot_git
             .canonicalize()
@@ -222,7 +235,9 @@ fn git_dirs(root: &Path) -> Vec<PathBuf> {
     let Some(named) = text.trim().strip_prefix("gitdir:") else {
         return Vec::new();
     };
-    let Ok(dir) = root.join(named.trim()).canonicalize() else {
+    // Relative to the folder holding the `.git` file, as git reads it.
+    let base = dot_git.parent().unwrap_or(root);
+    let Ok(dir) = base.join(named.trim()).canonicalize() else {
         return Vec::new();
     };
     let mut dirs = vec![dir.clone()];
@@ -486,6 +501,10 @@ fn differs(was: &Entry, now: &Entry, path: &Path) -> bool {
     }
 }
 
+fn is_link(node: &Node) -> bool {
+    matches!(node, Node::Link { .. })
+}
+
 fn text_of(entry: Option<&Entry>, path: &Path, held: bool) -> String {
     let bytes = match entry.map(|e| &e.node) {
         Some(Node::File { bytes: Some(b), .. }) if held => b.clone(),
@@ -520,6 +539,17 @@ fn changes(baseline: &Snapshot, places: &Places) -> Vec<Change> {
         let was = baseline.entries.get(path);
         let current = now.get(path);
         let changed = match (was, current) {
+            // A link on a settings file is a change whatever it points at
+            // now: git reads through it, and its target is an ordinary file
+            // nothing here watches, which a later command can fill. One that
+            // was already there and still points at the same place (a
+            // dotfiles `~/.gitconfig`) stands.
+            (Some(a), Some(b))
+                if a.settings && (is_link(&a.node) || is_link(&b.node)) && differs(a, b, path) =>
+            {
+                true
+            }
+            (None, Some(b)) if b.settings && is_link(&b.node) => true,
             (Some(a), Some(b)) => {
                 if a.settings {
                     !matches!((&a.node, &b.node), (Node::File { stat: x, .. }, Node::File { stat: y, .. }) if x == y)
@@ -1191,6 +1221,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_settings_file_turned_into_a_link_is_undone() {
+        // The link's target runs nothing yet, and needn't: it's a plain file
+        // in the workspace, and the next command can write into it unwatched.
+        for line in [
+            "printf '[core]\\n' > cfg; ln -sf ../cfg .git/config.worktree",
+            "printf '[core]\\n' > cfg; rm .git/config; ln -s ../cfg .git/config",
+        ] {
+            let b = bench(Box::new(DenyAll), true, true);
+            b.script(line);
+            let text = b.run().await;
+            for name in [".git/config", ".git/config.worktree"] {
+                assert!(
+                    !b.path(name)
+                        .symlink_metadata()
+                        .is_ok_and(|m| m.file_type().is_symlink()),
+                    "{line}: {name} is still a link: {text}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_git_setting_that_runs_something_is_undone() {
         for added in [
             "[core]\\n\\thooksPath = z\\n",
@@ -1387,6 +1439,38 @@ mod tests {
         std::fs::remove_file(&removed).unwrap();
         assert!(watching.finish().await.is_none());
         assert!(!removed.exists());
+    }
+
+    #[test]
+    fn a_workspace_below_the_repositorys_top_is_still_watched() {
+        let b = bench(Box::new(DenyAll), false, true);
+        let app = b.path("packages/app");
+        std::fs::create_dir_all(&app).unwrap();
+        assert_eq!(git_dirs(&app), [b.path(".git")]);
+
+        // A worktree's subfolder: the `.git` file is at the worktree's top,
+        // and its `gitdir:` is read relative to there.
+        let admin = b.path(".git/worktrees/wt");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().canonicalize().unwrap();
+        let relative = pathdiff_up(&wt, &admin);
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", relative.display())).unwrap();
+        std::fs::create_dir_all(wt.join("packages/app")).unwrap();
+        assert_eq!(
+            git_dirs(&wt.join("packages/app")),
+            [admin.clone(), b.path(".git")]
+        );
+    }
+
+    /// `to` written relative to `from`, by climbing to the root and back down.
+    fn pathdiff_up(from: &Path, to: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for _ in from.components().skip(1) {
+            out.push("..");
+        }
+        out.join(to.strip_prefix("/").unwrap())
     }
 
     /// A linked worktree of the bench's repository, as `git worktree add`

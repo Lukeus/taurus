@@ -584,6 +584,25 @@ describe("the plan supersedes itself", () => {
     expect(drawn[0]).toMatchObject({ id: "p2" });
   });
 
+  it("puts the plan back when the update that replaced it fails", () => {
+    // The new card's view goes out as the call starts, retiring the old one;
+    // refused by the harness, it left no plan on screen at all.
+    const entries = run(
+      planEvent("p1", [{ text: "One", state: "active" }]),
+      { type: "tool_call_finished", id: "p1", ok: true, output: "ok" },
+      planEvent("p2", [
+        { text: "One", state: "done" },
+        { text: "One", state: "active" },
+      ]),
+      { type: "tool_call_finished", id: "p2", ok: false, output: "duplicate step" },
+    );
+
+    const drawn = entries.filter((e) => e.kind === "tool" && e.view?.type === "plan");
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toMatchObject({ id: "p1" });
+    expect(pinnedPlan(entries)?.steps).toEqual([{ text: "One", state: "active" }]);
+  });
+
   it("keeps the superseded call's row rather than removing it", () => {
     // It happened, and the run header still counts it. Only the drawing stops.
     const entries = run(

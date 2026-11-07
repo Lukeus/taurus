@@ -39,18 +39,18 @@ impl Indexing {
     /// Stops whatever was refreshing and puts this one in its place.
     ///
     /// The returned number is what [`Indexing::finished`] takes: hold it until
-    /// the refresh returns, and hand it back then.
-    pub fn take_over(&self, cancel: &CancellationToken) -> u64 {
+    /// the refresh returns, and hand it back then. The returned token is the
+    /// one to refresh with: a child of `cancel`, so the caller's Stop still
+    /// reaches the refresh, and a later takeover stops only the refresh. Held
+    /// as `cancel` itself, a takeover would cancel whatever else `cancel`
+    /// governs, which for `search_code` is the whole turn.
+    pub fn take_over(&self, cancel: &CancellationToken) -> (u64, CancellationToken) {
         let ticket = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some((_, previous)) = self
-            .current
-            .lock()
-            .unwrap()
-            .replace((ticket, cancel.clone()))
-        {
+        let own = cancel.child_token();
+        if let Some((_, previous)) = self.current.lock().unwrap().replace((ticket, own.clone())) {
             previous.cancel();
         }
-        ticket
+        (ticket, own)
     }
 
     /// Records that a refresh is over, if it is still the one running.
@@ -77,13 +77,25 @@ mod tests {
     fn a_second_refresh_stops_the_first() {
         let flight = Indexing::new();
         let first = CancellationToken::new();
-        flight.take_over(&first);
+        let (_, first_own) = flight.take_over(&first);
         assert!(flight.busy());
 
         let second = CancellationToken::new();
-        flight.take_over(&second);
-        assert!(first.is_cancelled());
-        assert!(!second.is_cancelled());
+        let (_, second_own) = flight.take_over(&second);
+        assert!(first_own.is_cancelled());
+        assert!(!second_own.is_cancelled());
+        // Only the refresh stops. The token it was started under governs more
+        // than the refresh: a turn, and every other tool call in it.
+        assert!(!first.is_cancelled());
+    }
+
+    #[test]
+    fn the_callers_stop_still_reaches_the_refresh() {
+        let flight = Indexing::new();
+        let turn = CancellationToken::new();
+        let (_, own) = flight.take_over(&turn);
+        turn.cancel();
+        assert!(own.is_cancelled());
     }
 
     #[test]
@@ -92,8 +104,8 @@ mod tests {
         // otherwise leave the search unregistered, and a third refresh would
         // start beside it.
         let flight = Indexing::new();
-        let first = flight.take_over(&CancellationToken::new());
-        let second = flight.take_over(&CancellationToken::new());
+        let (first, _) = flight.take_over(&CancellationToken::new());
+        let (second, _) = flight.take_over(&CancellationToken::new());
 
         flight.finished(first);
         assert!(flight.busy(), "the running refresh was forgotten");
@@ -106,9 +118,10 @@ mod tests {
     fn stopping_leaves_nothing_running() {
         let flight = Indexing::new();
         let cancel = CancellationToken::new();
-        flight.take_over(&cancel);
+        let (_, own) = flight.take_over(&cancel);
         flight.stop();
-        assert!(cancel.is_cancelled());
+        assert!(own.is_cancelled());
+        assert!(!cancel.is_cancelled());
         assert!(!flight.busy());
     }
 }

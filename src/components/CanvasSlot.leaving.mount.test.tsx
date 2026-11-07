@@ -291,3 +291,32 @@ describe("the workspace moving", () => {
     expect(saves).toEqual([{ path: "a.rs", text: "mine\n", fingerprint: "1" }]);
   });
 });
+
+describe("saves queued behind one still out", () => {
+  it("all land, in order, however many queue up", async () => {
+    let land: () => void = () => {};
+    const write = answer;
+    answer = (args) =>
+      new Promise((resolve) => {
+        land = () => {
+          answer = write;
+          resolve(write(args));
+        };
+      });
+    await open("a.rs");
+    for (const text of ["one\n", "two\n", "three\n"]) {
+      await type(text);
+      await act(async () => vi.advanceTimersByTimeAsync(SAVE_AFTER_MS));
+    }
+    expect(saves.map((s) => s.text)).toEqual(["one\n"]);
+
+    await act(async () => land());
+    await settle();
+    await settle();
+    // Two queued behind the first used to wait on each other, and neither went.
+    expect(saves.map((s) => s.text)).toEqual(["one\n", "two\n", "three\n"]);
+    // Each carries the fingerprint the one before it brought back.
+    expect(saves.map((s) => s.fingerprint)).toEqual(["1", "2", "3"]);
+    expect(disk["a.rs"].text).toBe("three\n");
+  });
+});

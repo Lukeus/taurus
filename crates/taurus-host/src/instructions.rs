@@ -469,6 +469,27 @@ fn resolve_imports(
     (out, problems, imported)
 }
 
+/// Every file an import line in `raw` names, as `resolve_imports` would read
+/// them: outside a code fence, a bare word only when that file is there, and
+/// none that lead out of `within`. The trust scan reads these too, because an
+/// import's text reaches the model just as the brief's does.
+pub(crate) fn imported_files(raw: &str, file: &Path, within: &Path) -> Vec<PathBuf> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    let mut fence = None;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let fenced = crosses_fence(line, &mut fence) || fence.is_some();
+        let Some(target) = import_target(line).filter(|_| !fenced) else {
+            continue;
+        };
+        let path = dir.join(target);
+        if path.is_file() && !resolves_outside(&path, within) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Whether `path` exists and, with every link followed, isn't under `within`. A
 /// path that isn't there resolves nowhere, and its reader finds that out.
 fn resolves_outside(path: &Path, within: &Path) -> bool {
