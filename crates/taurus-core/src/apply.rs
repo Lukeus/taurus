@@ -59,6 +59,12 @@ impl Tool for ApplyDelegate {
         Effect::Write
     }
 
+    /// Which files isn't known until the run's plan is read, but a call that
+    /// isn't a look ahead writes, and a check before it didn't check them.
+    fn changes_files(&self, input: &serde_json::Value) -> bool {
+        input.get("dry_run").and_then(|v| v.as_bool()) != Some(true)
+    }
+
     fn preview(&self, input: &serde_json::Value) -> String {
         let run = input.get("run").and_then(|v| v.as_str()).unwrap_or("?");
         if input.get("dry_run").and_then(|v| v.as_bool()) == Some(true) {
@@ -84,5 +90,44 @@ impl Tool for ApplyDelegate {
             return Err(ToolError::Failed(plan.describe()));
         }
         Ok(plan.describe().into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Nowhere;
+
+    #[async_trait]
+    impl Isolation for Nowhere {
+        async fn open(
+            &self,
+            _: &std::path::Path,
+            _: &taurus_tools::Requester,
+        ) -> Result<taurus_tools::Opened, String> {
+            Err("none".into())
+        }
+        async fn close(&self, _: &str) -> Result<taurus_tools::Closed, String> {
+            Err("none".into())
+        }
+        async fn apply(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: Option<&taurus_tools::TurnRecorder>,
+            _: bool,
+        ) -> Result<taurus_tools::ApplyPlan, String> {
+            Err("none".into())
+        }
+    }
+
+    #[test]
+    fn an_apply_counts_as_a_write_for_the_check_before_it_and_a_look_ahead_doesnt() {
+        // A round of `cargo test` then `apply_delegate` hasn't checked what
+        // the apply brought in.
+        let tool = ApplyDelegate::new(Arc::new(Nowhere));
+        assert!(tool.changes_files(&serde_json::json!({"run": "000000000001"})));
+        assert!(!tool.changes_files(&serde_json::json!({"run": "000000000001", "dry_run": true})));
     }
 }

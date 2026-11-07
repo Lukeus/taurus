@@ -134,3 +134,25 @@ describe("a call that's both in the transcript and in the replay", () => {
     expect(foldEvents([started], [done])).toHaveLength(2);
   });
 });
+
+describe("a turn ending while the prompts are being read", () => {
+  it("still puts up another conversation's prompt", async () => {
+    // A's prompt is on screen; A's turn ends and clears it while the read is
+    // out. B's prompt, waiting the whole time, must reach the screen.
+    useStore.setState({ permission: prompt("a1", "A"), running: ["B"] });
+    let answer: (value: unknown) => void = () => {};
+    invoke.mockImplementation((command: string) =>
+      command === "pending_permissions"
+        ? new Promise((resolve) => {
+            answer = resolve;
+          })
+        : Promise.resolve([]),
+    );
+    const syncing = useStore.getState().syncPermission();
+    useStore.setState({ permission: null });
+    // Read just before A withdrew its own.
+    answer([prompt("a1", "A"), prompt("b1", "B")]);
+    await syncing;
+    expect(useStore.getState().permission).toEqual(prompt("b1", "B"));
+  });
+});

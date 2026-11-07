@@ -903,7 +903,9 @@ it's running here:
   `permissionDecision: "deny"` (top-level or under `hookSpecificOutput`),
   `decision: "block"`, or `continue: false` refuses, with its reason.
   `additionalContext` and `systemMessage` reach the model as a note. Exit 2
-  refuses, as it does everywhere.
+  refuses, as it does everywhere. stdout is kept to 32 KB, and an answer cut
+  off there refuses, because a refusal past the cut can't be read. Send logs
+  to stderr.
 - **Where it runs.** The command runs under `sh -c` (`bash -c` for Copilot's
   `bash`; `cmd /C` or PowerShell on Windows) in the workspace. A command
   starting `./` names the plugin's own file, as Codex runs it.

@@ -391,13 +391,39 @@ impl Programs {
                     i = redirect_target(&chars, i, dialect, &mut beyond);
                     continue;
                 }
+                // `<file`, `0< file`, `</dev/null`: input, which reaches no file
+                // the program couldn't open itself. The target still isn't a
+                // word, or `python3 </dev/null -c …` would read `</dev/null`
+                // as the script and `-c` as its argument, and a leading
+                // `</dev/null sh -c …` would name `</dev/null` as the program.
+                // `<>file` opens it for writing too.
+                '<' => {
+                    s.drop_fd_digits();
+                    s.end_word();
+                    i += 1;
+                    match chars.get(i) {
+                        Some('&') => {
+                            // `<&0`, `<&-`: a stream merge.
+                            i += 1;
+                            if matches!(chars.get(i), Some(t) if t.is_ascii_digit() || *t == '-') {
+                                while matches!(chars.get(i), Some(t) if t.is_ascii_digit() || *t == '-')
+                                {
+                                    i += 1;
+                                }
+                                continue;
+                            }
+                            i = input_target(&chars, i, &mut beyond);
+                        }
+                        Some('>') => {
+                            i = redirect_target(&chars, i + 1, dialect, &mut beyond);
+                        }
+                        _ => i = input_target(&chars, i, &mut beyond),
+                    }
+                    continue;
+                }
                 '>' => {
                     // The fd digits before it (`2>`) are not a word.
-                    if s.in_word && !s.word.is_empty() && s.word.chars().all(|d| d.is_ascii_digit())
-                    {
-                        s.word.clear();
-                        s.in_word = false;
-                    }
+                    s.drop_fd_digits();
                     s.end_word();
                     i += 1;
                     if chars.get(i) == Some(&'>') {
@@ -539,6 +565,14 @@ impl Scan {
     fn mark_quoted(&mut self) {
         if !self.word.contains('=') {
             self.quoted_name = true;
+        }
+    }
+
+    /// Forgets a word that is only the fd digits of a redirection (`2>`).
+    fn drop_fd_digits(&mut self) {
+        if self.in_word && !self.word.is_empty() && self.word.chars().all(|d| d.is_ascii_digit()) {
+            self.word.clear();
+            self.in_word = false;
         }
     }
 
@@ -695,6 +729,26 @@ fn redirect_target(
     };
     if !discards {
         beyond.get_or_insert(REDIRECTS);
+    }
+    i
+}
+
+/// Steps over the word after an input redirection. Reading reaches nothing a
+/// program couldn't open by name, so only a target the scan can't read plainly
+/// (a quote, a substitution) is asked about.
+fn input_target(chars: &[char], mut i: usize, beyond: &mut Option<&'static str>) -> usize {
+    while matches!(chars.get(i), Some(c) if *c == ' ' || *c == '\t') {
+        i += 1;
+    }
+    let start = i;
+    while matches!(chars.get(i), Some(c) if !c.is_whitespace() && !"|;&<>()".contains(*c)) {
+        i += 1;
+    }
+    if chars[start..i]
+        .iter()
+        .any(|c| matches!(c, '\'' | '"' | '\\' | '$' | '`' | '{'))
+    {
+        beyond.get_or_insert(QUOTING);
     }
     i
 }
@@ -959,7 +1013,7 @@ fn git_subcommand(words: &[String]) -> Option<(&str, &[String])> {
     while let Some(word) = words.get(at) {
         if matches!(
             word.as_str(),
-            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env"
         ) {
             at += 2;
         } else if word.starts_with('-') {
@@ -979,7 +1033,7 @@ fn git_runs_what_it_is_told(words: &[String]) -> bool {
     while let Some(word) = all.next() {
         // `-c`, on git or on `git clone`. `--config` is `clone`'s long name.
         let setting = match word.as_str() {
-            "-c" | "--config" => all.peek().map(|w| w.as_str()),
+            "-c" | "--config" | "--config-env" => all.peek().map(|w| w.as_str()),
             w if w.starts_with("--config-env=") => w.strip_prefix("--config-env="),
             w if w.starts_with("--config=") => w.strip_prefix("--config="),
             w if w.starts_with("-c") && w.contains('=') && !w.starts_with("--") => {
@@ -1021,7 +1075,13 @@ fn git_runs_what_it_is_told(words: &[String]) -> bool {
                 .iter()
                 .filter(|w| !w.starts_with('-') && *w != "set")
                 .collect();
-            has(&["--edit", "-e"])
+            // Renaming a section moves every key in it: `foo.fsmonitor`, which
+            // runs nothing, becomes `core.fsmonitor`, which does.
+            has(&["--edit", "-e", "--rename-section"])
+                || matches!(
+                    rest.first().map(String::as_str),
+                    Some("edit" | "rename-section")
+                )
                 || (!reads
                     && positional.len() >= 2
                     && positional.iter().any(|w| git_key_runs_something(w)))
@@ -1213,9 +1273,44 @@ mod tests {
             ("./venv/bin/python script.py", "./venv/bin/python"),
             ("! grep -q foo file", "grep"),
             ("cargo test < input.txt", "cargo"),
+            ("cargo test <input.txt", "cargo"),
+            ("cargo test 0<input.txt", "cargo"),
+            ("cargo test <&0", "cargo"),
+            ("</dev/null cargo test", "cargo"),
+            ("< in.txt sort", "sort"),
         ] {
             assert_eq!(names(plain), vec![program], "{plain}");
         }
+    }
+
+    #[test]
+    fn an_input_redirection_is_not_a_word() {
+        // The target of `<` must not stand where the program or its first
+        // argument goes, or every check that reads those reads the file name.
+        assert_eq!(beyond("python3 </dev/null -c 'import os'"), INLINE_CODE);
+        assert_eq!(beyond("node < /dev/null -e 'x'"), INLINE_CODE);
+        assert_eq!(beyond("</dev/null sh -c evil"), HANDS_OVER);
+        assert_eq!(beyond("git </dev/null config core.hooksPath x"), GIT_RUNS);
+        assert_eq!(beyond("git </dev/null rebase -x ./evil"), GIT_RUNS);
+        let programs = Programs::read("cd </dev/null .git/hooks", Dialect::Posix);
+        assert_eq!(programs.commands[0].moves_to(), Some(".git/hooks"));
+        // `<>` opens the file for writing too.
+        assert_eq!(beyond("cargo test <>out.txt"), REDIRECTS);
+        assert_eq!(names("cargo test <>/dev/null"), ["cargo"]);
+        assert_eq!(beyond("sort < \"$f\""), QUOTING);
+    }
+
+    #[test]
+    fn git_config_spellings_that_reach_a_running_key_are_asked_about() {
+        let runs = |line: &str| Programs::read(line, Dialect::Posix).beyond == Some(GIT_RUNS);
+        assert!(runs("git --config-env core.fsmonitor=EVIL status"));
+        assert!(runs("git --config-env=core.fsmonitor=EVIL status"));
+        assert!(runs("git -ccore.fsmonitor=./evil status"));
+        assert!(runs("git config --rename-section foo core"));
+        assert!(runs("git config rename-section foo core"));
+        assert!(runs("git config edit"));
+        assert!(!runs("git --config-env user.name=NAME status"));
+        assert!(!runs("git config --remove-section foo"));
     }
 
     #[test]

@@ -192,20 +192,39 @@ export function CanvasSlot({
     // fingerprint from before it, and the host would refuse it as a change on
     // disk, which it is, by this editor's own hand. So it goes once the first
     // has answered, with the fingerprint that one brought back.
+    //
+    // Sent straight, not through `write` again: back through the queue, a save
+    // queued behind this one became the one this waited for while it waited
+    // for this, and three saves in quick succession never answered. This stays
+    // the queue's tail until its own save has.
     if (underway?.path === target.path) {
-      const after: Promise<Written> = underway.done.then((first) => {
-        if (saving.current?.done === after) saving.current = null;
-        if (first === "written") {
-          return write(landed.current?.path === target.path ? landed.current : target, text, stamp);
-        }
-        // The first one's text was kept if the file has been left, and this is
-        // newer. It has already said why.
-        if (!here()) kept.set(stamp.key, { base: target, draft: text });
-        return first;
-      });
+      const after: Promise<Written> = underway.done
+        .then((first) => {
+          if (first === "written") {
+            return send(landed.current?.path === target.path ? landed.current : target, text, stamp, false);
+          }
+          // The first one's text was kept if the file has been left, and this is
+          // newer. It has already said why.
+          if (!here()) kept.set(stamp.key, { base: target, draft: text });
+          return first;
+        })
+        .finally(() => {
+          if (saving.current?.done === after) saving.current = null;
+        });
       saving.current = { path: target.path, text, done: after };
       return after;
     }
+    return send(target, text, stamp, true);
+  };
+
+  /** The save itself. One sent from the queue (`track` off) leaves `saving` to it. */
+  const send = (
+    target: Document,
+    text: string,
+    stamp: { session: number; key: string },
+    track: boolean,
+  ): Promise<Written> => {
+    const here = () => session.current === stamp.session;
     setSaveState("saving");
     const done = api
       .saveDocument(target.path, text, target.fingerprint)
@@ -244,9 +263,9 @@ export function CanvasSlot({
         return "failed";
       })
       .finally(() => {
-        if (saving.current?.done === done) saving.current = null;
+        if (track && saving.current?.done === done) saving.current = null;
       });
-    saving.current = { path: target.path, text, done };
+    if (track) saving.current = { path: target.path, text, done };
     return done;
   };
 

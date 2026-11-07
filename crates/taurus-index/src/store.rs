@@ -400,9 +400,17 @@ impl Index {
             .ok_or_else(|| "the index has no directory".to_string())?;
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
 
-        let temporary = self.path.with_extension("jsonl.new");
-        let file = std::fs::File::create(&temporary)
-            .map_err(|e| format!("{}: {e}", temporary.display()))?;
+        // Named for this write alone. A refresh that was taken over writes
+        // down what it embedded while its successor may be writing too, and
+        // two writers on one temporary file interleave their lines or rename
+        // it out from under each other.
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temporary = self
+            .path
+            .with_extension(format!("jsonl.{}-{n}.new", std::process::id()));
+        let file =
+            create_private(&temporary).map_err(|e| format!("{}: {e}", temporary.display()))?;
 
         // Buffered, and borrowed through `RecordRef`, rather than a clone of
         // every entry written out one unbuffered line at a time.
@@ -428,15 +436,6 @@ impl Index {
         if let Err(e) = result {
             let _ = std::fs::remove_file(&temporary);
             return Err(format!("{}: {e}", temporary.display()));
-        }
-
-        // The index holds the contents of files in the project, `.env`
-        // included where one was indexed, so it is readable by its owner and
-        // nobody else — the same rule the checkpoint logs follow.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600));
         }
 
         // Stamped from the temporary file, whose length and time the rename
@@ -468,6 +467,20 @@ impl Index {
 /// At most one hit per file: a query that matches a file well usually matches
 /// three consecutive chunks of it, and three windows of the same function is a
 /// worse answer than three different places to look.
+/// Creates `path` for writing, readable by its owner and nobody else from the
+/// first byte. The index holds the contents of files in the project, `.env`
+/// included where one was indexed — the same rule the checkpoint logs follow.
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 pub fn search(entries: &[Entry], query: &[f32], limit: usize, workspace: &Path) -> Vec<Hit> {
     let mut best: HashMap<&str, (f32, &Entry)> = HashMap::new();
 
@@ -965,10 +978,29 @@ mod tests {
         let loaded = index.load("m");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].path, "b.rs", "the rename did not take");
-        assert!(
-            !dir.path().join("index.jsonl.new").exists(),
-            "the temporary file was left behind"
-        );
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".new"))
+            .collect();
+        assert!(left.is_empty(), "the temporary file was left behind");
+    }
+
+    #[test]
+    fn saves_at_the_same_time_each_land_whole() {
+        // A refresh that was taken over writes down what it had while its
+        // successor writes too. One shared temporary file interleaved them.
+        let dir = TempDir::new().unwrap();
+        let index = Index::new(dir.path(), dir.path());
+        let many: Vec<Entry> = (0..2000)
+            .map(|n| entry(&format!("{n}.rs"), &[1.0]))
+            .collect();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| index.save("m", &many).unwrap());
+            }
+        });
+        assert_eq!(index.load("m").len(), many.len());
     }
 
     #[cfg(unix)]

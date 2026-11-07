@@ -69,8 +69,17 @@ impl Tool for LoadSkill {
         let input: LoadSkillInput = parse_input(input)?;
         let catalog = self.catalog.read().await;
 
-        let Some(skill) = catalog.get(&input.name) else {
-            let known: Vec<&str> = catalog.names().collect();
+        // A skill marked `disable-model-invocation` is one only a person
+        // starts, with its slash command; to the model it isn't there, the
+        // same as it isn't in the listing the prompt carries.
+        let Some(skill) = catalog
+            .get(&input.name)
+            .filter(|skill| skill.model_invocable())
+        else {
+            let known: Vec<&str> = catalog
+                .names()
+                .filter(|name| catalog.get(name).is_some_and(|s| s.model_invocable()))
+                .collect();
             return Err(ToolError::InvalidInput(if known.is_empty() {
                 "There are no skills available.".into()
             } else {
@@ -832,6 +841,26 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("alpha"));
         assert!(message.contains("beta"));
+    }
+
+    #[tokio::test]
+    async fn a_skill_only_a_person_starts_is_not_there_for_the_model() {
+        let f = fixture(&[
+            ("alpha", ""),
+            ("deploy", "disable-model-invocation: true\n"),
+        ]);
+        let err = LoadSkill::new(f.catalog.clone())
+            .execute(serde_json::json!({"name": "deploy"}), &f.ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No skill named 'deploy'"), "{err}");
+        assert!(err.contains("alpha"), "{err}");
+        assert!(!err.contains("Available: alpha, deploy"), "{err}");
+        assert!(
+            !err.contains(", deploy") && !err.contains("deploy,"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

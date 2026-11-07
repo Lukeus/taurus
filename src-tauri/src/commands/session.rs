@@ -837,9 +837,17 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
     // The same rule `rewind_to` applies, for the same reason: a turn holds this
     // lock for its whole run, and deleting underneath one would leave it
     // appending to a file that is no longer anywhere.
-    if let Ok(entry) = state.session(&session_id) {
-        let _ = entry.idle("stop it before deleting")?;
-    }
+    // Held to the end, not dropped at once: a turn starting in the middle of
+    // this would run beside it.
+    let entry = state.session(&session_id).ok();
+    let _idle = entry
+        .as_ref()
+        .map(|e| e.idle("stop it before deleting"))
+        .transpose()?;
+
+    // The conversation's own folder, read while its entry is still there to
+    // say: its checkpoints are kept under that workspace, not the open one.
+    let workspace = session_workspace(&state, &session_id).await;
 
     // Dropped from memory before the file goes, not after. An open session's log
     // recreates the transcript on its next write, so the other order can leave a
@@ -850,7 +858,7 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
 
     // Both off the runtime: a transcript can be megabytes, and the checkpoint
     // log beside it more.
-    let checkpoints = state.host.checkpoints().await;
+    let checkpoints = state.host.checkpoints_for(&workspace);
     let id = session_id.clone();
     off_runtime(move || {
         sessions::delete(&id)?;

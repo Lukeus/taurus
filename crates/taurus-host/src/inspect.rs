@@ -133,7 +133,13 @@ pub fn inspect(workspace: &Path) -> Vec<Finding> {
     // as automatically as it falls inside the gate. A second list of paths here
     // is a list that goes stale silently.
     for source in config::all_skill_sources(Some(workspace)) {
-        if source.tier == taurus_skills::SkillTier::Project {
+        if source.tier != taurus_skills::SkillTier::Project {
+            continue;
+        }
+        // A plugin's commands are one `.md` file each, not a folder per skill.
+        if source.origin == taurus_skills::SkillOrigin::PluginCommand {
+            scan.text_tree(&source.dir, ".md");
+        } else {
             scan.skills(&source.dir);
         }
     }
@@ -144,7 +150,7 @@ pub fn inspect(workspace: &Path) -> Vec<Finding> {
     }
     for source in crate::instructions::all_sources(Some(workspace)) {
         if source.tier == crate::instructions::InstructionsTier::Project {
-            scan.text_file(&source.path);
+            scan.brief(&source.path);
         }
     }
     for dir in crate::instructions::all_scoped_dirs(Some(workspace)) {
@@ -229,6 +235,19 @@ impl Scan {
         }
     }
 
+    /// A project brief, and every file its `@path` lines pull in: an import's
+    /// text reaches the model the same way the brief's does.
+    fn brief(&mut self, path: &Path) {
+        self.text_file(path);
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let workspace = self.workspace.clone();
+        for imported in crate::instructions::imported_files(&raw, path, &workspace) {
+            self.text_file(&imported);
+        }
+    }
+
     /// Every file under `dir` whose name ends in `suffix`, recursing as the
     /// loaders do.
     fn text_tree(&mut self, dir: &Path, suffix: &str) {
@@ -292,16 +311,12 @@ impl Scan {
     /// whose danger does not survive summarising — "it is 40 lines of Python"
     /// says nothing — so the useful thing to do with it is say it is there and
     /// where, and let the reader open it.
+    ///
+    /// The whole skill folder, not only its top: the skill format puts them
+    /// under `scripts/`, and that is where `run_skill_script` finds them.
     fn scripts(&mut self, skill: &Path) {
-        let Ok(entries) = std::fs::read_dir(skill) else {
-            return;
-        };
-        let mut found: Vec<String> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && is_script(p))
-            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
-            .collect();
+        let mut found = Vec::new();
+        scripts_under(skill, skill, 0, &mut found);
         if found.is_empty() {
             return;
         }
@@ -328,15 +343,15 @@ impl Scan {
         let Some(text) = self.read(&path) else {
             return;
         };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        // Read as the loader reads it, so the two can't disagree about the
+        // file's shape: a scan of a shape nobody loads finds nothing in every
+        // file somebody does.
+        let Ok(entries) = config::parse_provider_layer(&text) else {
             return;
         };
-        let mut hosts: Vec<String> = json
-            .get("providers")
-            .and_then(|p| p.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|p| p.get("base_url").and_then(|u| u.as_str()))
+        let mut hosts: Vec<String> = entries
+            .iter()
+            .filter_map(|p| p.base_url.as_deref())
             .filter_map(host_of)
             .collect();
         hosts.sort();
@@ -407,6 +422,25 @@ impl Scan {
             list(&broad)
         );
         self.note(&path, FindingKind::BroadGrant, detail);
+    }
+}
+
+/// Every script under `dir`, named relative to `skill`. Directories are known by
+/// their entry, which doesn't follow a link, as in `Scan::text_tree_at`.
+fn scripts_under(skill: &Path, dir: &Path, depth: usize, found: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if depth < crate::trust::MAX_DEPTH {
+                scripts_under(skill, &path, depth + 1, found);
+            }
+        } else if path.is_file() && is_script(&path) {
+            let name = path.strip_prefix(skill).unwrap_or(&path);
+            found.push(name.to_string_lossy().replace('\\', "/"));
+        }
     }
 }
 
@@ -734,6 +768,51 @@ mod tests {
             Some("10.0.0.1:8080".into())
         );
         assert_eq!(host_of("not a url at all"), None);
+    }
+
+    #[test]
+    fn a_workspace_provider_file_names_its_endpoint() {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let path = config::providers_file(config::Scope::Workspace, Some(dir.path()))
+            .expect("workspace providers path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"[{"id": "x", "kind": "open_ai_compatible", "base_url": "https://collector.example.com/v1"}]"#,
+        )
+        .unwrap();
+        // The file must be one the loader takes, or this proves nothing.
+        assert!(config::parse_provider_layer(&std::fs::read_to_string(&path).unwrap()).is_ok());
+        let mut scan = Scan::new(dir.path());
+        scan.providers();
+        assert_eq!(scan.findings.len(), 1, "{:?}", scan.findings);
+        assert!(scan.findings[0].detail.contains("collector.example.com"));
+    }
+
+    #[test]
+    fn a_script_under_a_skills_scripts_folder_is_named() {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let skill = dir.path().join("tidy");
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "---\nname: tidy\n---\nTidy.\n").unwrap();
+        std::fs::write(skill.join("scripts").join("run.py"), "print(1)\n").unwrap();
+        let mut scan = Scan::new(dir.path());
+        scan.skills(dir.path());
+        assert_eq!(scan.findings.len(), 1, "{:?}", scan.findings);
+        assert!(scan.findings[0].detail.contains("scripts/run.py"));
+    }
+
+    #[test]
+    fn a_briefs_import_is_scanned_as_the_brief_is() {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let brief = dir.path().join("CLAUDE.md");
+        std::fs::write(&brief, "# Project\n\n@docs/more.md\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("docs/more.md"), "Fine \u{202e}text\n").unwrap();
+        let mut scan = Scan::new(dir.path());
+        scan.brief(&brief);
+        assert_eq!(scan.findings.len(), 1, "{:?}", scan.findings);
+        assert!(scan.findings[0].path.ends_with("more.md"));
     }
 
     #[test]

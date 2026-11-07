@@ -1135,7 +1135,7 @@ pub(crate) fn branch(root: &Path) -> Option<String> {
 }
 
 fn git_dir(root: &Path) -> Option<PathBuf> {
-    let dot_git = root.join(".git");
+    let dot_git = crate::protected::dot_git(root)?;
     if std::fs::metadata(&dot_git).ok()?.is_dir() {
         return Some(dot_git);
     }
@@ -1144,7 +1144,7 @@ fn git_dir(root: &Path) -> Option<PathBuf> {
     let target = Path::new(pointer.strip_prefix("gitdir:")?.trim());
     Some(match target.is_absolute() {
         true => target.to_path_buf(),
-        false => root.join(target),
+        false => dot_git.parent().unwrap_or(root).join(target),
     })
 }
 

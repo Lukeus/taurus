@@ -332,8 +332,9 @@ async fn leaving_a_workspace_stops_its_index_build() {
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
 
-    let cancel = tokio_util::sync::CancellationToken::new();
-    host.indexing.take_over(&cancel);
+    let (_, cancel) = host
+        .indexing
+        .take_over(&tokio_util::sync::CancellationToken::new());
 
     let next = tempfile::TempDir::new().unwrap();
     host.set_workspace(next.path()).await.unwrap();
@@ -5034,5 +5035,24 @@ async fn two_writers_in_one_round_run_at_once_in_copies_and_leave_the_workspace_
         host.delegate_runs().is_empty(),
         "{:?}",
         host.delegate_runs()
+    );
+}
+
+#[test]
+fn an_agent_borrowed_from_another_harness_keeps_its_tools() {
+    let available: Vec<String> = ["read_file", "glob", "grep", "list_dir", "run_command"]
+        .map(String::from)
+        .to_vec();
+    let wanted = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    // Claude Code's spelling.
+    assert_eq!(
+        in_taurus_names(&wanted(&["Read", "Glob", "Grep"]), &available),
+        ["read_file", "glob", "grep"]
+    );
+    // Copilot's `view` is two tools here; Taurus names pass as they are; a
+    // name nobody knows stays, to be reported as missing.
+    assert_eq!(
+        in_taurus_names(&wanted(&["view", "grep", "Task"]), &available),
+        ["read_file", "list_dir", "grep", "Task"]
     );
 }

@@ -8,10 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const applyDelegate = vi.fn();
 const discardDelegate = vi.fn();
+const delegateRun = vi.fn();
 vi.mock("../lib/api", async (original) => ({
   ...(await original<typeof import("../lib/api")>()),
   applyDelegate: (...args: unknown[]) => applyDelegate(...args),
   discardDelegate: (...args: unknown[]) => discardDelegate(...args),
+  delegateRun: (...args: unknown[]) => delegateRun(...args),
 }));
 
 import { Transcript } from "./Transcript";
@@ -25,11 +27,15 @@ Element.prototype.scrollIntoView = () => {};
 let cleanup: (() => void)[] = [];
 beforeEach(() => {
   applyDelegate.mockReset();
+  delegateRun.mockReset();
+  delegateRun.mockResolvedValue({ run: "0123456789ab", state: "kept" });
   useKept.setState({ runs: {} });
   discardDelegate.mockReset();
   useStore.setState({
     session: { id: "s1" } as never,
     busy: false,
+    wrote: null,
+    refreshChanged: async () => {},
   });
 });
 afterEach(() => {
@@ -102,6 +108,8 @@ describe("a delegate's kept work", () => {
       "Rewinding this turn undoes it",
     );
     expect(button("Apply to workspace")).toBeNull();
+    // An editor open on a.txt is told, as it is for a turn's own write.
+    expect(useStore.getState().wrote?.paths).toEqual(["a.txt"]);
   });
 
   it("says which files refused an apply, and offers it again", async () => {
@@ -132,5 +140,24 @@ describe("a delegate's kept work", () => {
     expect(discardDelegate).toHaveBeenCalledWith("s1", "0123456789ab");
     expect(applyDelegate).not.toHaveBeenCalled();
     expect(host.querySelector(".run-row-kept-head")?.textContent).toContain("Discarded");
+  });
+
+  it("doesn't offer Apply again on work applied somewhere else", async () => {
+    // Settings, the CLI, the model, or this window before a reload: the card
+    // is drawn again knowing nothing, and asks.
+    delegateRun.mockResolvedValue({ run: "0123456789ab", state: "applied" });
+    const { host, button } = mount([kept]);
+    await act(async () => {});
+    expect(delegateRun).toHaveBeenCalledWith("0123456789ab");
+    expect(host.querySelector(".run-row-kept-head")?.textContent).toContain("Applied");
+    expect(button("Apply to workspace")).toBeNull();
+  });
+
+  it("says so for work discarded somewhere else", async () => {
+    delegateRun.mockResolvedValue({ run: "0123456789ab", state: "discarded" });
+    const { host, button } = mount([kept]);
+    await act(async () => {});
+    expect(host.querySelector(".run-row-kept-head")?.textContent).toContain("Discarded");
+    expect(button("Discard")).toBeNull();
   });
 });

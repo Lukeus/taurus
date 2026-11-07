@@ -292,6 +292,36 @@ async fn a_run_whose_owner_died_is_closed_on_the_next_start_and_its_work_kept() 
 }
 
 #[tokio::test]
+async fn a_close_that_fails_lets_go_so_the_next_start_retries_it() {
+    let f = fixture();
+    let opened = f.trees.open(&f.top, &who()).await.unwrap();
+    std::fs::write(opened.root.join("a.txt"), "work worth keeping\n").unwrap();
+    // git can't read the copy, so the close stops partway.
+    let dot_git = opened.root.join(".git");
+    let pointer = std::fs::read_to_string(&dot_git).unwrap();
+    std::fs::write(&dot_git, "not a pointer\n").unwrap();
+    assert!(f.trees.close(&opened.run).await.is_err());
+    assert!(
+        !f.trees.owned(&opened.run),
+        "a failed close kept the lock, so tidy would never retry it"
+    );
+    assert_eq!(f.trees.record(&opened.run).unwrap().state, State::Running);
+
+    // Once git can read it again, the next tidy closes it with the work kept.
+    std::fs::write(&dot_git, pointer).unwrap();
+    let mut state = State::Running;
+    for _ in 0..50 {
+        f.trees.tidy().await;
+        state = f.trees.record(&opened.run).unwrap().state;
+        if state != State::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(state, State::Kept);
+}
+
+#[tokio::test]
 async fn a_run_another_process_has_open_is_left_alone() {
     let f = fixture();
     let opened = f.trees.open(&f.top, &who()).await.unwrap();
@@ -465,6 +495,30 @@ async fn a_file_that_decides_what_runs_is_never_applied() {
     assert!(!f.top.join(".taurus/permissions.json").exists());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_under_a_folder_that_is_a_link_is_never_written_through_it() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("app/src/lib.rs"), "fn b() {}\n").unwrap()
+    })
+    .await;
+    // Since the delegate started, `app/src` became a link out of the workspace.
+    let outside = TempDir::new().unwrap();
+    std::fs::rename(f.top.join("app/src"), outside.path().join("src")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("src"), f.top.join("app/src")).unwrap();
+
+    let plan = f.trees.apply(&run, Some("s1"), None, false).await.unwrap();
+    assert!(!plan.applied);
+    assert_eq!(plan.files[0].action, ApplyAction::Conflict);
+    assert!(plan.files[0]
+        .why
+        .as_deref()
+        .unwrap()
+        .contains("app/src is a link"));
+    assert_eq!(read(outside.path().join("src/lib.rs")), "fn a() {}\n");
+}
+
 #[tokio::test]
 async fn a_look_ahead_writes_nothing_and_another_conversation_cannot_apply() {
     let f = fixture();
@@ -502,6 +556,42 @@ async fn discarding_lets_git_forget_the_work() {
         .await
         .unwrap_err();
     assert!(after.contains("discarded"), "{after}");
+}
+
+#[tokio::test]
+async fn one_run_is_applied_once_however_many_ask_at_once() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("a.txt"), "two\n").unwrap()
+    })
+    .await;
+    // Another process holding the run for its own apply.
+    let other = Worktrees::new(f.trees.home.clone());
+    let held = other.claim(&run).unwrap();
+    let refused = f
+        .trees
+        .apply(&run, Some("s1"), None, false)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("already"), "{refused}");
+    assert!(f.trees.discard(&run, Some("s1")).await.is_err());
+    // A look ahead writes nothing, so it needn't wait.
+    assert!(f.trees.apply(&run, Some("s1"), None, true).await.is_ok());
+    drop(held);
+
+    let (first, second) = tokio::join!(
+        f.trees.apply(&run, Some("s1"), None, false),
+        f.trees.apply(&run, Some("s1"), None, false),
+    );
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    assert_eq!(read(f.top.join("a.txt")), "two\n");
 }
 
 #[test]

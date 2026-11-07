@@ -723,7 +723,7 @@ impl Host {
 
         // Stops the warm-up if one is running, rather than embedding the same
         // passages beside it while the person watching this progress bar waits.
-        let ticket = self.indexing.take_over(&cancel);
+        let (ticket, cancel) = self.indexing.take_over(&cancel);
         let refreshed =
             taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, progress).await;
         self.indexing.finished(ticket);
@@ -780,8 +780,7 @@ impl Host {
 
         // Registered before the task starts rather than inside it, so two turns
         // in quick succession cannot both find nothing running.
-        let cancel = CancellationToken::new();
-        let ticket = self.indexing.take_over(&cancel);
+        let (ticket, cancel) = self.indexing.take_over(&CancellationToken::new());
         let indexing = self.indexing.clone();
         tokio::spawn(async move {
             match taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, None).await

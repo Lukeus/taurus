@@ -17,6 +17,10 @@ taurus repl --resume                  # pick up the most recent one
 taurus run --resume <ID> "and now…"   # continue a named one
 ```
 
+A resumed conversation goes on with the backend and model it was on.
+`--model` picks another; `--provider` on its own takes that backend's default
+model.
+
 The desktop app reopens the workspace's last conversation on launch. The left
 rail lists the rest, today's first, so switching is one click, not a drawer.
 
