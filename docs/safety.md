@@ -790,9 +790,39 @@ taurus: no terminal to confirm on; re-run with --yes to rewind, or --dry-run to
         see the plan
 ```
 
-A file that wasn't text when it was recorded is reported as `skipped`, not
-silently left as the model made it. `taurus rewind` exits non-zero when
-anything couldn't be put back.
+**Large and binary files come back as clones.** A pre-image is normally the
+file's text, inline in the log. That leaves out an image, a database, anything
+that isn't text, and anything past what a sweep holds in memory: 1 MB a file
+and 64 MB in all. On a big repository that second limit is most of it. vscode
+and kubernetes each hold about 250 MB of source in files under 1 MB.
+
+On APFS (macOS), Btrfs and XFS, Taurus clones those files instead. A clone is
+a new file that shares every block with the original until one of them
+changes. It's one system call whatever the size, and it costs no space while
+the original stays the same. The clone sits beside the checkpoint log until
+the command is over. If the command changed the file, the clone is kept with
+the conversation, and a rewind clones it back and renames it over the file, so
+nothing ever sees it half-written. Its permissions come back with it.
+
+A kept clone holds real space once the original changes: deleting a 4 GB video
+keeps 4 GB. So one workspace's kept clones are capped at 20 GB, set by
+`checkpoint_clone_limit_gb` in your global `settings.json` (a project's file
+can't change it). Past the cap a file is recorded as not restorable, and the
+reason names the setting. Deleting a conversation deletes its clones; a fork
+gets clones of its own, so deleting the original doesn't take the fork's undo
+with it.
+
+Cloning costs something once. The first command in a large workspace clones
+every file it can't hold: about 0.9 s on vscode (21,000 files) and 1.5 s on
+kubernetes (32,000). After that, a file is only cloned again when it changes.
+
+Where cloning can't work, files that can't be held are reported, not restored.
+That covers a workspace on a different volume from your home folder (clones
+can't cross volumes), a filesystem that can't clone (ext4, NTFS), and Windows,
+where the library Taurus clones through calls its ReFS support untested and
+has an open bug that zero-fills clones. A file that couldn't be put back is
+reported as `skipped`, not silently left as the model made it. `taurus rewind`
+exits non-zero when anything couldn't be put back.
 
 ### Commands are covered too
 
@@ -1203,8 +1233,9 @@ instead of being attributed to nobody. That's the same assumption the rewind
 already states when it warns it will overwrite "anything you changed by hand
 since".
 
-A file whose pre-image couldn't be held (not text, or too large) is named with
-its reason, not left out. These are the same files a rewind reports as
+A file whose pre-image is a clone, or couldn't be held at all, is named with a
+reason instead of a diff, not left out. A clone still comes back on a rewind;
+the drawer just doesn't diff binary or very large files. These are the same files a rewind reports as
 `skipped`. A turn that looks smaller than it was would be the worst version of
 this view.
 

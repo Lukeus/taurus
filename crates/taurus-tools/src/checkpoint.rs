@@ -179,6 +179,11 @@ pub enum State {
     /// rather than into a blob store that would need its own garbage
     /// collection.
     Text { content: String },
+    /// Its contents, held as a copy-on-write clone beside the log rather than
+    /// inline in it: a file too large for a sweep to hold, or not text. `blob`
+    /// is `<session>.blobs/<name>`, relative to the store, and `len` is how
+    /// long the file was. See [`crate::clones`].
+    Clone { blob: String, len: u64 },
     /// It existed, but its contents are not here to put back — it was not
     /// text, could not be read, or was too large for [`crate::sweep`] to hold.
     /// Recorded anyway: a rewind has to be able to say which files it could not
@@ -315,11 +320,23 @@ pub struct Rewind {
 #[derive(Clone)]
 pub struct CheckpointStore {
     dir: PathBuf,
+    /// What this workspace's kept clones may hold. See [`crate::clones`].
+    clone_limit: u64,
 }
 
 impl CheckpointStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            clone_limit: crate::clones::DEFAULT_LIMIT_BYTES,
+        }
+    }
+
+    /// Caps what this store's kept clones may hold, in bytes. `0` keeps no
+    /// clones at all, which is today's behavior for large and binary files.
+    pub fn with_clone_limit(mut self, bytes: u64) -> Self {
+        self.clone_limit = bytes;
+        self
     }
 
     fn log_path(&self, session_id: &str) -> Option<PathBuf> {
@@ -353,6 +370,9 @@ impl CheckpointStore {
             workspace: workspace.to_path_buf(),
             prompt: shorten(prompt),
             state: Mutex::new(TurnState::default()),
+            store: self.dir.clone(),
+            clone_limit: self.clone_limit,
+            cloner: std::sync::OnceLock::new(),
         })
     }
 
@@ -497,10 +517,13 @@ impl CheckpointStore {
             return Err(format!("'{session_id}' is not a usable session id"));
         };
         match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("{}: {e}", path.display())),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
         }
+        // Its kept clones go with it: nothing else can name them.
+        crate::clones::forget(&self.dir, session_id)
+            .map_err(|e| format!("{}: {e}", self.dir.display()))
     }
 
     /// Puts `workspace` back the way it was before `turn` ran.
@@ -557,7 +580,7 @@ impl CheckpointStore {
         Ok(Rewind {
             restored: earliest
                 .into_iter()
-                .map(|(file, state)| restore(workspace, &file, &state, dry_run))
+                .map(|(file, state)| restore(&self.dir, workspace, &file, &state, dry_run))
                 .collect(),
             warnings: warnings(&log, workspace, turn, undoing),
         })
@@ -790,6 +813,21 @@ impl CheckpointStore {
                 id: turn.id,
             });
             for (path, state) in turn.changes {
+                // A fork owns its own copies, so forgetting the conversation
+                // it came from can't take its undo with it.
+                let state = match state {
+                    State::Clone { blob, len } => {
+                        match crate::clones::copy_blob(&self.dir, &blob, to) {
+                            Some(blob) => State::Clone { blob, len },
+                            None => State::Opaque {
+                                reason: "was kept as a copy that couldn't be carried into this \
+                                         fork"
+                                    .into(),
+                            },
+                        }
+                    }
+                    state => state,
+                };
                 records.push(Record::Before { path, state });
             }
             if turn.moved_git {
@@ -836,10 +874,17 @@ impl CheckpointStore {
 }
 
 /// Writes each file in `files`, through the same path guard a rewind uses.
-pub fn apply(workspace: &Path, files: &[Held], dry_run: bool) -> Vec<Restored> {
+///
+/// `store` is where any kept clone among them lives. See [`crate::clones`].
+pub fn apply(
+    store: &CheckpointStore,
+    workspace: &Path,
+    files: &[Held],
+    dry_run: bool,
+) -> Vec<Restored> {
     files
         .iter()
-        .map(|held| restore(workspace, &held.path, &held.state, dry_run))
+        .map(|held| restore(&store.dir, workspace, &held.path, &held.state, dry_run))
         .collect()
 }
 
@@ -977,6 +1022,10 @@ fn describe(file: &str, before: &State, after: &State) -> TurnChange {
         match state {
             State::Absent => Ok(None),
             State::Text { content } => Ok(Some(content.as_str())),
+            State::Clone { len, .. } => Err(format!(
+                "was {} and too large or not text to show as a diff, but a rewind puts it back",
+                crate::clones::size(*len)
+            )),
             State::Opaque { reason } => Err(reason.clone()),
         }
     }
@@ -1000,7 +1049,7 @@ fn describe(file: &str, before: &State, after: &State) -> TurnChange {
 /// The log is a file on disk like any other, and a rewind writes wherever it
 /// says. Resolving through the same guard the tools use means a hand-edited or
 /// corrupted log cannot reach outside the workspace it belongs to.
-fn restore(workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restored {
+fn restore(store: &Path, workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restored {
     let path = match crate::path_guard::resolve(workspace, file) {
         Ok(path) => path,
         Err(e) => {
@@ -1027,6 +1076,23 @@ fn restore(workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restor
                 std::fs::remove_file(&path)
             }
         }
+        State::Clone { blob, .. } => match crate::clones::blob_path(store, blob) {
+            None => {
+                return Restored::Skipped {
+                    path: file.to_string(),
+                    reason: format!("names a kept copy outside the checkpoint folder ({blob})"),
+                }
+            }
+            // A plan has to say now that the copy is gone, not after the button.
+            Some(kept) if dry_run => match kept.is_file() {
+                true => Ok(()),
+                false => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("its kept copy is gone from {}", store.display()),
+                )),
+            },
+            Some(kept) => crate::clones::restore(&kept, &path),
+        },
         State::Text { content } => {
             if dry_run {
                 Ok(())
@@ -1343,6 +1409,11 @@ pub struct TurnRecorder {
     /// The branch the turn began on, written into its `Turn` record.
     branch: Option<String>,
     state: Mutex<TurnState>,
+    /// The store's folder, where kept clones go.
+    store: PathBuf,
+    clone_limit: u64,
+    /// Asked for the first time a file needs one. See [`Self::cloner`].
+    cloner: std::sync::OnceLock<Option<Arc<crate::clones::Cloner>>>,
 }
 
 impl TurnRecorder {
@@ -1440,25 +1511,61 @@ impl TurnRecorder {
     /// recorded keeps its earlier, older pre-image; the turn's header goes down
     /// with its first file; and a write that fails turns recording off for the
     /// rest of the turn rather than failing the command.
-    pub async fn capture_many(&self, held: Vec<(PathBuf, State)>) {
+    ///
+    /// Returns how many staged clones could not be kept — past the store's
+    /// limit, or a clone that failed — which the caller reports alongside the
+    /// files that were never restorable.
+    pub(crate) async fn capture_many(&self, held: Vec<(PathBuf, Taken)>) -> usize {
         let Some(log) = self.path.clone() else {
-            return;
+            return 0;
         };
 
         let mut state = self.state.lock().await;
         if state.disabled {
-            return;
+            return 0;
         }
-        let fresh: Vec<Record> = held
+        let fresh: Vec<(String, Taken)> = held
             .into_iter()
             .filter(|(path, _)| state.seen.insert(path.clone()))
-            .map(|(path, before)| Record::Before {
-                path: crate::path_guard::display(&self.workspace, &path),
-                state: before,
-            })
+            .map(|(path, before)| (crate::path_guard::display(&self.workspace, &path), before))
             .collect();
         if fresh.is_empty() {
-            return;
+            return 0;
+        }
+
+        // Kept only now, after the first-capture-wins filter above, so a file
+        // an earlier tool already recorded leaves no orphaned blob behind.
+        let cloner = self.cloner().await;
+        let session = self.session.clone();
+        let (fresh, refused) = tokio::task::spawn_blocking(move || {
+            let mut refused = 0;
+            let records: Vec<Record> = fresh
+                .into_iter()
+                .map(|(path, before)| {
+                    let state = match before {
+                        Taken::State(state) => state,
+                        Taken::Staged(staged) => {
+                            let kept = match &cloner {
+                                Some(cloner) => cloner.keep(staged.path(), staged.len(), &session),
+                                None => State::Opaque {
+                                    reason: "could not be kept when it was recorded".into(),
+                                },
+                            };
+                            if matches!(kept, State::Opaque { .. }) {
+                                refused += 1;
+                            }
+                            kept
+                        }
+                    };
+                    Record::Before { path, state }
+                })
+                .collect();
+            (records, refused)
+        })
+        .await
+        .unwrap_or_default();
+        if fresh.is_empty() {
+            return refused;
         }
 
         let opening = !state.opened;
@@ -1486,6 +1593,44 @@ impl TurnRecorder {
         } else {
             state.disabled = true;
         }
+        refused
+    }
+
+    /// What clones this turn's files into its store, or `None` where cloning
+    /// can't work. See [`crate::clones`].
+    ///
+    /// Asked the first time a file needs one, off the runtime: the first ask in
+    /// a process tries a clone on the store's filesystem.
+    pub(crate) async fn cloner(&self) -> Option<Arc<crate::clones::Cloner>> {
+        if let Some(cloner) = self.cloner.get() {
+            return cloner.clone();
+        }
+        let (store, workspace, limit, usable) = (
+            self.store.clone(),
+            self.workspace.clone(),
+            self.clone_limit,
+            self.path.is_some(),
+        );
+        let made =
+            tokio::task::spawn_blocking(move || make_cloner(&store, &workspace, limit, usable))
+                .await
+                .ok()
+                .flatten();
+        self.cloner.get_or_init(|| made).clone()
+    }
+
+    /// The same, for a caller already off the runtime.
+    pub(crate) fn cloner_blocking(&self) -> Option<Arc<crate::clones::Cloner>> {
+        self.cloner
+            .get_or_init(|| {
+                make_cloner(
+                    &self.store,
+                    &self.workspace,
+                    self.clone_limit,
+                    self.path.is_some(),
+                )
+            })
+            .clone()
     }
 
     /// The one path into the log.
@@ -1521,11 +1666,15 @@ impl TurnRecorder {
             self.session.clone(),
             self.workspace.clone(),
         );
+        let cloner = match held {
+            Some(_) => None,
+            None => self.cloner().await,
+        };
         let landed = tokio::task::spawn_blocking(move || {
             // First capture wins, and a held pre-image is by definition older
             // than anything a read here could produce, so it is preferred when
             // present.
-            let before = held.unwrap_or_else(|| read_state(&target));
+            let before = held.unwrap_or_else(|| capture_now(&target, cloner.as_deref(), &session));
 
             // The turn's header goes down with its first file, so a log holds
             // only turns that changed something.
@@ -1563,6 +1712,46 @@ impl TurnRecorder {
             }
             (false, _) => state.disabled = true,
         }
+    }
+}
+
+fn make_cloner(
+    store: &Path,
+    workspace: &Path,
+    limit: u64,
+    usable: bool,
+) -> Option<Arc<crate::clones::Cloner>> {
+    (usable && limit > 0)
+        .then(|| crate::clones::Cloner::new(store, workspace, limit))
+        .flatten()
+}
+
+/// A pre-image as the sweep hands it over: what goes in the log, or a staged
+/// clone still to be kept. See [`crate::clones`].
+pub(crate) enum Taken {
+    State(State),
+    Staged(Arc<crate::clones::Staged>),
+}
+
+/// What a tool that named its file is about to overwrite, read now.
+///
+/// Text under the size a sweep holds goes inline, as it always has. A larger
+/// file, or one that isn't text, is cloned straight into the conversation's
+/// blobs where a clone can be made, rather than read into memory whole.
+fn capture_now(target: &Path, cloner: Option<&crate::clones::Cloner>, session: &str) -> State {
+    let Some(cloner) = cloner else {
+        return read_state(target);
+    };
+    let len = match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.is_file() => meta.len(),
+        _ => return read_state(target),
+    };
+    if len > crate::sweep::MAX_FILE_BYTES {
+        return cloner.keep(target, len, session);
+    }
+    match read_state(target) {
+        State::Opaque { .. } => cloner.keep(target, len, session),
+        state => state,
     }
 }
 
@@ -2436,21 +2625,102 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_that_is_not_text_is_reported_rather_than_silently_lost() {
+        // Where clones can't be kept, which is another volume or a filesystem
+        // that can't make one. See the clone tests below for where they can.
         let f = Fixture::new();
+        let store = f.store.clone().with_clone_limit(0);
         let file = f.path("blob.bin");
         std::fs::write(&file, [0xff, 0xfe, 0x00]).unwrap();
 
-        let recorder = f.store.begin_turn("s1", &f.root, "overwrite a binary");
+        let recorder = store.begin_turn("s1", &f.root, "overwrite a binary");
         recorder.capture(&file).await;
         std::fs::write(&file, "clobbered").unwrap();
 
-        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap().restored;
+        let restored = store.rewind("s1", &f.root, 1, false).unwrap().restored;
         assert!(matches!(restored[0], Restored::Skipped { .. }));
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "clobbered",
             "there was nothing to put back, and pretending otherwise would be worse"
         );
+    }
+
+    #[tokio::test]
+    async fn a_binary_file_a_tool_overwrites_is_cloned_and_restored() {
+        let f = Fixture::new();
+        let recorder = f.store.begin_turn("s1", &f.root, "overwrite a binary");
+        if recorder.cloner().await.is_none() {
+            return;
+        }
+        let file = f.path("blob.bin");
+        std::fs::write(&file, [0xff, 0xfe, 0x00]).unwrap();
+        recorder.capture(&file).await;
+        std::fs::write(&file, "clobbered").unwrap();
+
+        let restored = f.store.rewind("s1", &f.root, 1, false).unwrap().restored;
+        assert!(
+            matches!(restored[0], Restored::Reverted { .. }),
+            "{restored:?}"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), [0xff, 0xfe, 0x00]);
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_conversation_takes_its_kept_clones() {
+        let f = Fixture::new();
+        let recorder = f.store.begin_turn("s1", &f.root, "overwrite a binary");
+        if recorder.cloner().await.is_none() {
+            return;
+        }
+        let file = f.path("blob.bin");
+        std::fs::write(&file, [0xff, 0x00]).unwrap();
+        recorder.capture(&file).await;
+        assert!(f.logs.path().join("s1.blobs").is_dir());
+
+        f.store.forget("s1").unwrap();
+        assert!(!f.logs.path().join("s1.blobs").exists());
+    }
+
+    #[tokio::test]
+    async fn a_fork_keeps_its_own_clone_after_the_original_is_forgotten() {
+        let f = Fixture::new();
+        let recorder = f.store.begin_turn("s1", &f.root, "overwrite a binary");
+        if recorder.cloner().await.is_none() {
+            return;
+        }
+        let file = f.path("blob.bin");
+        std::fs::write(&file, [0xff, 0x01]).unwrap();
+        recorder.capture(&file).await;
+        std::fs::write(&file, "clobbered").unwrap();
+
+        f.store.copy_prefix("s1", "s2", 1, &f.root).unwrap();
+        f.store.forget("s1").unwrap();
+
+        let restored = f.store.rewind("s2", &f.root, 1, false).unwrap().restored;
+        assert!(
+            matches!(restored[0], Restored::Reverted { .. }),
+            "{restored:?}"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), [0xff, 0x01]);
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_says_when_a_kept_clone_is_gone() {
+        let f = Fixture::new();
+        let recorder = f.store.begin_turn("s1", &f.root, "overwrite a binary");
+        if recorder.cloner().await.is_none() {
+            return;
+        }
+        let file = f.path("blob.bin");
+        std::fs::write(&file, [0xff, 0x02]).unwrap();
+        recorder.capture(&file).await;
+        std::fs::remove_dir_all(f.logs.path().join("s1.blobs")).unwrap();
+
+        let plan = f.store.rewind("s1", &f.root, 1, true).unwrap().restored;
+        let Restored::Skipped { reason, .. } = &plan[0] else {
+            panic!("a plan promised a file it can't restore: {plan:?}");
+        };
+        assert!(reason.contains("kept copy is gone"), "{reason}");
     }
 
     #[tokio::test]

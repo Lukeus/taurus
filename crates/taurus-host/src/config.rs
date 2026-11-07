@@ -1570,6 +1570,15 @@ pub struct Settings {
     /// would be a cloned file choosing what executes when you open a shell.
     #[serde(default)]
     pub terminal_shell: String,
+    /// How much this workspace's kept clones may hold, in gigabytes: copies
+    /// of files too large or not text for the checkpoint log, so a command
+    /// that deleted or rewrote one can still be undone. 20 by default; `0`
+    /// keeps none, and those files are reported rather than restored.
+    ///
+    /// Read from your own settings only, never a project's: it's a claim on
+    /// your disk, and a cloned repository shouldn't get to raise it.
+    #[serde(default = "default_checkpoint_clone_limit_gb")]
+    pub checkpoint_clone_limit_gb: u32,
     /// The terminal's font family. Empty is the app's monospace stack, which
     /// carries the private-use glyphs prompts draw with.
     #[serde(default)]
@@ -1595,6 +1604,10 @@ fn default_true() -> bool {
 
 fn default_max_iterations() -> u32 {
     25
+}
+
+fn default_checkpoint_clone_limit_gb() -> u32 {
+    20
 }
 
 fn default_max_concurrent_agents() -> u32 {
@@ -1848,6 +1861,7 @@ impl Default for Settings {
             verify_changes: true,
             ui_scale: default_ui_scale(),
             terminal_shell: String::new(),
+            checkpoint_clone_limit_gb: default_checkpoint_clone_limit_gb(),
             terminal_font: String::new(),
             terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
             from_project: Vec::new(),
@@ -1952,6 +1966,10 @@ pub struct StoredSettings {
     /// [`load_settings`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_shell: Option<String>,
+    /// See [`Settings::checkpoint_clone_limit_gb`]. Ignored in a project's
+    /// file; see [`load_settings`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_clone_limit_gb: Option<u32>,
     /// See [`Settings::terminal_font`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_font: Option<String>,
@@ -2002,6 +2020,9 @@ impl StoredSettings {
         self.verify_changes = other.verify_changes.or(self.verify_changes);
         self.ui_scale = other.ui_scale.or(self.ui_scale);
         self.terminal_shell = other.terminal_shell.or(self.terminal_shell.take());
+        self.checkpoint_clone_limit_gb = other
+            .checkpoint_clone_limit_gb
+            .or(self.checkpoint_clone_limit_gb);
         self.terminal_font = other.terminal_font.or(self.terminal_font.take());
         self.terminal_font_size = other.terminal_font_size.or(self.terminal_font_size);
         // Name by name. See `Settings::plugins`.
@@ -2087,6 +2108,9 @@ impl StoredSettings {
                 .terminal_shell
                 .map(|s| s.trim().to_string())
                 .unwrap_or(defaults.terminal_shell),
+            checkpoint_clone_limit_gb: self
+                .checkpoint_clone_limit_gb
+                .unwrap_or(defaults.checkpoint_clone_limit_gb),
             terminal_font: self
                 .terminal_font
                 .map(|s| s.trim().to_string())
@@ -2160,6 +2184,7 @@ pub fn load_settings(workspace: Option<&Path>) -> Settings {
     let mut project = read_settings(Scope::Workspace, workspace);
     // Never a project's. See `Settings::terminal_shell` and `Settings::routes`.
     project.terminal_shell = None;
+    project.checkpoint_clone_limit_gb = None;
     project.routes = None;
     let from_project = project.keys();
     merged.overlay(project);
@@ -2547,6 +2572,7 @@ mod tests {
             otlp_capture_content: Some(true),
             max_iterations: Some(42),
             max_concurrent_agents: Some(4),
+            checkpoint_clone_limit_gb: Some(8),
             context_strategy: Some(taurus_core::ContextStrategy::Relay),
             context_limit: Some(120_000),
             routes: Some(ModelRoutes {
@@ -3203,6 +3229,29 @@ mod tests {
 
             let routes = load_settings(Some(ws.path())).routes;
             assert_eq!(routes.delegate.unwrap().label(), "ollama/qwen3:8b");
+        });
+    }
+
+    #[test]
+    fn the_clone_limit_is_read_from_your_own_settings_and_never_a_projects() {
+        with_home(|home| {
+            let ws = trusted_workspace();
+            assert_eq!(load_settings(Some(ws.path())).checkpoint_clone_limit_gb, 20);
+
+            write(
+                home.join("settings.json"),
+                r#"{"checkpoint_clone_limit_gb": 5}"#,
+            );
+            write(
+                workspace_dir(ws.path()).join("settings.json"),
+                r#"{"checkpoint_clone_limit_gb": 5000}"#,
+            );
+            let settings = load_settings(Some(ws.path()));
+            assert_eq!(settings.checkpoint_clone_limit_gb, 5);
+            assert!(!settings
+                .from_project
+                .iter()
+                .any(|key| key == "checkpoint_clone_limit_gb"));
         });
     }
 

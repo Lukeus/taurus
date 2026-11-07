@@ -97,7 +97,8 @@ use std::sync::{Arc, Mutex};
 use ignore::WalkState;
 use std::time::SystemTime;
 
-use crate::checkpoint::{read_state, State, TurnRecorder};
+use crate::checkpoint::{read_state, State, Taken, TurnRecorder};
+use crate::clones::{Cloner, Staged};
 
 mod watched;
 pub use watched::Watching;
@@ -107,7 +108,7 @@ pub use watched::Watching;
 /// A source file is kilobytes. Something past this is a database, a bundled
 /// asset, or a checked-in binary — none of which a text pre-image could put
 /// back correctly even if it were held.
-const MAX_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Ceiling on everything one sweep holds at once, so a workspace of large text
 /// files cannot turn a single command into a 2 GB allocation.
@@ -128,6 +129,9 @@ struct Indexed {
     /// handful of files that actually changed are ever cloned out of it, in
     /// [`Sweep::after`].
     before: Arc<State>,
+    /// A clone of the file, for one too large or not text for `before` to
+    /// hold. See [`crate::clones`].
+    staged: Option<Arc<Staged>>,
 }
 
 impl Indexed {
@@ -224,10 +228,19 @@ impl Sweep {
     ///
     /// `cache` is what the previous command in this turn read, or `None` to
     /// read everything afresh. See [`SweepCache`].
-    pub async fn before(root: &Path, cache: Option<Arc<SweepCache>>) -> Self {
+    ///
+    /// `recorder` is the turn the command records into. Where its store can
+    /// clone this workspace's files, a file too large or not text to hold is
+    /// cloned instead of noted. See [`crate::clones`].
+    pub async fn before(
+        root: &Path,
+        cache: Option<Arc<SweepCache>>,
+        recorder: Option<Arc<TurnRecorder>>,
+    ) -> Self {
         let root = root.to_path_buf();
         tokio::task::spawn_blocking(move || {
-            let mut sweep = index(&root, cache.as_deref());
+            let cloner = recorder.and_then(|recorder| recorder.cloner_blocking());
+            let mut sweep = index(&root, cache.as_deref(), cloner.as_deref());
             sweep.cache = cache;
             sweep
         })
@@ -298,7 +311,7 @@ impl Sweep {
             .keys()
             .any(|path| is_ignore_file(path) && !self.ignores.contains_key(path));
 
-        let mut changed: Vec<(PathBuf, Arc<State>)> = Vec::new();
+        let mut changed: Vec<(PathBuf, Arc<State>, Option<Arc<Staged>>)> = Vec::new();
 
         // Modified and deleted, both identified against the first pass's index.
         for (path, pre) in &self.files {
@@ -318,14 +331,14 @@ impl Sweep {
                 },
             };
             if moved {
-                changed.push((path.clone(), pre.before.clone()));
+                changed.push((path.clone(), pre.before.clone(), pre.staged.clone()));
             }
         }
 
         if rules_held {
             for path in now.keys() {
                 if !self.files.contains_key(path) {
-                    changed.push((path.clone(), Arc::new(State::Absent)));
+                    changed.push((path.clone(), Arc::new(State::Absent), None));
                 }
             }
         }
@@ -333,16 +346,21 @@ impl Sweep {
         // Before anything is written down. Both halves above walk hash maps, so
         // without this the log — and the changed-file list the user reads out
         // of it — would come back in a different order every run.
-        changed.sort_by(|(a, _), (b, _)| a.cmp(b));
+        changed.sort_by(|(a, ..), (b, ..)| a.cmp(b));
 
         // Copied here and only here. The pre-image is shared with the cache and
         // with whatever the last command held, so the copy is paid for the
         // files that changed rather than for the whole workspace.
         let changed = changed
             .into_iter()
-            .map(|(path, before)| {
+            .map(|(path, before, staged)| {
                 let shown = crate::path_guard::display(root, &path);
-                let before = Arc::try_unwrap(before).unwrap_or_else(|held| (*held).clone());
+                let before = match staged {
+                    Some(staged) => Taken::Staged(staged),
+                    None => {
+                        Taken::State(Arc::try_unwrap(before).unwrap_or_else(|held| (*held).clone()))
+                    }
+                };
                 (path, shown, before)
             })
             .collect();
@@ -360,7 +378,7 @@ impl Sweep {
 pub struct Diffed {
     /// Each changed file: where it is, the name it is shown under, and what it
     /// held before.
-    changed: Vec<(PathBuf, String, State)>,
+    changed: Vec<(PathBuf, String, Taken)>,
     /// Why nothing could be compared at all, when that happened.
     abandoned: Option<String>,
     /// Whether an ignore rule changed between the two walks.
@@ -398,10 +416,10 @@ impl Diffed {
             };
         }
 
-        let unrestorable = self
+        let mut unrestorable = self
             .changed
             .iter()
-            .filter(|(_, _, state)| matches!(state, State::Opaque { .. }))
+            .filter(|(_, _, before)| matches!(before, Taken::State(State::Opaque { .. })))
             .count();
         let mut files = Vec::with_capacity(self.changed.len());
         let mut held = Vec::with_capacity(self.changed.len());
@@ -413,7 +431,7 @@ impl Diffed {
         // thousands. A path an earlier tool in this turn already recorded is
         // dropped silently, which is the behavior that wants keeping: the
         // earlier pre-image is the older one.
-        recorder.capture_many(held).await;
+        unrestorable += recorder.capture_many(held).await;
 
         let mut caveats = Vec::new();
         // Narrower than the others on purpose: what was recorded is still
@@ -585,7 +603,7 @@ const WALK_THREADS: usize = 4;
 /// another on a machine with cores sitting idle. Nothing here needs to be
 /// sequential — the files are independent, and the one decision that is not
 /// (which of them fit under the byte cap) is made before any read starts.
-fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
+fn index(root: &Path, cache: Option<&SweepCache>, cloner: Option<&Cloner>) -> Sweep {
     let found = match cache {
         Some(cache) => cache.watched.files(root),
         None => sweepable(root),
@@ -644,14 +662,25 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
 
     read_held(&stamped, &mut states);
 
+    // What couldn't be held is cloned, where it can be: a file past the caps,
+    // or one that isn't text. A clone the last command made of the same
+    // version is used again, so each version is cloned once.
+    let mut staged: Vec<Option<Arc<Staged>>> = vec![None; stamped.len()];
+    if let Some(cloner) = cloner {
+        if let Some(cache) = cache {
+            cache.fill_staged(&stamped, &states, &mut staged);
+        }
+        stage(cloner, &stamped, &states, &mut staged);
+    }
+
     if let Some(cache) = cache {
-        cache.keep(&stamped, &states);
+        cache.keep(&stamped, &states, &staged);
     }
 
     let mut files = HashMap::with_capacity(stamped.len());
     let mut ignores = HashMap::new();
 
-    for ((path, len, modified), before) in stamped.into_iter().zip(states) {
+    for (((path, len, modified), before), staged) in stamped.into_iter().zip(states).zip(staged) {
         if is_ignore_file(&path) {
             ignores.insert(path.clone(), (len, modified));
         }
@@ -668,6 +697,7 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
                         reason: "was not read when it was recorded".into(),
                     })
                 }),
+                staged,
             },
         );
     }
@@ -727,8 +757,19 @@ fn index(root: &Path, cache: Option<&SweepCache>) -> Sweep {
 #[derive(Default)]
 pub struct SweepCache {
     held: Mutex<HashMap<PathBuf, Cached>>,
+    /// Clones of the files `held` couldn't take, on the same terms: used again
+    /// while the file's length and modification time are what they were. Each
+    /// is a file in the checkpoint store's stage, removed when nothing holds it.
+    staged: Mutex<HashMap<PathBuf, StagedCopy>>,
     /// The workspace's watcher, once a sweep has started one. See [`watched`].
     watched: watched::Slot,
+}
+
+/// One file's staged clone, and what has to still be true for it to be usable.
+struct StagedCopy {
+    len: u64,
+    modified: Option<SystemTime>,
+    staged: Arc<Staged>,
 }
 
 /// One file's pre-image, and what has to still be true for it to be usable.
@@ -751,6 +792,10 @@ impl SweepCache {
     pub fn clear(&self) {
         match self.held.lock() {
             Ok(mut held) => held.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        match self.staged.lock() {
+            Ok(mut staged) => staged.clear(),
             Err(poisoned) => poisoned.into_inner().clear(),
         }
         self.watched.clear();
@@ -795,13 +840,65 @@ impl SweepCache {
         }
     }
 
+    /// Fills in a staged clone for every file that couldn't be held and still
+    /// has the length and modification time its cached clone was made at.
+    fn fill_staged(
+        &self,
+        stamped: &[(PathBuf, u64, Option<SystemTime>)],
+        states: &[Option<Arc<State>>],
+        staged: &mut [Option<Arc<Staged>>],
+    ) {
+        let held = match self.staged.lock() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for (((path, len, modified), state), slot) in stamped.iter().zip(states).zip(staged) {
+            if !matches!(state.as_deref(), Some(State::Opaque { .. })) {
+                continue;
+            }
+            if let Some(copy) = held.get(path) {
+                if copy.len == *len && copy.modified == *modified {
+                    *slot = Some(Arc::clone(&copy.staged));
+                }
+            }
+        }
+    }
+
     /// Holds on to what this sweep read, for the next command.
     ///
     /// Replaces the whole map rather than merging into it, so a file that has
     /// been deleted or has fallen outside the walk stops being held the moment
     /// it stops being swept. A cache that only ever grew would keep a
     /// workspace's worth of deleted files alive for the length of a turn.
-    fn keep(&self, stamped: &[(PathBuf, u64, Option<SystemTime>)], states: &[Option<Arc<State>>]) {
+    fn keep(
+        &self,
+        stamped: &[(PathBuf, u64, Option<SystemTime>)],
+        states: &[Option<Arc<State>>],
+        staged: &[Option<Arc<Staged>>],
+    ) {
+        // Replaced whole, like the map below and for the same reason: a clone
+        // of a file that changed or went is a file in the stage nothing needs,
+        // and dropping its last holder removes it.
+        let clones: HashMap<PathBuf, StagedCopy> = stamped
+            .iter()
+            .zip(staged)
+            .filter_map(|((path, len, modified), staged)| {
+                let staged = staged.as_ref()?;
+                Some((
+                    path.clone(),
+                    StagedCopy {
+                        len: *len,
+                        modified: *modified,
+                        staged: Arc::clone(staged),
+                    },
+                ))
+            })
+            .collect();
+        match self.staged.lock() {
+            Ok(mut held) => *held = clones,
+            Err(poisoned) => *poisoned.into_inner() = clones,
+        }
+
         let mut next = HashMap::with_capacity(stamped.len());
         for ((path, len, modified), state) in stamped.iter().zip(states) {
             let Some(state) = state else { continue };
@@ -856,6 +953,60 @@ const READ_THREADS: usize = 4;
 /// Below this a sweep reads on the calling thread. Spawning costs more than it
 /// saves on the small workspaces most sessions run in.
 const PARALLEL_FROM: usize = 128;
+
+/// Clones every file that couldn't be held and has no clone yet.
+///
+/// Only files whose pre-image is a reason rather than contents: past the
+/// caps, not text, or unreadable (which fails to clone too, and stays a
+/// reason). On a large repository that is most of it — vscode and kubernetes
+/// each hold about 250 MB of files under the 1 MB cap, against the 64 MB a
+/// sweep reads — so the first command in a workspace clones tens of thousands.
+/// Measured on APFS: 20,000 clones took 1.8s on one thread and 0.74s on four;
+/// eight, or spreading them across folders, was slower. After the first
+/// command the cache hands them back and almost nothing is cloned.
+fn stage(
+    cloner: &Cloner,
+    stamped: &[(PathBuf, u64, Option<SystemTime>)],
+    states: &[Option<Arc<State>>],
+    staged: &mut [Option<Arc<Staged>>],
+) {
+    let fill = |input: &[(PathBuf, u64, Option<SystemTime>)],
+                states: &[Option<Arc<State>>],
+                out: &mut [Option<Arc<Staged>>]| {
+        for (((path, len, _), state), slot) in input.iter().zip(states).zip(out) {
+            if slot.is_none() && matches!(state.as_deref(), Some(State::Opaque { .. })) {
+                *slot = cloner.stage(path, *len).map(Arc::new);
+            }
+        }
+    };
+
+    let wanted = staged
+        .iter()
+        .zip(states)
+        .filter(|(slot, state)| {
+            slot.is_none() && matches!(state.as_deref(), Some(State::Opaque { .. }))
+        })
+        .count();
+    if wanted < PARALLEL_FROM {
+        fill(stamped, states, staged);
+        return;
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, READ_THREADS);
+    let chunk = stamped.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        for ((input, states), out) in stamped
+            .chunks(chunk)
+            .zip(states.chunks(chunk))
+            .zip(staged.chunks_mut(chunk))
+        {
+            scope.spawn(move || fill(input, states, out));
+        }
+    });
+}
 
 /// Reads every file whose slot is still `None`, leaving the rest alone.
 ///
@@ -1111,20 +1262,49 @@ mod tests {
             std::fs::read_to_string(self.root.join(name)).unwrap()
         }
 
+        /// The same workspace, recording into a store that keeps no clones —
+        /// what a workspace on another volume, or a filesystem that can't
+        /// clone, gets.
+        fn without_clones(mut self) -> Self {
+            self.store = self.store.clone().with_clone_limit(0);
+            self.recorder = self.store.begin_turn("s1", &self.root, "run something");
+            self
+        }
+
+        /// Whether this machine can clone between the fixture's two folders.
+        /// The clone tests below skip where it can't — ext4 on CI, for one —
+        /// because there the fallback tests above are the ones that apply.
+        async fn clones(&self) -> bool {
+            self.recorder.cloner().await.is_some()
+        }
+
+        /// Files in the store's stage, ignoring the probe.
+        fn staged(&self) -> usize {
+            crate::clones::settle();
+            std::fs::read_dir(self.logs.path().join("stage"))
+                .map(|dir| dir.count())
+                .unwrap_or(0)
+        }
+
         fn exists(&self, name: &str) -> bool {
             self.root.join(name).exists()
         }
 
         /// Indexes, runs `act`, then records what it did.
         async fn around(&self, act: impl FnOnce()) -> Change {
-            let sweep = Sweep::before(&self.root, Some(Arc::clone(&self.cache))).await;
+            let sweep = Sweep::before(
+                &self.root,
+                Some(Arc::clone(&self.cache)),
+                Some(Arc::clone(&self.recorder)),
+            )
+            .await;
             act();
             sweep.after(&self.root, &self.recorder).await
         }
 
         /// The same, for a caller that keeps no cache between commands.
         async fn around_uncached(&self, act: impl FnOnce()) -> Change {
-            let sweep = Sweep::before(&self.root, None).await;
+            let sweep = Sweep::before(&self.root, None, Some(Arc::clone(&self.recorder))).await;
             act();
             sweep.after(&self.root, &self.recorder).await
         }
@@ -1404,7 +1584,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_too_large_to_hold_is_reported_rather_than_restored() {
-        let f = Fixture::new();
+        let f = Fixture::new().without_clones();
         let big = "x".repeat(MAX_FILE_BYTES as usize + 1);
         f.write("big.bin", &big);
 
@@ -1426,6 +1606,114 @@ mod tests {
             "truncated",
             "there was nothing to put back, and pretending otherwise would be worse"
         );
+    }
+
+    #[tokio::test]
+    async fn a_file_too_large_to_hold_is_cloned_and_restored() {
+        let f = Fixture::new();
+        if !f.clones().await {
+            return;
+        }
+        let big = "x".repeat(MAX_FILE_BYTES as usize + 1);
+        f.write("big.bin", &big);
+
+        let change = f.around(|| f.write("big.bin", "truncated")).await;
+        assert_eq!(change.files, vec!["big.bin"]);
+        assert_eq!(change.unrestorable, 0, "{:?}", change.warning());
+
+        assert!(matches!(f.rewind()[0], Restored::Reverted { .. }));
+        assert_eq!(f.read("big.bin"), big);
+    }
+
+    #[tokio::test]
+    async fn a_binary_file_a_command_deleted_comes_back() {
+        let f = Fixture::new();
+        if !f.clones().await {
+            return;
+        }
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00];
+        std::fs::write(f.root.join("logo.png"), png).unwrap();
+
+        let change = f
+            .around(|| std::fs::remove_file(f.root.join("logo.png")).unwrap())
+            .await;
+        assert_eq!(change.files, vec!["logo.png"]);
+        assert_eq!(change.unrestorable, 0);
+
+        f.rewind();
+        assert_eq!(std::fs::read(f.root.join("logo.png")).unwrap(), png);
+    }
+
+    #[tokio::test]
+    async fn a_restored_clone_keeps_its_permissions() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let f = Fixture::new();
+            if !f.clones().await {
+                return;
+            }
+            let tool = f.root.join("tool");
+            std::fs::write(&tool, [0x7f, b'E', b'L', b'F', 0xff]).unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            f.around(|| std::fs::remove_file(&tool).unwrap()).await;
+            f.rewind();
+            let mode = std::fs::metadata(&tool).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_clone_past_the_limit_is_reported_with_the_setting_to_raise() {
+        let f = Fixture::new();
+        if !f.clones().await {
+            return;
+        }
+        let mut f = f;
+        f.store = f.store.clone().with_clone_limit(4);
+        f.recorder = f.store.begin_turn("s1", &f.root, "run something");
+        std::fs::write(f.root.join("db.sqlite"), [0u8, 1, 2, 3, 4, 5, 6, 7, 0xff]).unwrap();
+
+        let change = f
+            .around(|| std::fs::write(f.root.join("db.sqlite"), [9u8]).unwrap())
+            .await;
+        assert_eq!(change.unrestorable, 1);
+        let Restored::Skipped { reason, .. } = &f.rewind()[0] else {
+            panic!("restored a file the limit refused");
+        };
+        assert!(reason.contains("checkpoint_clone_limit_gb"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_file_is_cloned_once_across_commands() {
+        let f = Fixture::new();
+        if !f.clones().await {
+            return;
+        }
+        std::fs::write(f.root.join("asset.bin"), [0xffu8; 16]).unwrap();
+        f.around(|| f.write("a.txt", "one")).await;
+        let after_first = f.staged();
+        f.around(|| f.write("a.txt", "one two")).await;
+        assert_eq!(
+            f.staged(),
+            after_first,
+            "the second command cloned it again"
+        );
+        assert_eq!(after_first, 1);
+    }
+
+    #[tokio::test]
+    async fn a_staged_clone_goes_when_nothing_holds_it() {
+        let f = Fixture::new();
+        if !f.clones().await {
+            return;
+        }
+        std::fs::write(f.root.join("asset.bin"), [0xffu8; 16]).unwrap();
+        f.around(|| f.write("a.txt", "one")).await;
+        assert_eq!(f.staged(), 1);
+        f.cache.clear();
+        assert_eq!(f.staged(), 0);
     }
 
     #[tokio::test]
@@ -1489,7 +1777,7 @@ mod tests {
         fn a_file_that_did_not_move_is_answered_without_opening_it() {
             let cache = SweepCache::new();
             let held = vec![stamp("a.txt", 3, 100)];
-            cache.keep(&held, &[text("one")]);
+            cache.keep(&held, &[text("one")], &[]);
 
             let mut wanted = vec![None];
             cache.fill(&held, &mut wanted);
@@ -1507,7 +1795,7 @@ mod tests {
             // contents in memory.
             let cache = SweepCache::new();
             let held = vec![stamp("a.txt", 3, 100)];
-            cache.keep(&held, &[text("one")]);
+            cache.keep(&held, &[text("one")], &[]);
             cache.clear();
 
             let mut wanted = vec![None];
@@ -1518,7 +1806,7 @@ mod tests {
         #[test]
         fn a_file_whose_length_moved_is_read_again() {
             let cache = SweepCache::new();
-            cache.keep(&[stamp("a.txt", 3, 100)], &[text("one")]);
+            cache.keep(&[stamp("a.txt", 3, 100)], &[text("one")], &[]);
 
             let mut wanted = vec![None];
             cache.fill(&[stamp("a.txt", 5, 100)], &mut wanted);
@@ -1536,7 +1824,7 @@ mod tests {
             // swapping one word for another of equal length would be answered
             // from the cache.
             let cache = SweepCache::new();
-            cache.keep(&[stamp("a.txt", 3, 100)], &[text("one")]);
+            cache.keep(&[stamp("a.txt", 3, 100)], &[text("one")], &[]);
 
             let mut wanted = vec![None];
             cache.fill(&[stamp("a.txt", 3, 101)], &mut wanted);
@@ -1550,7 +1838,7 @@ mod tests {
             // contents. If the cache filled that slot it would smuggle a file
             // past a limit the sweep had already applied to it.
             let cache = SweepCache::new();
-            cache.keep(&[stamp("big.bin", 3, 100)], &[text("small once")]);
+            cache.keep(&[stamp("big.bin", 3, 100)], &[text("small once")], &[]);
 
             let mut decided = vec![Some(Arc::new(State::Opaque {
                 reason: "was too large".into(),
@@ -1571,6 +1859,7 @@ mod tests {
                 &[Some(Arc::new(State::Opaque {
                     reason: "was too large".into(),
                 }))],
+                &[],
             );
 
             let mut wanted = vec![None];
@@ -1587,8 +1876,8 @@ mod tests {
             // `keep` replaces rather than merges, so a deleted file is not kept
             // alive in memory for the rest of the turn.
             let cache = SweepCache::new();
-            cache.keep(&[stamp("gone.txt", 3, 100)], &[text("one")]);
-            cache.keep(&[stamp("here.txt", 3, 100)], &[text("two")]);
+            cache.keep(&[stamp("gone.txt", 3, 100)], &[text("one")], &[]);
+            cache.keep(&[stamp("here.txt", 3, 100)], &[text("two")], &[]);
 
             let mut wanted = vec![None];
             cache.fill(&[stamp("gone.txt", 3, 100)], &mut wanted);
