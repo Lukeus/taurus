@@ -8382,3 +8382,12 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 
 }
+
+/* Settings: work delegates kept in copies of a workspace. */
+.delegate-runs-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}

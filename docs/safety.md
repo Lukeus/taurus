@@ -274,6 +274,15 @@ asked about next time, since approved it runs without the list.
 | Linux | `bwrap`, if it's installed and user namespaces are on. A read-only bind needs something to bind over, so **a listed path that doesn't exist yet isn't protected**, and a folder above one can be renamed. Not run yet on a real Linux machine by us: see [Known gaps](known-gaps.md). |
 | Windows | Nothing. |
 
+A delegate working in its own copy of the workspace (see
+[Delegates that write, side by side](capabilities.md#delegates-that-write-side-by-side))
+has one more place on its list: your workspace. Its covered commands can't
+write there, apart from the repository's git directory, where the copy's
+commits go, and that directory's `hooks` stay refused. Its file tools can't
+reach your workspace either, sandbox or not, because they resolve every path
+against the copy. What it changed reaches your workspace only through Apply,
+which never applies a git hook or setting, or a Taurus setting.
+
 Without a sandbox, the first covered command in a conversation says so, and the
 look afterwards carries on. If the sandbox itself fails to start, the result says
 that and the command doesn't run. It isn't quietly run without one. See

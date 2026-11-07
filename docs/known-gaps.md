@@ -164,6 +164,27 @@ the backlog, and they're the minority.
   `taurus hooks check` names the entry and the field. Settings › Hooks has a
   button beside the problem that opens the file in the canvas, and so does the
   refused message, unless the file belongs to a plugin.
+- **A delegate's copy of the workspace has limits.**
+  - It needs git. A folder outside a repository, a repository with
+    submodules, and one whose `.gitattributes` names a filter (Git LFS
+    included) don't get a copy, and their writers run one at a time in the
+    workspace.
+  - A command somebody approves runs without the write deny-list, in a copy as
+    anywhere, so an approved `cp` can still write into your workspace. A
+    command a standing grant covers can't, on macOS and Linux. Windows has no
+    deny-list at all, so there, only the file tools hold a delegate to its
+    copy. The Linux side hasn't been run on a real Linux machine by us.
+  - A copy starts without the build artifacts and dependencies your folder
+    has (`node_modules`, `target/`), unless `.worktreeinclude` lists them. A
+    delegate that has to build pays for the first build again. There's no
+    setup step that runs in a new copy yet.
+  - Two delegates editing the same file in their own copies each apply
+    cleanly only if the second merges with the first. When they overlap, the
+    second is refused with the file named, and it has to be redone or applied
+    by hand.
+  - A reopened conversation's card offers Apply on a run that was already
+    applied or discarded, because the card is rebuilt from the transcript.
+    Pressing it says which, and changes nothing.
 - **Hooks aren't told about a delegate's turn boundaries.** A sub-agent's tool
   calls go through the same `pre_tool_use` and `post_tool_use` hooks as the
   parent's. The context is shared, which stops a delegate routing around a
@@ -1169,7 +1190,9 @@ the backlog, and they're the minority.
   Three things are still lost. Whatever a `run_command` changed while it ran
   isn't in the checkpoint log, because the sweep that records it happens when
   the command finishes. Background delegates die with the turn, and their
-  reports with them. And the turn doesn't pick itself up: continuing is always
+  reports with them. One working in its own copy keeps its work: the next start
+  saves what it had changed as a run to apply or discard, but the report it
+  would have written is gone. And the turn doesn't pick itself up: continuing is always
   a click, because a conversation reopened days later is one to read before
   anything runs in it again.
 - **What a turn kept for a window that wasn't watching is capped.** Reopening a
@@ -1503,10 +1526,9 @@ the backlog, and they're the minority.
 - **Two branches of a conversation can't both have the workspace.** A folder
   has one copy of each file, so a fork sets the original's files aside and
   switching swaps them. Working on two attempts at once would need a second
-  copy of the folder, which is the isolation that write-capable background
-  delegates are also waiting on. Until then, running several models from one
-  fork point side by side isn't possible: each is its own fork, tried one at
-  a time.
+  copy of the folder. Delegates that write now get one (a git worktree), but a
+  fork doesn't use it yet, so running several models from one fork point side
+  by side isn't possible: each is its own fork, tried one at a time.
 - **A comparison counts tokens, not money.** What a branch spent is the
   difference between two running totals in its transcript, so it's tokens in
   and out. Pricing differs by provider and isn't recorded with them, and a

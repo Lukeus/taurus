@@ -29,6 +29,7 @@ import { Field, FromProject, same } from "./settings/Field";
 import { PermissionsTab } from "./settings/PermissionsTab";
 import { VoiceTab } from "./settings/VoiceTab";
 import { UpdatesSection } from "./settings/UpdatesSection";
+import { DelegateRunsSection } from "./settings/DelegateRunsSection";
 import { ToolsTab } from "./settings/ToolsTab";
 import { TracingTab } from "./settings/TracingTab";
 import { HooksTab } from "./settings/HooksTab";
@@ -588,6 +589,7 @@ export function Settings({
                 onError={setBehaviorError}
               />
               <FromProject field="max_concurrent_agents" />
+              <DelegateRunsSection />
               <ContextLimit
                 limit={status?.settings.context_limit ?? DEFAULT_CONTEXT_LIMIT}
                 onError={setBehaviorError}

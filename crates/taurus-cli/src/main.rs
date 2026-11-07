@@ -7,6 +7,7 @@
 mod agents_cmd;
 mod ask;
 mod data_cmd;
+mod delegates_cmd;
 mod fork_cmd;
 mod hooks_cmd;
 mod key_cmd;
@@ -110,6 +111,30 @@ enum Command {
         dry_run: bool,
 
         /// Skip the confirmation. Required to rewind without a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List work delegates kept in their own copy of the workspace, and apply
+    /// or discard it.
+    Delegates {
+        #[command(flatten)]
+        session: SessionArgs,
+
+        /// Apply this run's changes to its workspace. Every file is checked
+        /// against the workspace as it is now, and nothing is written unless
+        /// all of them can be.
+        #[arg(long, value_name = "RUN", conflicts_with = "discard")]
+        apply: Option<String>,
+
+        /// Let this run's changes go without applying them.
+        #[arg(long, value_name = "RUN")]
+        discard: Option<String>,
+
+        /// Show what `--apply` would do without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation. Required to apply without a terminal.
         #[arg(long)]
         yes: bool,
     },
@@ -487,6 +512,17 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             rewind_cmd::run(&host, id.as_deref(), to.as_deref(), dry_run, yes).await
         }
 
+        Command::Delegates {
+            session,
+            apply,
+            discard,
+            dry_run,
+            yes,
+        } => {
+            let host = build_host(&session, Policy::default(), servers).await?.host;
+            delegates_cmd::run(&host, apply.as_deref(), discard.as_deref(), dry_run, yes).await
+        }
+
         Command::Fork {
             session,
             id,
@@ -706,6 +742,7 @@ impl Servers {
             Command::Sessions { .. }
             | Command::Review { .. }
             | Command::Rewind { .. }
+            | Command::Delegates { .. }
             | Command::Trust { .. }
             | Command::Hooks { .. }
             | Command::Plugin { .. }

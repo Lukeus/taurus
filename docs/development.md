@@ -570,6 +570,13 @@ cargo run -p taurus-skills --example synthesis -- qwen3.6:27b
 # Delegation: define a scoped agent, delegate to it, prove it stayed in scope.
 cargo run -p taurus-agents --example delegate -- qwen3.6:27b
 
+# Two delegates that write, at once, each in its own git worktree. Needs Ollama
+# and git; writes only inside temp directories. Asserts nothing reaches the
+# workspace until it's applied, the work is kept as a commit, and no worktree
+# is left behind. Prints how much the two overlapped, and whether a parent
+# turn asked for both in one round and applied them with `apply_delegate`.
+cargo run -p taurus-host --example parallel_writers -- qwen3.6:27b
+
 # MCP: repair the PATH the way the app does, connect, list tools, call one
 # through the registry. Reports entries that would not parse, so a typo is named
 # rather than passing in silence or taking its neighbours down with it.

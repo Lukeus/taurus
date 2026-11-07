@@ -108,7 +108,7 @@ pub async fn discard_delegate(
     session_id: String,
     run: String,
 ) -> CmdResult<()> {
-    Ok(state.host.discard_delegate(&session_id, &run).await?)
+    state.host.discard_delegate(&session_id, &run).await
 }
 
 /// Delegates' work still waiting, on this machine. See `Host::delegate_runs`.

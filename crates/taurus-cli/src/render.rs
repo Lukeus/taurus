@@ -270,8 +270,9 @@ impl Renderer {
                         n => format!("{n} files"),
                     };
                     self.dim(&format!(
-                        "    · kept in its own copy as run {} ({files}), not in your folder yet",
-                        kept.run
+                        "    · kept in its own copy as run {} ({files}), not in your folder yet: \
+                         taurus delegates --apply {}",
+                        kept.run, kept.run
                     ));
                 }
                 if let (taurus_tools::Owner::User, Some(needs)) = (
