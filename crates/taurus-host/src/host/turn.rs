@@ -243,10 +243,15 @@ impl Host {
 
     /// The open workspace's checkpoint logs, for the turn about to record into
     /// them.
+    ///
+    /// Carries the clone limit from your settings. See
+    /// [`crate::config::Settings::checkpoint_clone_limit_gb`].
     pub async fn checkpoints(&self) -> CheckpointStore {
+        let gb = u64::from(self.settings.read().await.checkpoint_clone_limit_gb);
         CheckpointStore::new(crate::sessions::checkpoints_dir(
             &self.workspace.read().await,
         ))
+        .with_clone_limit(gb.saturating_mul(1024 * 1024 * 1024))
     }
 
     /// One named workspace's checkpoint logs.

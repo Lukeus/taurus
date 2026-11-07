@@ -367,6 +367,21 @@ the backlog, and they're the minority.
   rewrite in the window between two commands. And a file the turn already
   recorded is unaffected, because a turn keeps its first pre-image. The fix
   is the same: read every file twice, in the same place.
+- **Large and binary files are only restorable where they can be cloned.** On
+  APFS, Btrfs and XFS, a file a sweep can't hold in memory (over 1 MB, not
+  text, or past 64 MB in all) is cloned before each command and comes back on
+  a rewind. Elsewhere it's reported, not restored: a workspace on another
+  volume from `~/.taurus`, ext4, NTFS, and every Windows machine for now. The
+  library's ReFS path is self-described as untested and has an open zero-fill
+  bug, which is what made pnpm turn cloning off on Windows. See
+  [Rewinding a turn](safety.md#rewinding-a-turn).
+
+  The first command in a large workspace pays for cloning everything it can't
+  hold: about 0.9 s on a 21,000-file repository and 1.5 s on a 32,000-file one,
+  once per workspace while the app is open. Kept clones are counted at full
+  length against the 20 GB cap, though one may still share blocks with the file
+  it came from, so the cap can refuse a clone that would have cost less. And
+  the diff view doesn't show a cloned file's changes, only that it changed.
 - **A watched sweep trusts the watcher between checks.** In a git repository a
   file watcher tells the sweep what changed, and every sixteenth answer is
   checked against a full walk. A miss switches the watcher off for good. But

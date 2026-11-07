@@ -173,7 +173,7 @@ pub fn fork_before(
             turn: checkpoint,
             read_only,
             prompt: point.prompt,
-            restored: write(workspace, &plan, &tips, true),
+            restored: write(store, workspace, &plan, &tips, true),
             warnings,
         });
     }
@@ -217,7 +217,7 @@ pub fn fork_before(
         turn: checkpoint,
         read_only,
         prompt,
-        restored: write(workspace, &plan, &kept, false),
+        restored: write(store, workspace, &plan, &kept, false),
         warnings,
     })
 }
@@ -312,7 +312,7 @@ pub fn switch(
             })
             .collect(),
     };
-    let restored = write(workspace, &wanted, &tips, dry_run);
+    let restored = write(store, workspace, &wanted, &tips, dry_run);
     if !dry_run {
         store.mark_entered(target, workspace)?;
     }
@@ -562,7 +562,13 @@ pub fn ensure_on_disk(store: &CheckpointStore, session: &str) -> Result<(), Stri
 
 /// Writes `wanted`, except over a file whose current contents couldn't be
 /// kept. `tips` is what each path held, as the set-aside recorded it.
-fn write(workspace: &Path, wanted: &[Held], tips: &[Held], dry_run: bool) -> Vec<Restored> {
+fn write(
+    store: &CheckpointStore,
+    workspace: &Path,
+    wanted: &[Held],
+    tips: &[Held],
+    dry_run: bool,
+) -> Vec<Restored> {
     let mut writable = Vec::new();
     let mut skipped = Vec::new();
     for held in wanted {
@@ -578,7 +584,7 @@ fn write(workspace: &Path, wanted: &[Held], tips: &[Held], dry_run: bool) -> Vec
             _ => writable.push(held.clone()),
         }
     }
-    let mut restored = apply(workspace, &writable, dry_run);
+    let mut restored = apply(store, workspace, &writable, dry_run);
     if !dry_run {
         for held in &writable {
             taurus_tools::protected::written_by_this_process(&workspace.join(&held.path));

@@ -577,7 +577,12 @@ async fn start_in_background(
     // [`crate::jobs`].
     let before = match &ctx.checkpoints {
         Some(_) => Some(crate::jobs::Before {
-            sweep: crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await,
+            sweep: crate::sweep::Sweep::before(
+                &ctx.workspace,
+                ctx.sweeps.clone(),
+                ctx.checkpoints.clone(),
+            )
+            .await,
             workspace: ctx.workspace.clone(),
         }),
         None => None,
