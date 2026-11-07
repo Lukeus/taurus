@@ -53,7 +53,7 @@ async fn main() {
     // first one carries the cost of pulling a cold workspace into the operating
     // system's own page cache, and reads as several times slower than a sweep
     // with no cache at all — which is the opposite of what is true.
-    Sweep::before(&root, None).await;
+    Sweep::before(&root, None, None).await;
 
     // As the host holds one: shared by every command in the workspace.
     let cache = Arc::new(SweepCache::new());
@@ -65,7 +65,7 @@ async fn main() {
         ("with no cache ", None),
     ] {
         let started = Instant::now();
-        let sweep = Sweep::before(&root, cache).await;
+        let sweep = Sweep::before(&root, cache, Some(Arc::clone(&recorder))).await;
         let indexed = started.elapsed();
 
         // Nothing runs in between, so a correct sweep finds nothing. Anything
@@ -91,7 +91,9 @@ async fn main() {
             // ones after answer from it.
             for label in ["picture taken ", "watched       ", "watched again "] {
                 let started = Instant::now();
-                let sweep = Sweep::before(&root, Some(Arc::clone(&cache))).await;
+                let sweep =
+                    Sweep::before(&root, Some(Arc::clone(&cache)), Some(Arc::clone(&recorder)))
+                        .await;
                 let indexed = started.elapsed();
                 let started = Instant::now();
                 let found = sweep.after(&root, &recorder).await;

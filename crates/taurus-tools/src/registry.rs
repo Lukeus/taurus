@@ -236,9 +236,14 @@ impl ToolRegistry {
         // `run_command` sitting outside undo, and outside the changed-file list
         // the user reads to decide whether they need it.
         let sweep = match &ctx.checkpoints {
-            Some(_) if tool.touches_unpredictably() => {
-                Some(crate::sweep::Sweep::before(&ctx.workspace, ctx.sweeps.clone()).await)
-            }
+            Some(_) if tool.touches_unpredictably() => Some(
+                crate::sweep::Sweep::before(
+                    &ctx.workspace,
+                    ctx.sweeps.clone(),
+                    ctx.checkpoints.clone(),
+                )
+                .await,
+            ),
             _ => None,
         };
 
