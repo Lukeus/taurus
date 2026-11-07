@@ -332,8 +332,9 @@ async fn leaving_a_workspace_stops_its_index_build() {
     let workspace = dir.path().canonicalize().unwrap();
     let (host, _home) = host(&workspace);
 
-    let cancel = tokio_util::sync::CancellationToken::new();
-    host.indexing.take_over(&cancel);
+    let (_, cancel) = host
+        .indexing
+        .take_over(&tokio_util::sync::CancellationToken::new());
 
     let next = tempfile::TempDir::new().unwrap();
     host.set_workspace(next.path()).await.unwrap();

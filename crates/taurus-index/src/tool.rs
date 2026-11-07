@@ -242,28 +242,49 @@ impl Tool for SearchCode {
         // Before the search, not on a timer: a model that just wrote a file and
         // then looked for it has to find it.
         ctx.report("indexing the workspace").await;
-        let ticket = self
-            .indexing
-            .as_ref()
-            .map(|flight| flight.take_over(&ctx.cancel));
+        let (ticket, stop) = match &self.indexing {
+            Some(flight) => {
+                let (ticket, stop) = flight.take_over(&ctx.cancel);
+                (Some(ticket), stop)
+            }
+            None => (None, ctx.cancel.child_token()),
+        };
         let refreshed = refresh(
             &index,
             &ctx.workspace,
             &self.provider,
             &self.model,
-            &ctx.cancel,
+            &stop,
             Some(&Reporting(ctx)),
         )
         .await;
         if let (Some(flight), Some(ticket)) = (&self.indexing, ticket) {
             flight.finished(ticket);
         }
-        let (entries, report) = refreshed.map_err(ToolError::Failed)?;
+        let (entries, summary) = match refreshed {
+            Ok((entries, report)) => (entries, report.summary()),
+            // Another refresh took this one over (a second search in the same
+            // round, or Build index) and is finishing the work. What this one
+            // embedded is written down, so search the index as it stands
+            // rather than fail a question the index can mostly answer.
+            Err(_) if stop.is_cancelled() && !ctx.cancel.is_cancelled() => {
+                let index = index.clone();
+                let model = self.model.clone();
+                let entries = tokio::task::spawn_blocking(move || index.load(&model))
+                    .await
+                    .map_err(|e| ToolError::Failed(format!("the index couldn't be read: {e}")))?;
+                let summary = "Another refresh of the index took over from this one and is \
+                               still running."
+                    .to_string();
+                (entries, summary)
+            }
+            Err(e) => return Err(ToolError::Failed(e)),
+        };
 
         if entries.is_empty() {
             return Ok(format!(
                 "Nothing indexed in this workspace, so there is nothing to search. {}",
-                report.summary()
+                summary
             )
             .into());
         }
