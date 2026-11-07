@@ -1,7 +1,8 @@
+import { useEffect } from "react";
 import { create } from "zustand";
 
 import type { ApplyPlan, Kept } from "../lib/api";
-import { applyDelegate, discardDelegate } from "../lib/api";
+import { applyDelegate, delegateRun, discardDelegate } from "../lib/api";
 import { plural } from "../lib/format";
 import { useStore } from "../state/store";
 
@@ -24,7 +25,8 @@ export const useKept = create<{
 export type KeptState =
   | { kind: "idle" }
   | { kind: "working" }
-  | { kind: "applied"; plan: ApplyPlan }
+  /** `plan` when it was applied here, and none when it was found applied. */
+  | { kind: "applied"; plan?: ApplyPlan }
   | { kind: "refused"; plan: ApplyPlan }
   | { kind: "discarded" }
   | { kind: "error"; message: string };
@@ -41,6 +43,28 @@ export function KeptWork({ kept }: { kept: Kept }) {
   const state = useKept((k) => k.runs[kept.run] ?? IDLE);
   const setState = (next: KeptState) => useKept.getState().set(kept.run, next);
 
+  // Asked once a card is drawn with nothing known about its run. What's held
+  // here lives only as long as the window, and the run can have been applied
+  // or discarded since (in Settings, from the CLI, by the model, before a
+  // reload), which offered Apply again on work that was already in.
+  const known = state.kind !== "idle";
+  useEffect(() => {
+    if (known) return;
+    let live = true;
+    delegateRun(kept.run)
+      .then((summary) => {
+        if (!live || useKept.getState().runs[kept.run]) return;
+        if (summary?.state === "applied") useKept.getState().set(kept.run, { kind: "applied" });
+        if (summary?.state === "discarded") {
+          useKept.getState().set(kept.run, { kind: "discarded" });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [kept.run, known]);
+
   const act = async (what: "apply" | "discard") => {
     if (!sessionId) return;
     setState({ kind: "working" });
@@ -52,6 +76,18 @@ export function KeptWork({ kept }: { kept: Kept }) {
       }
       const plan = await applyDelegate(sessionId, kept.run, false);
       setState(plan.applied ? { kind: "applied", plan } : { kind: "refused", plan });
+      if (plan.applied) {
+        // What a turn's own write does, so a file open in the canvas or the
+        // notes pane reloads, or says it has typing that would be lost, rather
+        // than showing what was there before the apply.
+        const paths = plan.files
+          .filter((f) => f.action === "take" || f.action === "merge" || f.action === "delete")
+          .map((f) => f.path);
+        if (paths.length > 0) {
+          useStore.setState((s) => ({ wrote: { paths, at: (s.wrote?.at ?? 0) + 1 } }));
+        }
+        void useStore.getState().refreshChanged();
+      }
     } catch (e) {
       setState({ kind: "error", message: String(e) });
     }

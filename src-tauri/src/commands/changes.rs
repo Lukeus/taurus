@@ -125,6 +125,16 @@ pub async fn discard_delegate(
     state.host.discard_delegate(&session_id, &run).await
 }
 
+/// Where one delegate run stands, applied or discarded included. See
+/// `Host::delegate_run`.
+#[tauri::command]
+pub async fn delegate_run(
+    state: State<'_, Arc<AppState>>,
+    run: String,
+) -> CmdResult<Option<taurus_host::worktree::RunSummary>> {
+    Ok(state.host.delegate_run(&run))
+}
+
 /// Delegates' work still waiting, on this machine. See `Host::delegate_runs`.
 #[tauri::command]
 pub async fn delegate_runs(

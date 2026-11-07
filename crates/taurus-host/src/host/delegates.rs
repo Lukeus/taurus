@@ -48,6 +48,11 @@ impl Host {
         self.worktrees.discard(run, Some(session_id)).await
     }
 
+    /// Where delegate run `run` stands, applied or discarded included.
+    pub fn delegate_run(&self, run: &str) -> Option<crate::worktree::RunSummary> {
+        self.worktrees.summary_of(run)
+    }
+
     /// Every delegate run with work still kept or a folder left behind, newest
     /// first, so nothing piles up where nobody can see it.
     pub fn delegate_runs(&self) -> Vec<crate::worktree::RunSummary> {

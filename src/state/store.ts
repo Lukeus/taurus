@@ -117,6 +117,11 @@ export type Entry =
        */
       view?: TranscriptView;
       /**
+       * A plan this card drew and a later `update_plan` replaced, kept so it
+       * can come back if that update fails. See `supersedePlans`.
+       */
+      superseded?: TranscriptView;
+      /**
        * The delegate's own conversation, for the calls that had one.
        *
        * Set while the call is still running, which is the point: a delegation
@@ -1542,11 +1547,21 @@ export const useStore = create<Store>((set, get) => ({
       console.warn("could not read which permission prompts are waiting", e);
       return;
     }
-    // Something else moved the slot while this was being read, and what it put
-    // there is newer than this answer.
-    if (get().permission !== before) return;
-    if (before && waiting.some((request) => request.id === before.id)) return;
-    set({ permission: waiting.find((request) => request.id !== promptInFlight) ?? null });
+    // Something else put a prompt in the slot while this was being read, and
+    // it's newer than this answer. Emptied meanwhile is different: a turn
+    // ending clears its own prompt from the slot, and bailing then left
+    // another conversation's prompt waiting with nothing on screen.
+    const now = get().permission;
+    if (now !== before && now !== null) return;
+    if (now && waiting.some((request) => request.id === now.id)) return;
+    // Emptied by a turn ending, the list may have been read just before that
+    // turn's own prompt was withdrawn: only a running turn's prompt is put up.
+    const running = get().running;
+    const cleared = now !== before;
+    const live = (request: PermissionRequest) =>
+      request.id !== promptInFlight &&
+      (!cleared || !request.session || running.includes(request.session));
+    set({ permission: waiting.find(live) ?? null });
   },
 
   answerQuestions: async (id, answers) => {
@@ -2747,9 +2762,27 @@ function supersedePlans(entries: Entry[]): Entry[] {
   if (last < 0) return entries;
   return entries.map((e, i) =>
     i !== last && e.kind === "tool" && e.view?.type === "plan"
-      ? { ...e, view: undefined }
+      ? { ...e, view: undefined, superseded: e.view }
       : e,
   );
+}
+
+/**
+ * Puts back the plan a failed `update_plan` replaced. The new card's view goes
+ * out as the call starts, which retires the one before it; a call the harness
+ * then refused leaves no plan of its own, and without this, none at all.
+ */
+function reinstatePlan(entries: Entry[]): Entry[] {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.kind === "tool" && e.view?.type === "plan") return entries;
+    if (e.kind === "tool" && e.superseded?.type === "plan") {
+      return entries.map((x, j) =>
+        j === i && x.kind === "tool" ? { ...x, view: x.superseded, superseded: undefined } : x,
+      );
+    }
+  }
+  return entries;
 }
 
 const PREVIEW_MAX_CHARS = 120;
@@ -3022,8 +3055,11 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
     case "delegate_activity":
       return entries;
 
-    case "tool_call_finished":
-      return onCard(entries, answering(entries, event.id), (e) => ({
+    case "tool_call_finished": {
+      const at = answering(entries, event.id);
+      const card = at >= 0 ? entries[at] : undefined;
+      const failedPlan = !event.ok && card?.kind === "tool" && card.view?.type === "plan";
+      const finished = onCard(entries, at, (e) => ({
         ...e,
         status: event.ok ? "ok" : "error",
         output: event.output,
@@ -3035,6 +3071,8 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
         view: event.ok ? e.view : undefined,
         endedAt: Date.now(),
       }));
+      return failedPlan ? reinstatePlan(finished) : finished;
+    }
 
     case "context_trimmed":
       return [

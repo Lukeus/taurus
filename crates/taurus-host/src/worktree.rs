@@ -159,6 +159,21 @@ pub struct RunSummary {
     pub left_behind: Option<String>,
 }
 
+fn summary(record: Record) -> RunSummary {
+    RunSummary {
+        run: record.run,
+        agent: record.agent,
+        workspace: record.workspace.to_string_lossy().into_owned(),
+        session: record.session,
+        created: record.created,
+        state: serde_json::to_value(record.state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        left_behind: record.left_behind,
+    }
+}
+
 /// The worktrees on this machine, and what Taurus knows of each.
 pub struct Worktrees {
     home: PathBuf,
@@ -293,22 +308,19 @@ impl Worktrees {
                 let record = self.record(&run).ok()?;
                 let waiting = matches!(record.state, State::Kept | State::Running)
                     || record.left_behind.is_some();
-                waiting.then(|| RunSummary {
-                    run: record.run,
-                    agent: record.agent,
-                    workspace: record.workspace.to_string_lossy().into_owned(),
-                    session: record.session,
-                    created: record.created,
-                    state: serde_json::to_value(record.state)
-                        .ok()
-                        .and_then(|v| v.as_str().map(str::to_owned))
-                        .unwrap_or_default(),
-                    left_behind: record.left_behind,
-                })
+                waiting.then(|| summary(record))
             })
             .collect();
         runs.sort_by(|a, b| b.created.cmp(&a.created).then(a.run.cmp(&b.run)));
         runs
+    }
+
+    /// Where one run stands, whatever that is: applied and discarded runs
+    /// too, which [`Self::list`] leaves out. For a delegate's card drawn again
+    /// after a reload, which would otherwise offer Apply on work that was
+    /// applied from Settings, the CLI, or by the model.
+    pub fn summary_of(&self, run: &str) -> Option<RunSummary> {
+        self.record(run).ok().map(summary)
     }
 
     /// What a crash left behind, put right. Run when the host starts.
