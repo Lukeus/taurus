@@ -42,7 +42,6 @@ pub async fn run(
     dry_run: bool,
 ) -> Result<(ExitCode, Option<(String, String)>), String> {
     let workspace = host.workspace().await;
-    let store = host.checkpoints().await;
 
     let session_id = match id {
         Some(id) => id.to_string(),
@@ -64,6 +63,11 @@ pub async fn run(
                 .id
         }
     };
+    // The conversation's own folder: its checkpoints are kept under it, and
+    // it's the tree they describe. A conversation from another workspace, named
+    // by id, otherwise found no checkpoints, or put files back in this one.
+    let workspace = sessions::workspace_of(&session_id).unwrap_or(workspace);
+    let store = host.checkpoints_for(&workspace);
 
     match action {
         Action::List => {

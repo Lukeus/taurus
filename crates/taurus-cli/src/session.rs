@@ -42,11 +42,76 @@ impl PermissionPromptFactory for TerminalPrompts {
 /// session. A named session that cannot be found is an error rather than a
 /// silent new conversation: continuing somewhere else is not what was asked
 /// for, and the mistake is invisible until the model answers without context.
+/// A conversation to open: resumed from disk, or new on a model chosen once
+/// the resumed one (if any) has said which it was on.
+enum Opening {
+    New,
+    Resumed {
+        session: Session,
+        log: SessionLog,
+        /// The backend it was last on, when it has moved at least once.
+        provider: Option<String>,
+    },
+}
+
+impl Opening {
+    /// The provider and model to resolve: what was asked for on the command
+    /// line, then what a resumed conversation was on. Its model only goes with
+    /// its own backend: `--provider other` alone means that backend's default.
+    fn choice<'a>(&'a self, args: &'a SessionArgs) -> (Option<&'a str>, Option<&'a str>) {
+        let Opening::Resumed {
+            session, provider, ..
+        } = self
+        else {
+            return (args.provider.as_deref(), args.model.as_deref());
+        };
+        let provider_arg = args.provider.as_deref();
+        let same_backend = provider_arg.is_none() || provider_arg == provider.as_deref();
+        (
+            provider_arg.or(provider.as_deref()),
+            args.model
+                .as_deref()
+                .or(same_backend.then_some(session.model.as_str())),
+        )
+    }
+
+    fn open(
+        self,
+        runtime_branch: Option<String>,
+        workspace: &std::path::Path,
+        model: &str,
+    ) -> (Session, SessionLog) {
+        match self {
+            Opening::Resumed { session, log, .. } => (session, log),
+            Opening::New => {
+                let session = Session::new(model);
+                // The CLI records the branch too: a transcript is a transcript,
+                // and one started from a terminal must list the same way as one
+                // started from the app.
+                let log = SessionLog::create(&session, workspace, runtime_branch);
+                (session, log)
+            }
+        }
+    }
+}
+
+/// Opens what `--resume` names, or the latest conversation for a bare one, and
+/// a new one otherwise; see [`Opening`].
 async fn open_session(
     runtime: &Runtime,
     resume: Option<&Option<String>>,
-    model: &str,
-) -> Result<(Session, SessionLog), String> {
+    args: &SessionArgs,
+) -> Result<(Session, SessionLog, String, String), String> {
+    let opening = resumed(runtime, resume).await?;
+    let (provider, model) = opening.choice(args);
+    let (provider_id, model) = runtime.host.resolve_model(provider, model).await?;
+    let workspace = runtime.host.workspace().await;
+    let branch = runtime.host.branch().await;
+    let (session, log) = opening.open(branch, &workspace, &model);
+    Ok((session, log, provider_id, model))
+}
+
+async fn resumed(runtime: &Runtime, resume: Option<&Option<String>>) -> Result<Opening, String> {
     let workspace = runtime.host.workspace().await;
 
     let requested = match resume {
@@ -65,12 +130,7 @@ async fn open_session(
     };
 
     let Some(id) = requested else {
-        let session = Session::new(model);
-        // The CLI records the branch too: a transcript is a transcript, and one
-        // started from a terminal must list the same way as one started from
-        // the app.
-        let log = SessionLog::create(&session, &workspace, runtime.host.branch().await);
-        return Ok((session, log));
+        return Ok(Opening::New);
     };
 
     let loaded = sessions::load(&id)?;
@@ -98,7 +158,11 @@ async fn open_session(
     if let Some(interrupted) = &session.interrupted {
         eprintln!("  {}", interrupted_notice(interrupted));
     }
-    Ok((session, log))
+    Ok(Opening::Resumed {
+        session,
+        log,
+        provider: loaded.provider,
+    })
 }
 
 /// What to say about a conversation whose last turn ended before its work did.
@@ -136,16 +200,12 @@ pub async fn run_once(
     quiet: bool,
     verbose: bool,
 ) -> Result<ExitCode, String> {
-    let (provider_id, model) = runtime
-        .host
-        .resolve_model(args.provider.as_deref(), args.model.as_deref())
-        .await?;
+    let (mut session, mut log, provider_id, model) = open_session(runtime, resume, args).await?;
     let provider = runtime.host.provider(&provider_id).await?;
 
     let cancel = CancellationToken::new();
-    install_interrupt_handler(cancel.clone());
+    let _interrupts = install_interrupt_handler(cancel.clone());
 
-    let (mut session, mut log) = open_session(runtime, resume, &model).await?;
     let ok = turn(
         runtime,
         &provider_id,
@@ -175,10 +235,7 @@ pub async fn repl(
     args: &SessionArgs,
     resume: Option<&Option<String>>,
 ) -> Result<ExitCode, String> {
-    let (provider_id, model) = runtime
-        .host
-        .resolve_model(args.provider.as_deref(), args.model.as_deref())
-        .await?;
+    let (mut session, mut log, provider_id, model) = open_session(runtime, resume, args).await?;
     let provider = runtime.host.provider(&provider_id).await?;
 
     let capabilities = provider
@@ -195,8 +252,6 @@ pub async fn repl(
         eprintln!("  {model} has no built-in tool calling; using prompted tool calls.");
     }
     eprintln!("  Ctrl-D to exit, Ctrl-C to interrupt a turn.\n");
-
-    let (mut session, mut log) = open_session(runtime, resume, &model).await?;
 
     let ended = converse(
         runtime,
@@ -253,7 +308,7 @@ async fn converse(
 
         // A fresh token per turn so an interrupted turn does not kill the next.
         let cancel = CancellationToken::new();
-        install_interrupt_handler(cancel.clone());
+        let _interrupts = install_interrupt_handler(cancel.clone());
 
         turn(
             runtime,
@@ -569,20 +624,65 @@ fn review(proposal: &SkillProposal) -> bool {
 
 /// Makes Ctrl-C cancel the turn rather than kill the process, so a half-written
 /// file gets its tool call cleaned up and the session ends consistently.
-fn install_interrupt_handler(cancel: CancellationToken) {
-    tokio::spawn(async move {
+/// Cancels `cancel` on Ctrl-C, for as long as the returned guard is held.
+///
+/// Held for one turn. Left running, every turn of a REPL added a listener that
+/// outlived it, and the next Ctrl-C woke them all: "interrupted" printed once
+/// per turn so far, each cancelling a token nothing was using.
+#[must_use = "the handler stops when this is dropped"]
+fn install_interrupt_handler(cancel: CancellationToken) -> Interrupts {
+    Interrupts(tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             if std::io::stderr().is_terminal() {
                 eprintln!("\n  interrupted");
             }
             cancel.cancel();
         }
-    });
+    }))
+}
+
+/// See [`install_interrupt_handler`].
+struct Interrupts(tokio::task::JoinHandle<()>);
+
+impl Drop for Interrupts {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resumed_conversation_goes_on_with_what_it_was_on_unless_told_otherwise() {
+        let mut session = Session::new("qwen3:8b");
+        session.id = "s1".into();
+        let resumed = Opening::Resumed {
+            session,
+            log: SessionLog::disabled(),
+            provider: Some("ollama".into()),
+        };
+        let args = |provider: Option<&str>, model: Option<&str>| SessionArgs {
+            workspace: None,
+            provider: provider.map(String::from),
+            model: model.map(String::from),
+        };
+        assert_eq!(
+            resumed.choice(&args(None, None)),
+            (Some("ollama"), Some("qwen3:8b"))
+        );
+        assert_eq!(
+            resumed.choice(&args(None, Some("llama3"))),
+            (Some("ollama"), Some("llama3"))
+        );
+        // Another backend: its own default, not this conversation's model name.
+        assert_eq!(
+            resumed.choice(&args(Some("openai"), None)),
+            (Some("openai"), None)
+        );
+        assert_eq!(Opening::New.choice(&args(None, None)), (None, None));
+    }
     use taurus_core::testing::FakeProvider;
 
     /// `TAURUS_HOME` is one setting for the whole test process, so one folder
