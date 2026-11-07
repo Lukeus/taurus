@@ -1064,9 +1064,15 @@ fn read_provider_layer(path: &Path) -> Result<Option<Vec<ProviderEntry>>, String
         // with the defaults.
         Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
     };
-    serde_json::from_str::<Vec<ProviderEntry>>(&text)
+    parse_provider_layer(&text)
         .map(Some)
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The shape of one `providers.json` layer. The trust scan reads it through
+/// this too.
+pub(crate) fn parse_provider_layer(text: &str) -> Result<Vec<ProviderEntry>, serde_json::Error> {
+    serde_json::from_str::<Vec<ProviderEntry>>(text)
 }
 
 /// Reads both layers and merges them by provider id.
