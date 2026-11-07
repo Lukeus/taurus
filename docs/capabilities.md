@@ -252,9 +252,9 @@ Sub-agents share the same `/` namespace. See
 
 Two frontmatter flags decide how a skill can be reached:
 
-- `disable-model-invocation: true` keeps a skill out of the prompt catalog but
-  leaves it runnable by name. Use it for procedures that should run when a
-  person asks and not before.
+- `disable-model-invocation: true` keeps a skill out of the prompt catalog and
+  out of `load_skill`'s reach. You still run it by name, as a slash command.
+  Use it for procedures that should run when a person asks and not before.
 - `user-invocable: false` does the reverse.
 
 Both are optional, and both default to available.
@@ -651,7 +651,11 @@ costs directories, not a second parser.
 
 Copilot's doubled extension is understood: `reviewer.agent.md` is the agent
 `reviewer`, not one called `reviewer.agent`. Frontmatter keys Taurus doesn't
-have are ignored, not honored.
+have are ignored, not honored. A `tools:` list in their spelling is read as
+Taurus's tools: `Read, Glob, Grep` is `read_file`, `glob` and `grep`, and
+Copilot's `view` is `read_file` and `list_dir`. A name with no Taurus
+equivalent (`Task`, `TodoWrite`) is reported on the agent's row, and the agent
+runs with the rest.
 
 A project agent shadows a personal one of the same name, and either shadows a
 built-in. So an `explorer.md` of your own replaces the shipped explorer

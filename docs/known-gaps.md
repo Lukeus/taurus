@@ -650,6 +650,16 @@ the backlog, and they're the minority.
   happens once, in a commit, against the source. A person can do that
   properly; a model emitting a package name at runtime can't. See
   [MCP servers](configuration.md#mcp-servers).
+- **Stopping a stdio MCP server ends only the program Taurus started.** A
+  server launched through `npx`, `uvx` or a `.cmd` shim is that launcher's
+  child, and when Taurus disconnects or quits, the launcher is killed and the
+  server under it can be left running. Hooks and background commands don't
+  have this problem: they run in a process group (on Windows, a Job Object),
+  and the whole group is ended. Doing the same for MCP servers means ending
+  the group when a connection is dropped, which needs the async kill to run
+  from a destructor and the Windows path checked on Windows. That isn't built
+  yet. Until it is, a server that outlives a quit shows up in your process
+  list under its own name.
 - **A disabled server's cost is unknown, not zero.** The MCP panel prices each
   connected server's tool schemas: what it adds to every request, called or
   not. It shows nothing for a server that never connected. That's the honest

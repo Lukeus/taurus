@@ -47,8 +47,9 @@ impl PermissionPromptFactory for TerminalPrompts {
 enum Opening {
     New,
     Resumed {
-        session: Session,
-        log: SessionLog,
+        // Boxed: a conversation is large and `New` is nothing.
+        session: Box<Session>,
+        log: Box<SessionLog>,
         /// The backend it was last on, when it has moved at least once.
         provider: Option<String>,
     },
@@ -82,7 +83,7 @@ impl Opening {
         model: &str,
     ) -> (Session, SessionLog) {
         match self {
-            Opening::Resumed { session, log, .. } => (session, log),
+            Opening::Resumed { session, log, .. } => (*session, *log),
             Opening::New => {
                 let session = Session::new(model);
                 // The CLI records the branch too: a transcript is a transcript,
@@ -159,8 +160,8 @@ async fn resumed(runtime: &Runtime, resume: Option<&Option<String>>) -> Result<O
         eprintln!("  {}", interrupted_notice(interrupted));
     }
     Ok(Opening::Resumed {
-        session,
-        log,
+        session: Box::new(session),
+        log: Box::new(log),
         provider: loaded.provider,
     })
 }
@@ -659,8 +660,8 @@ mod tests {
         let mut session = Session::new("qwen3:8b");
         session.id = "s1".into();
         let resumed = Opening::Resumed {
-            session,
-            log: SessionLog::disabled(),
+            session: Box::new(session),
+            log: Box::new(SessionLog::disabled()),
             provider: Some("ollama".into()),
         };
         let args = |provider: Option<&str>, model: Option<&str>| SessionArgs {
