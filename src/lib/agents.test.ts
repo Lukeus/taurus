@@ -83,7 +83,7 @@ describe("mergeAgents", () => {
       {
         type: "delegate_report",
         id: "a",
-        report: { disposition: "blocked", owner: "user", needs: "pick one", summary: "", files: [] },
+        report: { disposition: "blocked", owner: "user", needs: "pick one", summary: "", files: [], notes: [] },
       },
     ]);
     expect(stateOf(agents.a)).toBe("blocked");

@@ -255,6 +255,11 @@ pub struct Host {
     /// turn read the whole workspace again first. Cleared when the workspace
     /// changes.
     sweeps: Arc<taurus_tools::SweepCache>,
+    /// The copies of the workspace delegates that write are given, so several
+    /// can run at once. Per host, because a run outlives the turn that started
+    /// it: what it kept waits for somebody to apply it. See
+    /// [`crate::worktree`].
+    worktrees: Arc<crate::worktree::Worktrees>,
     /// Shared rather than owned so sub-agents can be handed the same registry:
     /// it has no spawn tool, which is what caps delegation depth.
     registry: Arc<RwLock<ToolRegistry>>,
@@ -350,7 +355,21 @@ impl Host {
         // workspace layer changes underneath a running host.
         let (providers, _) = config::load_providers(Some(&workspace));
         let settings = config::load_settings(Some(&workspace));
+        let worktrees = Arc::new(crate::worktree::Worktrees::new(
+            crate::worktree::Worktrees::default_home(),
+        ));
+        // A run a crash left open is closed, and what its delegate changed is
+        // kept. Off the constructor's path: it asks git about every leftover.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let tidying = worktrees.clone();
+            runtime.spawn(async move {
+                for problem in tidying.tidy().await {
+                    tracing::warn!("{problem}");
+                }
+            });
+        }
         Self {
+            worktrees,
             providers: RwLock::new(providers),
             built: std::sync::Mutex::new(BuiltProviders::default()),
             settings: RwLock::new(settings),

@@ -6,7 +6,7 @@
  * `DelegateReport::render` in `crates/taurus-tools/src/delegate.rs`. Its first
  * line is fixed in shape so this can read it back.
  */
-import type { DelegateDisposition, DelegateReport } from "./api";
+import type { DelegateDisposition, DelegateReport, Kept } from "./api";
 
 const DISPOSITIONS: readonly DelegateDisposition[] = [
   "done",
@@ -19,6 +19,20 @@ const DISPOSITIONS: readonly DelegateDisposition[] = [
 const STATUS = /^Status: ([a-z]+)\.(?: It needs (you|the user) to: (.+))?$/;
 const FILES = "\n\nFiles changed: ";
 const TOOLS = "\n\n[sub-agent used: ";
+const NOTE = "\n\nNote: ";
+/** `KEPT_PREFIX` in delegate.rs, and the sentence `render` writes after it. */
+const KEPT = /^Kept as run ([0-9a-f]{12}), started from ([0-9a-f]+)\./;
+const OUTSIDE = / It also changed files outside the workspace, which are kept but never applied: (.+)\.$/;
+
+/** The last paragraph of `body` if it starts with `marker`, and what's left. */
+function lastParagraph(body: string, marker: string): [string, string] | undefined {
+  const at = body.lastIndexOf(marker);
+  if (at < 0) return undefined;
+  const paragraph = body.slice(at + 2);
+  // A harness paragraph is always one line. More after it is the summary.
+  if (paragraph.includes("\n")) return undefined;
+  return [paragraph, body.slice(0, at)];
+}
 
 /**
  * The report a delegation's result text carries, or `undefined` for text that
@@ -48,12 +62,37 @@ export function reportFromText(text: string): DelegateReport | undefined {
     body = body.slice(0, at);
   }
 
+  // Above the files, in the order `render` writes them: notes, then where a
+  // copy's work is kept. So they come off the end the other way round.
+  let kept: Kept | undefined;
+  const keptPart = lastParagraph(body, "\n\nKept as run ");
+  if (keptPart) {
+    const found = KEPT.exec(keptPart[0]);
+    if (found) {
+      const outside = OUTSIDE.exec(keptPart[0]);
+      kept = {
+        run: found[1],
+        base: found[2],
+        files,
+        outside: outside ? outside[1].split(", ").filter(Boolean) : [],
+      };
+      body = keptPart[1];
+    }
+  }
+  const notes: string[] = [];
+  for (let note = lastParagraph(body, NOTE); note; note = lastParagraph(body, NOTE)) {
+    notes.unshift(note[0].slice("Note: ".length));
+    body = note[1];
+  }
+
   return {
     disposition,
     owner: match[2] === undefined ? undefined : match[2] === "you" ? "parent" : "user",
     needs: match[3],
     summary: body.trim(),
     files,
+    notes,
+    kept,
   };
 }
 

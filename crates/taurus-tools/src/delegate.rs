@@ -151,9 +151,23 @@ pub struct DelegateReport {
     pub needs: Option<String>,
     pub summary: String,
     /// Workspace-relative paths the delegate changed, as the checkpoint path
-    /// saw them.
+    /// saw them. For a delegate that worked in a copy, what it kept there.
     pub files: Vec<String>,
+    /// What the harness has to say about how it ran, apart from the delegate's
+    /// own words: why it worked in the workspace by itself, which ignored
+    /// files were copied into its folder, a folder that couldn't be removed.
+    #[serde(default)]
+    pub notes: Vec<String>,
+    /// Set when it worked in a copy of the workspace and changed something
+    /// there. Nothing in the workspace has changed until this is applied.
+    #[serde(default)]
+    #[ts(optional)]
+    pub kept: Option<crate::isolation::Kept>,
 }
+
+/// The fixed start of the paragraph saying where a copy's work is kept, so a
+/// reopened conversation can find the run again. See [`DelegateReport::render`].
+pub const KEPT_PREFIX: &str = "Kept as run ";
 
 impl DelegateReport {
     /// The report as the parent model reads it.
@@ -180,6 +194,24 @@ impl DelegateReport {
         } else {
             summary
         });
+        for note in &self.notes {
+            text.push_str(&format!("\n\nNote: {}", note.trim()));
+        }
+        if let Some(kept) = &self.kept {
+            text.push_str(&format!(
+                "\n\n{KEPT_PREFIX}{}, started from {}. It worked in a copy of the workspace, so \
+                 nothing in the workspace has changed yet. Apply it with `apply_delegate` and run \
+                 \"{}\", or leave it for the user to apply from its card.",
+                kept.run, kept.base, kept.run
+            ));
+            if !kept.outside.is_empty() {
+                text.push_str(&format!(
+                    " It also changed files outside the workspace, which are kept but never \
+                     applied: {}.",
+                    kept.outside.join(", ")
+                ));
+            }
+        }
         if !self.files.is_empty() {
             text.push_str(&format!("\n\nFiles changed: {}", self.files.join(", ")));
         }
@@ -221,6 +253,8 @@ mod tests {
             needs: None,
             summary: "Found it in lib.rs.".into(),
             files: vec![],
+            notes: vec![],
+            kept: None,
         }
     }
 
@@ -270,6 +304,30 @@ mod tests {
         }
         .render();
         assert!(text.ends_with("Found it in lib.rs.\n\nFiles changed: a.rs, b/c.rs"));
+    }
+
+    #[test]
+    fn a_copy_s_work_is_named_before_the_files_and_after_the_notes() {
+        let text = DelegateReport {
+            files: vec!["a.rs".into()],
+            notes: vec!["Copied in because .worktreeinclude lists them: .env.".into()],
+            kept: Some(crate::isolation::Kept {
+                run: "0123456789ab".into(),
+                base: "deadbeef00".into(),
+                files: vec!["a.rs".into()],
+                outside: vec!["../top.txt".into()],
+            }),
+            ..report(Disposition::Done)
+        }
+        .render();
+        let note = text.find("\n\nNote: Copied in").unwrap();
+        let kept = text
+            .find("\n\nKept as run 0123456789ab, started from deadbeef00.")
+            .unwrap();
+        let files = text.find("\n\nFiles changed: a.rs").unwrap();
+        assert!(note < kept && kept < files, "{text}");
+        assert!(text.contains("never applied: ../top.txt."), "{text}");
+        assert!(text.ends_with("Files changed: a.rs"), "{text}");
     }
 
     #[test]

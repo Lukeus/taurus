@@ -439,7 +439,7 @@ describe("a delegation", () => {
           owner: "user",
           needs: "say which config is canonical",
           summary: "Two disagree.",
-          files: [],
+          files: [], notes: [],
         },
       }),
     ]);

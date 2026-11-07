@@ -13,7 +13,40 @@ describe("reportFromText", () => {
       needs: undefined,
       summary: "Wrote both.",
       files: ["a.rs", "b/c.rs"],
+      notes: [],
     });
+  });
+
+  it("reads back where a copy's work is kept, and the notes above it", () => {
+    const report = reportFromText(
+      [
+        "Status: done.",
+        "",
+        "Changed a.rs.",
+        "",
+        "Note: Copied in because .worktreeinclude lists them: .env.",
+        "",
+        'Kept as run 0123456789ab, started from deadbeef00. It worked in a copy of the workspace, so nothing in the workspace has changed yet. Apply it with `apply_delegate` and run "0123456789ab", or leave it for the user to apply from its card. It also changed files outside the workspace, which are kept but never applied: ../top.txt, ../b.txt.',
+        "",
+        "Files changed: a.rs",
+        "",
+        "[sub-agent used: write_file ×1]",
+      ].join("\n"),
+    );
+    expect(report?.summary).toBe("Changed a.rs.");
+    expect(report?.notes).toEqual(["Copied in because .worktreeinclude lists them: .env."]);
+    expect(report?.kept).toEqual({
+      run: "0123456789ab",
+      base: "deadbeef00",
+      files: ["a.rs"],
+      outside: ["../top.txt", "../b.txt"],
+    });
+  });
+
+  it("doesn't take a summary's own mention of a run for the harness's", () => {
+    const text = "Status: done.\n\nKept as run 0123456789ab, started from aa.\nThen more prose.";
+    const report = reportFromText(text);
+    expect(report?.kept).toBeUndefined();
   });
 
   it("reads who a blocked report is waiting on", () => {
@@ -44,10 +77,10 @@ describe("reportFromText", () => {
 describe("reportLabel", () => {
   it("says a report blocked on the user needs them", () => {
     expect(
-      reportLabel({ disposition: "blocked", owner: "user", summary: "", files: [] }),
+      reportLabel({ disposition: "blocked", owner: "user", summary: "", files: [], notes: [] }),
     ).toBe("Needs you");
     expect(
-      reportLabel({ disposition: "blocked", owner: "parent", summary: "", files: [] }),
+      reportLabel({ disposition: "blocked", owner: "parent", summary: "", files: [], notes: [] }),
     ).toBe("Blocked");
   });
 });

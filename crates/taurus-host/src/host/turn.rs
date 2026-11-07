@@ -82,7 +82,10 @@ impl Host {
                 // transcript still records a delegation as one call and one answer
                 // — that is what delegating is for — but the work behind that
                 // answer is no longer thrown away with the tool result.
-                .with_recorder(Arc::new(logs)),
+                .with_recorder(Arc::new(logs))
+                // A delegate that writes can have a copy of the workspace, so
+                // it can run beside others and in the background.
+                .with_isolation(self.worktrees.clone()),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same

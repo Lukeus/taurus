@@ -22,6 +22,7 @@ import type { BackgroundJob } from "../bindings/BackgroundJob";
 import type { DelegateDisposition } from "../bindings/DelegateDisposition";
 import type { DelegateReport } from "../bindings/DelegateReport";
 import type { DelegateStep } from "../bindings/DelegateStep";
+import type { Kept } from "../bindings/Kept";
 import type { InterruptedTurn } from "../bindings/InterruptedTurn";
 import type { JobOutput } from "../bindings/JobOutput";
 import type { ChangedFiles } from "../bindings/ChangedFiles";
@@ -207,6 +208,7 @@ export type {
   DelegateDisposition,
   DelegateReport,
   DelegateStep,
+  Kept,
   InterruptedTurn,
   Checkpoint,
   CommandKind,

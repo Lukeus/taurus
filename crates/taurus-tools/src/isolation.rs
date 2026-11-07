@@ -45,6 +45,9 @@ pub struct Opened {
     /// The commit it starts from, short. It holds the workspace as it stood
     /// when the delegate started, uncommitted and untracked files included.
     pub base: String,
+    /// A folder outside the copy for the run's own records (its undo log),
+    /// removed when the run closes.
+    pub scratch: PathBuf,
     /// Said to the delegate and on its card, when something about the copy is
     /// worth knowing. Today, which ignored files were copied in.
     pub note: Option<String>,

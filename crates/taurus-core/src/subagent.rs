@@ -18,8 +18,8 @@ use taurus_agents::{builtin, AgentDefinition};
 use taurus_provider::{Message, Provider};
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{
-    now_ms, Arrival, DelegateReport, DelegateStep, Disposition, Effect, Tool, ToolContext,
-    ToolError, ToolRegistry, ToolResult, Touched,
+    now_ms, Arrival, CheckpointStore, DelegateReport, DelegateStep, Disposition, Effect, Isolation,
+    Opened, Requester, Tool, ToolContext, ToolError, ToolRegistry, ToolResult, Touched,
 };
 
 use crate::agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
@@ -65,10 +65,22 @@ pub struct SpawnInput {
     /// ask follow-up questions, so include every detail it needs.
     pub prompt: String,
     /// Start it and keep working; its report arrives on its own when it
-    /// finishes. Only for an agent that can't write.
+    /// finishes. An agent that can write gets its own copy of the workspace
+    /// for this, as with `isolate`.
     #[serde(default)]
     pub background: bool,
+    /// Give an agent that can write its own copy of the workspace (a git
+    /// worktree), so it can run beside other agents. What it changes is kept
+    /// for you to apply with `apply_delegate`, rather than landing in the
+    /// workspace.
+    #[serde(default)]
+    pub isolate: bool,
 }
+
+/// The one tool an isolated delegate's copy can't hold it to among the
+/// read-only ones: it refreshes the index kept for the parent's folder, from
+/// whichever folder it's called in.
+const PARENT_INDEX_TOOL: &str = "search_code";
 
 /// Where a delegate's conversation is kept.
 ///
@@ -124,6 +136,15 @@ pub struct SpawnSubagent {
     /// config, so content capture, output caps and the retry settings reach a
     /// delegate the way they reach the turn that spawned it.
     defaults: AgentConfig,
+    /// Where a delegate that writes gets a copy of the workspace, when the host
+    /// can give it one. See [`taurus_tools::isolation`].
+    isolation: Option<Arc<dyn Isolation>>,
+    /// Held by a delegate that writes in the workspace itself, for its whole
+    /// run. Two writers in one folder would each edit what the other is
+    /// halfway through, so one waits. A writer the round let run beside others,
+    /// because it asked for a copy it then couldn't have, is the one this
+    /// catches: it falls back to the workspace, and waits its turn there.
+    alone: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SpawnSubagent {
@@ -147,7 +168,16 @@ impl SpawnSubagent {
             permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
             recorder: None,
             defaults: AgentConfig::default(),
+            isolation: None,
+            alone: Arc::default(),
         }
+    }
+
+    /// Lets a delegate that writes have a copy of the workspace, so it can run
+    /// beside other agents and in the background.
+    pub fn with_isolation(mut self, isolation: Arc<dyn Isolation>) -> Self {
+        self.isolation = Some(isolation);
+        self
     }
 
     /// Keeps every child's conversation, wherever the host puts transcripts.
@@ -253,12 +283,24 @@ impl Tool for SpawnSubagent {
     /// about to be refused anyway, and a registry being written to right now
     /// is one this can't see into. Serializing a reader costs time; letting a
     /// writer through costs files.
+    ///
+    /// A writer that asked for a copy runs beside the rest too, when there's
+    /// somewhere to make one. If the copy then can't be made, it works in the
+    /// workspace after all, and [`SpawnSubagent::alone`] makes it wait for any
+    /// other writer there.
     fn runs_concurrently(&self, input: &serde_json::Value) -> bool {
-        input
+        let Some(definition) = input
             .get("agent_type")
             .and_then(|v| v.as_str())
             .and_then(|name| self.definition(name))
-            .is_some_and(|definition| self.reads_only(definition))
+        else {
+            return false;
+        };
+        if self.reads_only(definition) {
+            return true;
+        }
+        let asked = |key: &str| input.get(key).and_then(|v| v.as_bool()) == Some(true);
+        self.isolation.is_some() && (asked("isolate") || asked("background"))
     }
 
     fn preview(&self, input: &serde_json::Value) -> String {
@@ -291,17 +333,54 @@ impl Tool for SpawnSubagent {
             ));
         }
 
-        if input.background && !self.reads_only(definition) {
-            return Err(ToolError::InvalidInput(format!(
-                "Only an agent that can't write runs in the background, and '{}' can. Two agents \
-                 editing one working tree at once would each write over the other. Run it \
-                 without `background`, or delegate the reading to `{}` in the background.",
-                definition.name(),
-                builtin::EXPLORER
-            )));
-        }
+        let writes = !self.reads_only(definition);
+        let mut notes = Vec::new();
+        let opened = if writes && (input.isolate || input.background) {
+            let tried = match &self.isolation {
+                Some(isolation) => {
+                    let who = Requester {
+                        agent: definition.name().to_string(),
+                        session: ctx.session_id.clone(),
+                        call: ctx.call_id.clone(),
+                    };
+                    isolation
+                        .open(&ctx.workspace, &who)
+                        .await
+                        .map(|opened| (isolation.clone(), opened))
+                }
+                None => Err("Taurus can't make a copy of the workspace here.".to_string()),
+            };
+            match tried {
+                Ok(opened) => Some(opened),
+                // In the background it would be writing beside the parent,
+                // with nothing to stop the two meeting in one file.
+                Err(why) if input.background => {
+                    return Err(ToolError::InvalidInput(format!(
+                        "'{}' can write, so in the background it needs a copy of the workspace \
+                         of its own, and it can't have one: {why} Run it without `background` \
+                         to have it work in the workspace while you wait, or delegate the \
+                         reading to `{}` in the background.",
+                        definition.name(),
+                        builtin::EXPLORER
+                    )));
+                }
+                Err(why) => {
+                    notes.push(format!(
+                        "It asked for a copy of the workspace and couldn't have one, so it worked \
+                         in the workspace itself, with no other agent writing there. {why}"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
-        let launch = self.prepare(definition, ctx).await?;
+        let mut launch = self.prepare(definition, ctx, opened).await?;
+        launch.notes.extend(notes);
+        if writes && launch.isolated.is_none() {
+            launch.alone = Some(self.alone.clone());
+        }
 
         if !input.background {
             return Ok(launch.run(input.prompt, ctx.clone()).await.into());
@@ -350,6 +429,12 @@ struct Launch {
     config: AgentConfig,
     recorder: Option<Arc<dyn SubagentRecorder>>,
     permits: Arc<Semaphore>,
+    /// The copy it works in, and what made it, which closes it.
+    isolated: Option<(Arc<dyn Isolation>, Opened)>,
+    /// Taken for the whole run by a writer working in the workspace itself.
+    alone: Option<Arc<tokio::sync::Mutex<()>>>,
+    /// What the harness says on its report. See [`DelegateReport::notes`].
+    notes: Vec<String>,
 }
 
 impl SpawnSubagent {
@@ -373,10 +458,35 @@ impl SpawnSubagent {
         &self,
         definition: &AgentDefinition,
         ctx: &ToolContext,
+        isolated: Option<(Arc<dyn Isolation>, Opened)>,
     ) -> Result<Launch, ToolError> {
         // Depth cap, enforced structurally: the child's registry has no spawn
         // tool, so it cannot delegate no matter what it decides to do.
         let mut registry = self.registry.read().await.without(SPAWN_TOOL);
+        // A copy holds a delegate only through tools that work where they're
+        // told to: the built-ins, which resolve every path against the
+        // context's folder. Anything else that can change something (an MCP
+        // server's write, a skill's script) works wherever it was set up to,
+        // which is the person's folder, so it's left out rather than trusted to
+        // stay in the copy. Isolation the prompt has to keep isn't isolation.
+        let mut withheld = Vec::new();
+        if isolated.is_some() {
+            let builtins = ToolRegistry::with_builtins();
+            let names: Vec<String> = registry.names().map(str::to_owned).collect();
+            for name in names {
+                let keep = builtins.get(&name).is_some()
+                    || (name != PARENT_INDEX_TOOL
+                        && registry
+                            .get(&name)
+                            .is_some_and(|tool| tool.effect() == Effect::Read));
+                if !keep {
+                    withheld.push(name);
+                }
+            }
+            for name in &withheld {
+                registry = registry.without(name);
+            }
+        }
         // Its own, per delegation: the report it holds is this child's.
         let slot = Slot::default();
         registry.register(Arc::new(Finish::new(slot.clone())));
@@ -423,6 +533,30 @@ impl SpawnSubagent {
             None => (self.default_provider.clone(), self.default_model.clone()),
         };
 
+        let mut notes = Vec::new();
+        let place = match &isolated {
+            Some((_, opened)) => {
+                if let Some(note) = &opened.note {
+                    notes.push(note.clone());
+                }
+                if !withheld.is_empty() {
+                    withheld.sort();
+                    notes.push(format!(
+                        "It had no {} in its copy, because they can't be held to it.",
+                        withheld.join(", ")
+                    ));
+                }
+                format!(
+                    "You are working in `{}`. It is a copy of the workspace made for you, as it \
+                     stood when you started, so nothing you change reaches the original until \
+                     someone applies it. Work only here: never `cd` out of it or write by \
+                     absolute path to anywhere else.",
+                    opened.root.display()
+                )
+            }
+            None => format!("You are working in `{}`.", ctx.workspace.display()),
+        };
+
         Ok(Launch {
             name: definition.name().to_string(),
             provider,
@@ -430,11 +564,7 @@ impl SpawnSubagent {
             registry,
             slot,
             config: AgentConfig {
-                system_prompt: format!(
-                    "{}\n\n{REPORT_BACK}\n\nYou are working in `{}`.",
-                    definition.system_prompt,
-                    ctx.workspace.display()
-                ),
+                system_prompt: format!("{}\n\n{REPORT_BACK}\n\n{place}", definition.system_prompt),
                 max_iterations: definition.frontmatter.max_iterations,
                 allowed_tools: allowed,
                 turn_hooks: false,
@@ -442,6 +572,9 @@ impl SpawnSubagent {
             },
             recorder: self.recorder.clone(),
             permits: self.permits.clone(),
+            isolated,
+            alone: None,
+            notes,
         })
     }
 }
@@ -466,6 +599,12 @@ impl Launch {
                 self.permits.clone().acquire_owned().await
             }
         };
+        // After the permit, so a writer queued for a slot isn't also holding
+        // the workspace against the others.
+        let _alone = match &self.alone {
+            Some(alone) => Some(alone.clone().lock_owned().await),
+            None => None,
+        };
         ctx.report_activity(DelegateStep::Started {
             agent: self.name.clone(),
             model: self.model.clone(),
@@ -478,10 +617,22 @@ impl Launch {
         // conversation it is recording.
         let mut session = Session::new(&self.model);
         let touched = Arc::new(Touched::default());
+        // A delegate in a copy works there for everything: its paths, its
+        // commands, its own undo record, its own background commands. See
+        // `ToolContext::rooted_at` for why each of those can't be shared.
+        let works_in = match &self.isolated {
+            Some((_, opened)) => {
+                let records = CheckpointStore::new(&opened.scratch);
+                let recorder = records.begin_turn(&opened.run, &opened.root, &prompt);
+                ctx.clone().rooted_at(opened.root.clone(), Some(recorder))
+            }
+            None => ctx.clone(),
+        };
+        let own_jobs = self.isolated.as_ref().and_then(|_| works_in.jobs.clone());
         let agent = Agent::new(
             self.provider,
             self.registry,
-            ctx.clone().with_touched(touched.clone()),
+            works_in.with_touched(touched.clone()),
             self.config,
         );
 
@@ -541,7 +692,38 @@ impl Launch {
         .await;
 
         let reported = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let report = report_for(reported, &outcome, &session, touched.paths());
+        let mut report = report_for(reported, &outcome, &session, touched.paths());
+        report.notes = self.notes;
+        if let Some((isolation, opened)) = &self.isolated {
+            // A dev server it left running would hold the folder open, and
+            // there would be nobody left to read it or stop it.
+            if let Some(jobs) = own_jobs {
+                jobs.stop_all();
+            }
+            // What's in the copy is the record of what it changed: a command's
+            // writes the sweep missed are in it too.
+            match isolation.close(&opened.run).await {
+                Ok(closed) => {
+                    report.files = closed
+                        .kept
+                        .as_ref()
+                        .map(|kept| kept.files.clone())
+                        .unwrap_or_default();
+                    if closed.kept.is_none() {
+                        report.notes.push(
+                            "It worked in a copy of the workspace and changed nothing.".into(),
+                        );
+                    }
+                    report.kept = closed.kept;
+                    report.notes.extend(closed.left_behind);
+                }
+                Err(e) => report.notes.push(format!(
+                    "Its copy of the workspace (run {}) couldn't be closed: {e} What it changed \
+                     is still there, and Taurus closes it when it next starts.",
+                    opened.run
+                )),
+            }
+        }
         ctx.report_delegate(report.clone()).await;
 
         let mut text = report.render();
@@ -612,6 +794,8 @@ fn report_for(
             needs: reported.needs,
             summary: reported.summary,
             files,
+            notes: Vec::new(),
+            kept: None,
         };
     }
 
@@ -647,6 +831,8 @@ fn report_for(
         needs: None,
         summary,
         files,
+        notes: Vec::new(),
+        kept: None,
     }
 }
 
@@ -1823,7 +2009,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput(_)));
-        assert!(err.to_string().contains("can't write"), "{err}");
+        assert!(
+            err.to_string().contains("needs a copy of the workspace"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -1870,6 +2059,360 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(5),
             "took {:?}: the turn waited for work it should have stopped",
             started.elapsed()
+        );
+    }
+
+    /// Copies of the workspace, standing in for the host's git worktrees: a
+    /// folder per run with the workspace's top-level files copied in, and on
+    /// close, the files whose contents differ from the original's.
+    #[derive(Default)]
+    struct Copies {
+        refuse: Option<String>,
+        open: std::sync::Mutex<HashMap<String, (std::path::PathBuf, TempDir)>>,
+        closed: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl Isolation for Copies {
+        async fn open(
+            &self,
+            workspace: &std::path::Path,
+            _who: &Requester,
+        ) -> Result<Opened, String> {
+            if let Some(why) = &self.refuse {
+                return Err(why.clone());
+            }
+            let dir = TempDir::new().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            for entry in std::fs::read_dir(workspace).unwrap().flatten() {
+                if entry.file_type().unwrap().is_file() {
+                    std::fs::copy(entry.path(), root.join(entry.file_name())).unwrap();
+                }
+            }
+            let mut open = self.open.lock().unwrap();
+            let run = format!("{:012x}", open.len() + 1);
+            open.insert(run.clone(), (workspace.to_path_buf(), dir));
+            Ok(Opened {
+                run,
+                scratch: root.join(".records"),
+                root,
+                base: "base000000".into(),
+                note: None,
+            })
+        }
+
+        async fn close(&self, run: &str) -> Result<taurus_tools::Closed, String> {
+            self.closed.lock().unwrap().push(run.to_string());
+            let open = self.open.lock().unwrap();
+            let (workspace, dir) = &open[run];
+            let mut files = Vec::new();
+            for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !entry.file_type().unwrap().is_file() {
+                    continue;
+                }
+                let now = std::fs::read(entry.path()).unwrap();
+                if std::fs::read(workspace.join(&name)).ok() != Some(now) {
+                    files.push(name);
+                }
+            }
+            files.sort();
+            Ok(taurus_tools::Closed {
+                kept: (!files.is_empty()).then(|| taurus_tools::Kept {
+                    run: run.to_string(),
+                    base: "base000000".into(),
+                    files,
+                    outside: vec![],
+                }),
+                left_behind: None,
+            })
+        }
+    }
+
+    fn isolated(asks: &str) -> serde_json::Value {
+        serde_json::json!({
+            "agent_type": "coder",
+            "prompt": "Change a.txt to say what the test needs it to say.",
+            asks: true,
+        })
+    }
+
+    fn no_verify(tool: SpawnSubagent) -> SpawnSubagent {
+        tool.with_defaults(AgentConfig {
+            verify_changes: false,
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_writer_given_a_copy_works_in_it_and_leaves_the_workspace_alone() {
+        let (tool, provider, ctx, dir) = fixture_with(
+            vec![
+                write("w1", "a.txt"),
+                finish(
+                    "f1",
+                    serde_json::json!({ "disposition": "done", "summary": "Changed a.txt." }),
+                ),
+            ],
+            None,
+        );
+        std::fs::write(dir.path().join("a.txt"), "old\n").unwrap();
+        let copies = Arc::new(Copies::default());
+        let tool = no_verify(tool).with_isolation(copies.clone());
+        let progress = Arc::new(SpyProgress::default());
+        let mut ctx = ctx;
+        ctx.progress = Some(progress.clone());
+
+        let out = tool
+            .execute(isolated("isolate"), &ctx)
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "old\n"
+        );
+        assert!(
+            out.contains("Kept as run 000000000001, started from base000000."),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("Files changed: a.txt") || out.contains("Files changed: a.txt\n"),
+            "{out}"
+        );
+        assert_eq!(*copies.closed.lock().unwrap(), ["000000000001"]);
+        let report = progress.reports.lock().await[0].clone();
+        assert_eq!(report.kept.unwrap().files, ["a.txt"]);
+        // Told where it is, and that it's a copy.
+        let system = provider.last_request().await.unwrap().system.unwrap();
+        assert!(
+            system.contains("It is a copy of the workspace made for you"),
+            "{system}"
+        );
+        assert!(
+            !system.contains(&format!("`{}`", ctx.workspace.display())),
+            "{system}"
+        );
+    }
+
+    #[test]
+    fn a_writer_that_asks_for_a_copy_shares_its_round_only_where_one_can_be_made() {
+        let (tool, _ctx, _dir) = fixture(vec![]);
+        assert!(!tool.runs_concurrently(&isolated("isolate")));
+        let tool = tool.with_isolation(Arc::new(Copies::default()));
+        assert!(tool.runs_concurrently(&isolated("isolate")));
+        assert!(tool.runs_concurrently(&isolated("background")));
+        assert!(alone(&tool, builtin::CODER), "not without asking");
+    }
+
+    #[tokio::test]
+    async fn a_copy_that_cannot_be_made_leaves_the_writer_in_the_workspace_saying_why() {
+        let (tool, ctx, dir) = fixture(vec![
+            write("w1", "a.txt"),
+            finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "Changed a.txt." }),
+            ),
+        ]);
+        let tool = no_verify(tool).with_isolation(Arc::new(Copies {
+            refuse: Some("This repository uses Git LFS.".into()),
+            ..Default::default()
+        }));
+        let out = tool
+            .execute(isolated("isolate"), &ctx)
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "new\n"
+        );
+        assert!(out.contains("couldn't have one"), "{out}");
+        assert!(out.contains("Git LFS"), "{out}");
+        assert!(!out.contains("Kept as run"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_writer_in_the_workspace_waits_for_the_one_already_writing_there() {
+        let (tool, ctx, _dir) = fixture(vec![
+            write("w1", "a.txt"),
+            finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "Changed a.txt." }),
+            ),
+        ]);
+        let tool = Arc::new(no_verify(tool).with_isolation(Arc::new(Copies {
+            refuse: Some("No copy today.".into()),
+            ..Default::default()
+        })));
+        // Another writer is working in the workspace.
+        let held = tool.alone.clone().lock_owned().await;
+        let running = {
+            let tool = tool.clone();
+            tokio::spawn(async move { tool.execute(isolated("isolate"), &ctx).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!running.is_finished(), "it wrote beside the other writer");
+        drop(held);
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_the_background_a_writer_with_no_copy_is_refused_with_the_reason() {
+        let (tool, ctx, _dir) = fixture(vec![]);
+        let tool = tool.with_isolation(Arc::new(Copies {
+            refuse: Some("This folder isn't in a git repository.".into()),
+            ..Default::default()
+        }));
+        let err = tool
+            .execute(isolated("background"), &ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("isn't in a git repository"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("without `background`"), "{err}");
+    }
+
+    /// A tool that changes something wherever it was set up to, as an MCP
+    /// server's would.
+    struct Elsewhere(&'static str, Effect);
+
+    #[async_trait]
+    impl Tool for Elsewhere {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "does something outside the context's folder"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn effect(&self) -> Effect {
+            self.1
+        }
+        async fn execute(&self, _: serde_json::Value, _: &ToolContext) -> ToolResult {
+            Ok("done".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_copy_holds_its_delegate_only_through_tools_that_work_where_they_are_told() {
+        let (_, provider, ctx, _dir) = fixture_with(
+            vec![finish(
+                "f1",
+                serde_json::json!({ "disposition": "done", "summary": "Nothing to do." }),
+            )],
+            None,
+        );
+        let mut shared = ToolRegistry::with_builtins();
+        shared.register(Arc::new(Elsewhere("mcp_write", Effect::Write)));
+        shared.register(Arc::new(Elsewhere("mcp_lookup", Effect::Read)));
+        shared.register(Arc::new(Elsewhere(PARENT_INDEX_TOOL, Effect::Read)));
+        let tool = no_verify(SpawnSubagent::new(
+            provider.clone(),
+            Arc::new(RwLock::new(shared)),
+            "fake",
+            2,
+        ))
+        .with_isolation(Arc::new(Copies::default()));
+
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "prompt": "Look around the workspace and report what is there.",
+                    "isolate": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+
+        let offered: Vec<String> = provider
+            .last_request()
+            .await
+            .unwrap()
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(offered.contains(&"write_file".to_string()), "{offered:?}");
+        assert!(offered.contains(&"mcp_lookup".to_string()), "{offered:?}");
+        assert!(!offered.contains(&"mcp_write".to_string()), "{offered:?}");
+        assert!(
+            !offered.contains(&PARENT_INDEX_TOOL.to_string()),
+            "{offered:?}"
+        );
+        assert!(
+            out.contains("It had no mcp_write, search_code in its copy"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_background_writer_in_a_copy_reports_without_touching_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        std::fs::write(workspace.join("a.txt"), "old\n").unwrap();
+        let permissions = Arc::new(PermissionEngine::new(
+            &workspace,
+            workspace.join(".taurus"),
+            Box::new(AllowAll),
+        ));
+        let ctx = ToolContext::new(workspace.clone(), permissions, CancellationToken::new());
+        let spawn = no_verify(SpawnSubagent::new(
+            FakeProvider::new(vec![
+                write("w1", "a.txt"),
+                finish(
+                    "f1",
+                    serde_json::json!({ "disposition": "done", "summary": "Changed a.txt." }),
+                ),
+            ]),
+            Arc::new(RwLock::new(ToolRegistry::with_builtins())),
+            "fake",
+            2,
+        ))
+        .with_isolation(Arc::new(Copies::default()));
+        let mut registry = ToolRegistry::with_builtins();
+        registry.register(Arc::new(spawn));
+        let agent = Agent::new(
+            FakeProvider::new(vec![
+                ScriptedTurn::tool_call(
+                    "bg1",
+                    SPAWN_TOOL,
+                    serde_json::json!({
+                        "agent_type": "coder",
+                        "prompt": "Change a.txt to say what the test needs it to say.",
+                        "background": true
+                    }),
+                ),
+                ScriptedTurn::text("Started it; waiting."),
+                ScriptedTurn::text("It's kept for you to apply."),
+            ]),
+            registry,
+            ctx,
+            AgentConfig::default(),
+        );
+        let mut session = Session::new("fake");
+        drive(&agent, &mut session).await.unwrap();
+
+        let texts: Vec<String> = session.messages.iter().map(|m| m.text()).collect();
+        let report = texts
+            .iter()
+            .find(|t| t.contains("<background-report call=\"bg1\" agent=\"coder\">"))
+            .expect("the report reaches the parent");
+        assert!(report.contains("Kept as run"), "{report}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "old\n"
         );
     }
 

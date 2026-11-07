@@ -1208,7 +1208,7 @@ describe("a delegation's own transcript", () => {
         owner: "user",
         needs: "say which config is canonical",
         summary: "Two disagree.",
-        files: [],
+        files: [], notes: [],
       },
     });
     expect(entries[0]).toMatchObject({
@@ -1225,7 +1225,7 @@ describe("a delegation's own transcript", () => {
       {
         type: "delegate_report",
         id: "d1",
-        report: { disposition: "done", summary: "It's in parse.rs.", files: [] },
+        report: { disposition: "done", summary: "It's in parse.rs.", files: [], notes: [] },
       },
     );
     expect(entries[0]).toMatchObject({

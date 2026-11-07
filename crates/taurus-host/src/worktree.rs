@@ -150,6 +150,8 @@ impl Worktrees {
     /// Takes the run's lock for this process, for as long as it's open.
     fn hold(&self, run: &str) -> Result<(), String> {
         let path = self.lock_path(run);
+        let dir = path.parent().expect("a lock has a folder");
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -258,6 +260,10 @@ impl Worktrees {
     /// filed under the workspace: closing one needs nothing but its name.
     fn record_path(&self, run: &str) -> PathBuf {
         self.home.join("runs").join(format!("{run}.json"))
+    }
+
+    fn scratch_of(&self, run: &str) -> PathBuf {
+        self.home.join("runs").join(format!("{run}.d"))
     }
 
     fn hooks_off(&self) -> PathBuf {
@@ -535,10 +541,16 @@ impl Worktrees {
             state: State::Running,
             left_behind: None,
         };
-        // Before the folder exists, so a crash while it's made leaves something
-        // that says whose it is, and a lock that says its owner has gone.
-        self.save(&record)?;
+        // The lock first, then the record, then the folder. A record nobody
+        // holds is what `tidy` closes, so a record saved before its lock was
+        // taken could be closed by another start in the gap, under the delegate
+        // about to use it. And the record before the folder, so a crash while
+        // the folder is made leaves something saying whose it is.
         self.hold(&run)?;
+        if let Err(e) = self.save(&record) {
+            self.release(&run);
+            return Err(e);
+        }
 
         let reason = format!("Taurus delegate {run}");
         let path_text = path.to_string_lossy().into_owned();
@@ -581,7 +593,7 @@ impl Worktrees {
                     canonical.display()
                 ));
             }
-            Ok::<_, String>(root.canonicalize().map_err(|e| e.to_string())?)
+            root.canonicalize().map_err(|e| e.to_string())
         }
         .await;
         let root = match verified {
@@ -608,10 +620,13 @@ impl Worktrees {
             )
         });
 
+        let scratch = self.scratch_of(&run);
+        std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
         Ok(Opened {
             run,
             root,
             base: short(&base),
+            scratch,
             note,
         })
     }
@@ -664,6 +679,7 @@ impl Worktrees {
         record.left_behind = self.remove_folder(&record).await;
         self.save(&record)?;
         self.release(run);
+        let _ = std::fs::remove_dir_all(self.scratch_of(run));
         Ok(Closed {
             kept: self.kept_of(&record).await,
             left_behind: record.left_behind.clone(),

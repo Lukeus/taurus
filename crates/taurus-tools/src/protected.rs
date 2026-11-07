@@ -858,11 +858,17 @@ impl Ticket {
         let watch = watch_of(&watch_key(&places.root));
         let again = line.map(|line| (ctx.permissions.clone(), line));
         let fencing = ctx.fencing;
+        let keep_out = ctx.keep_out.clone();
         let session = ctx.session_id.clone();
         tokio::task::spawn_blocking(move || {
             let (fence, no_fence) = if fencing {
                 let dirs = git_dirs(&places.root);
-                match crate::sandbox::Fence::ask(&places.root, &dirs, places.home.as_deref()) {
+                match crate::sandbox::Fence::ask(
+                    &places.root,
+                    &dirs,
+                    places.home.as_deref(),
+                    keep_out.as_deref(),
+                ) {
                     crate::sandbox::Asked::Fenced(fence) => (Some(Arc::new(fence)), None),
                     crate::sandbox::Asked::Unavailable(why) => {
                         (None, crate::sandbox::say_once(session.as_deref(), &why))

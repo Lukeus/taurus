@@ -259,6 +259,21 @@ impl Renderer {
                         report.disposition.as_str()
                     ));
                 }
+                // Said even when the call's own line is drawn, because it's the
+                // one thing about the report that isn't true of the workspace:
+                // these changes aren't in it.
+                if let Some(kept) = &report.kept {
+                    self.break_text();
+                    self.break_thinking();
+                    let files = match kept.files.len() {
+                        1 => "1 file".to_string(),
+                        n => format!("{n} files"),
+                    };
+                    self.dim(&format!(
+                        "    · kept in its own copy as run {} ({files}), not in your folder yet",
+                        kept.run
+                    ));
+                }
                 if let (taurus_tools::Owner::User, Some(needs)) = (
                     report.owner.unwrap_or(taurus_tools::Owner::Parent),
                     &report.needs,

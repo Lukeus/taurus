@@ -305,6 +305,9 @@ pub struct ToolContext {
     /// Whether a covered call runs under [`crate::sandbox`]. Off only for tests of
     /// the look afterwards, which need the writes to land.
     pub(crate) fencing: bool,
+    /// The folder a context [`Self::rooted_at`] another came from, which its
+    /// granted commands may not write to. See [`crate::sandbox::Fence::ask`].
+    pub(crate) keep_out: Option<PathBuf>,
 }
 
 impl ToolContext {
@@ -334,6 +337,7 @@ impl ToolContext {
             spent: None,
             protected: None,
             fencing: true,
+            keep_out: None,
         }
     }
 
@@ -355,7 +359,9 @@ impl ToolContext {
     /// and everything that is about *who decides* carries on. So the path
     /// checks, the undo record, the cache of what commands read, and the
     /// background commands are its own, and the permission engine, hooks,
-    /// session and the unattended switch are the parent's.
+    /// session and the unattended switch are the parent's. And the parent's
+    /// folder is kept out of what its granted commands may write, where the
+    /// sandbox runs: see [`crate::sandbox::Fence::ask`].
     ///
     /// Each of the first group would be wrong shared. A path check against the
     /// parent's folder lets an edit land there. The parent's undo record would
@@ -376,7 +382,10 @@ impl ToolContext {
         root: impl Into<PathBuf>,
         recorder: Option<Arc<crate::checkpoint::TurnRecorder>>,
     ) -> Self {
-        self.workspace = root.into();
+        let parent = std::mem::replace(&mut self.workspace, root.into());
+        // The first folder, whatever was rooted since: what's kept out is the
+        // person's.
+        self.keep_out = self.keep_out.take().or(Some(parent));
         self.root = crate::path_guard::HeldRoot::default();
         self.sweeps = recorder
             .as_ref()

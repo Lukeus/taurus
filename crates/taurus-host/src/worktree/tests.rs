@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 /// A repository with one commit, an ignored `.env`, and somewhere to keep
@@ -289,4 +290,33 @@ async fn a_run_another_process_has_open_is_left_alone() {
     assert_eq!(other.record(&opened.run).unwrap().state, State::Running);
     assert!(opened.root.exists());
     f.trees.close(&opened.run).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_run_being_opened_is_never_mistaken_for_one_a_crash_left() {
+    let f = fixture();
+    let trees = Arc::new(f.trees);
+    // Another start tidying over and over while runs are opened: any gap
+    // between a run's record and its lock is a run closed under its delegate.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tidier = {
+        let home = trees.home.clone();
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let other = Worktrees::new(home);
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                other.tidy().await;
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    for _ in 0..10 {
+        let opened = trees.open(&f.top, &who()).await.unwrap();
+        assert!(opened.root.is_dir(), "closed while it was being opened");
+        assert_eq!(trees.record(&opened.run).unwrap().state, State::Running);
+        std::fs::write(opened.root.join("a.txt"), "two\n").unwrap();
+        assert!(trees.close(&opened.run).await.unwrap().kept.is_some());
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    tidier.await.unwrap();
 }

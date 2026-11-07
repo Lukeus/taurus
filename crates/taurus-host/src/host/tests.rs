@@ -4860,3 +4860,139 @@ async fn saving_a_credential_restarts_what_uses_it_and_leaves_the_rest() {
     );
     assert!(Arc::ptr_eq(&other, &registered(&host, &b).await.unwrap()));
 }
+
+/// Two delegates that write, asked for in one round, through the real wiring
+/// and real git: both run at once, each in its own worktree, and the
+/// workspace is exactly as it was until somebody applies what they kept.
+#[tokio::test]
+async fn two_writers_in_one_round_run_at_once_in_copies_and_leave_the_workspace_alone() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "me@example.com"]);
+    git(&["config", "user.name", "Me"]);
+    std::fs::write(workspace.join("a.txt"), "old\n").unwrap();
+    std::fs::write(workspace.join(".gitignore"), ".taurus/\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "init"]);
+    write_settings(
+        &workspace,
+        r#"{"max_concurrent_agents": 2, "verify_changes": false}"#,
+    );
+    std::fs::write(
+        workspace.join(".taurus/permissions.json"),
+        r#"{"allowed":["write_file"]}"#,
+    )
+    .unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+
+    let spawn = |id| {
+        (
+            id,
+            taurus_core::SPAWN_TOOL,
+            serde_json::json!({
+                "agent_type": "coder",
+                "prompt": "Rewrite a.txt to say new, and nothing else.",
+                "isolate": true
+            }),
+        )
+    };
+    let write = || {
+        taurus_core::testing::ScriptedTurn::tool_call(
+            "w",
+            "write_file",
+            serde_json::json!({ "path": "a.txt", "content": "new\n" }),
+        )
+    };
+    let finish = || {
+        taurus_core::testing::ScriptedTurn::tool_call(
+            "f",
+            "finish",
+            serde_json::json!({ "disposition": "done", "summary": "Rewrote a.txt." }),
+        )
+    };
+    // However the two children's requests interleave, between them they take
+    // two writes and two finishes before the parent asks again.
+    let provider = taurus_core::testing::FakeProvider::new(vec![
+        taurus_core::testing::ScriptedTurn::tool_calls(vec![spawn("a"), spawn("b")]),
+        write(),
+        write(),
+        finish(),
+        finish(),
+        taurus_core::testing::ScriptedTurn::text("Both are kept for you to apply."),
+    ]);
+    let agent = host
+        .build_agent(
+            provider,
+            "fake",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "conversation1",
+                prompt: "rewrite a.txt twice",
+                unattended: None,
+            },
+        )
+        .await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let collect = tokio::spawn(async move {
+        let (mut queued, mut reports) = (0, Vec::new());
+        while let Some(event) = rx.recv().await {
+            match event {
+                taurus_core::UiEvent::DelegateActivity {
+                    step: taurus_tools::DelegateStep::Queued { .. },
+                    ..
+                } => queued += 1,
+                taurus_core::UiEvent::DelegateReport { report, .. } => reports.push(report),
+                _ => {}
+            }
+        }
+        (queued, reports)
+    });
+    let mut session = taurus_core::Session::new("fake");
+    session.id = "conversation1".into();
+    agent
+        .run_turn(
+            &mut session,
+            taurus_provider::Message::user("rewrite a.txt twice"),
+            tx,
+        )
+        .await
+        .expect("the turn should finish");
+    let (queued, reports) = collect.await.unwrap();
+
+    assert_eq!(queued, 0, "both ran at once");
+    assert_eq!(reports.len(), 2, "{reports:#?}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+        "old\n"
+    );
+    let kept: Vec<_> = reports.iter().filter_map(|r| r.kept.clone()).collect();
+    assert!(!kept.is_empty(), "{reports:#?}");
+    for kept in &kept {
+        assert_eq!(kept.files, ["a.txt"]);
+        let shown = git(&[
+            "show",
+            &format!("refs/taurus/delegates/{}/result:a.txt", kept.run),
+        ]);
+        assert_eq!(shown, "new");
+    }
+    // Nothing left on disk but the commits, and no branch was made.
+    assert_eq!(git(&["worktree", "list"]).lines().count(), 1);
+    assert_eq!(git(&["branch", "--list"]), "* main");
+    assert_eq!(git(&["status", "--short"]), "");
+}
