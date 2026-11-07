@@ -992,6 +992,16 @@ impl Worktrees {
                 ));
                 continue;
             }
+            // Only the last part is checked for being a link below. A folder
+            // on the way that's a link (`src` pointing at `~/.ssh`) would take
+            // the write somewhere outside the workspace.
+            if let Some(link) = linked_folder(&record.workspace, inside) {
+                files.push(conflict(&format!(
+                    "{link} is a link in the workspace, so writing through it could land \
+                     anywhere. Copy the file by hand if you want it."
+                )));
+                continue;
+            }
             let sides = Sides {
                 base: self.blob(&record.top, &record.base, name).await?,
                 theirs: self.blob(&record.top, result, name).await?,
@@ -1241,6 +1251,27 @@ impl Isolation for Worktrees {
     ) -> Result<ApplyPlan, String> {
         self.apply_run(run, session, recorder, dry_run).await
     }
+}
+
+/// The first folder on the way from `workspace` to `inside`'s file that is a
+/// symbolic link, as a relative path. The file itself isn't looked at.
+fn linked_folder(workspace: &Path, inside: &str) -> Option<String> {
+    let parent = Path::new(inside).parent()?;
+    let mut at = workspace.to_path_buf();
+    let mut shown = PathBuf::new();
+    for part in parent.components() {
+        at.push(part);
+        shown.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Some(shown.display().to_string());
+            }
+            Ok(_) => {}
+            // Not there yet, so nothing further down is either.
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// A run's id is twelve hex characters, so it can be a file name and a ref

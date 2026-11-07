@@ -495,6 +495,30 @@ async fn a_file_that_decides_what_runs_is_never_applied() {
     assert!(!f.top.join(".taurus/permissions.json").exists());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_under_a_folder_that_is_a_link_is_never_written_through_it() {
+    let f = fixture();
+    let run = kept_run(&f, |root| {
+        std::fs::write(root.join("app/src/lib.rs"), "fn b() {}\n").unwrap()
+    })
+    .await;
+    // Since the delegate started, `app/src` became a link out of the workspace.
+    let outside = TempDir::new().unwrap();
+    std::fs::rename(f.top.join("app/src"), outside.path().join("src")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("src"), f.top.join("app/src")).unwrap();
+
+    let plan = f.trees.apply(&run, Some("s1"), None, false).await.unwrap();
+    assert!(!plan.applied);
+    assert_eq!(plan.files[0].action, ApplyAction::Conflict);
+    assert!(plan.files[0]
+        .why
+        .as_deref()
+        .unwrap()
+        .contains("app/src is a link"));
+    assert_eq!(read(outside.path().join("src/lib.rs")), "fn a() {}\n");
+}
+
 #[tokio::test]
 async fn a_look_ahead_writes_nothing_and_another_conversation_cannot_apply() {
     let f = fixture();
