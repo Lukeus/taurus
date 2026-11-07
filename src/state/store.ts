@@ -970,8 +970,16 @@ export const useStore = create<Store>((set, get) => ({
       away: null,
       entries: [],
       changed: [],
-  opening: null,
-  wrote: null,
+      opening: null,
+      wrote: null,
+      // The turn on screen is the one being left, which may still be running.
+      // It ends on its own, and when it does nothing here hears of it, because
+      // what's on screen is no longer its conversation: kept, these would hold
+      // the new one on Stop with a turn it doesn't have.
+      busy: false,
+      turn: null,
+      stopping: false,
+      leaving: null,
       // Both belong to the conversation being left. A message typed ahead in
       // one must not fire in another, and the way back to a turn that failed
       // is not offered for a turn that is no longer on screen.
@@ -1064,11 +1072,17 @@ export const useStore = create<Store>((set, get) => ({
         ),
         interrupted: interrupted ?? null,
         changed: [],
-  opening: null,
-  wrote: null,
-      queued: null,
-      sent: null,
-      unattended: false,
+        opening: null,
+        wrote: null,
+        // As in `startSession`. `attach` puts back the one this conversation
+        // is running, if it is.
+        busy: false,
+        turn: null,
+        stopping: false,
+        leaving: null,
+        queued: null,
+        sent: null,
+        unattended: false,
         context: null,
         agents: NO_AGENTS,
         delegates,

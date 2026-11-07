@@ -135,3 +135,34 @@ describe("a conversation that can't be opened", () => {
     await expect(pending).rejects.toBe("gone");
   });
 });
+
+describe("leaving a conversation whose turn is still running", () => {
+  const running = {
+    busy: true,
+    turn: { id: "t1" } as never,
+    stopping: true,
+    leaving: ["run_command:git"],
+  };
+
+  it("starts the new one ready to send", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "create_session") return Promise.resolve(created("n"));
+      return Promise.resolve([]);
+    });
+    useStore.setState(running);
+    await useStore.getState().startSession("ollama", "m");
+    const s = useStore.getState();
+    expect(s.session?.id).toBe("n");
+    expect([s.busy, s.turn, s.stopping, s.leaving]).toEqual([false, null, false, null]);
+  });
+
+  it("opens another without the old turn's state, even before attach answers", async () => {
+    useStore.setState(running);
+    const opening = useStore.getState().resume("b");
+    land.b();
+    await opening;
+    const s = useStore.getState();
+    expect(s.session?.id).toBe("b");
+    expect([s.busy, s.turn, s.stopping, s.leaving]).toEqual([false, null, false, null]);
+  });
+});
