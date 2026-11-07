@@ -110,6 +110,11 @@ impl Host {
         // conversation. A delegate opening a file would put it on a screen
         // nobody had asked to change, in the middle of work they cannot see.
         registry.register(Arc::new(OpenFile));
+        // A card in the conversation, like the charts: a delegate's would land
+        // in a transcript nobody is reading.
+        registry.register(Arc::new(crate::notebook::OpenNote::new(
+            &self.workspace().await,
+        )));
         // Per turn for the canvas's reason: the dock is the person's own shell,
         // in this window. A delegate has no window, and reading what somebody
         // typed is a step past anything it was sent to do.

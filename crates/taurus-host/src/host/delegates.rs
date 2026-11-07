@@ -30,21 +30,14 @@ impl Host {
                 .apply(run, Some(session_id), None, true)
                 .await;
         }
-        // Unnamed, the checkpoint would stop every later fork of this
-        // conversation, which needs each one matched to a transcript turn.
-        let Some(turn) = crate::sessions::last_turn_id(session_id) else {
-            return Err(format!(
-                "Nothing was applied: Taurus couldn't find a turn in conversation \
-                 '{session_id}' to file the change under, and without one it couldn't be \
-                 undone. Its transcript may be missing or unreadable."
-            ));
+        let prompt = format!("Applied what {} kept (run {run})", record.agent);
+        let recorder = match crate::sessions::last_turn_id(session_id) {
+            Some(turn) => store.begin_turn_under(session_id, &record.workspace, &prompt, &turn),
+            // No transcript turn to file it under (its transcript is missing
+            // or unreadable). Recorded unnamed it still rewinds, and a fork
+            // says why it can't; refused, the work couldn't be applied at all.
+            None => store.begin_turn(session_id, &record.workspace, &prompt),
         };
-        let recorder = store.begin_turn_under(
-            session_id,
-            &record.workspace,
-            &format!("Applied what {} kept (run {run})", record.agent),
-            &turn,
-        );
         self.worktrees
             .apply(run, Some(session_id), Some(&recorder), false)
             .await
