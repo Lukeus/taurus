@@ -296,39 +296,11 @@ export function useNotebook({
   }, [typed, page, conflict, open]);
 
   /**
-   * Writes `text` over the file `target` was read as.
-   *
-   * The answer is applied only if the same opening of the same file is still
-   * in the editor — see `session`. A save started on one note and answered
-   * after another had opened is about a file no longer on screen: applied, it
-   * made the old note current again under the new one's text, and the next
-   * autosave wrote that text into the old file. The outcome is returned either
-   * way, for the one caller that has to know — a rename.
-   *
-   * `mine` is the opening it was asked in, taken once. A save queued behind
-   * another runs later, by which time the editor may have left the file, and
-   * taken then it would count as current and put the old page back.
+   * The save itself. A save sent from the queue (`track` off) leaves
+   * `saving` to the queue entry it belongs to.
    */
-  const write = useCallback(
-    (target: Page, text: string, mine = session.current): Promise<Flushed> => {
-      const underway = saving.current;
-      if (underway && same(underway.page, target) && underway.text === text) return underway.done;
-      // Another save of this file is still out. Sent now, this one would carry
-      // the fingerprint from before it, and the host would refuse it as the
-      // file having changed on disk — which it has, by this editor's own hand,
-      // and the conflict shown would be against the last keystroke. So it goes
-      // once the first has answered, with the fingerprint that one brought back.
-      if (underway && same(underway.page, target)) {
-        const after: Promise<Flushed> = underway.done.then((first) => {
-          if (saving.current?.done === after) saving.current = null;
-          if (first !== "written") return first;
-          const base =
-            landed.current && same(landed.current, target) ? landed.current : target;
-          return write(base, text, mine);
-        });
-        saving.current = { page: target, text, done: after };
-        return after;
-      }
+  const send = useCallback(
+    (target: Page, text: string, mine: number, track: boolean): Promise<Flushed> => {
       const here = () => session.current === mine;
       setSaveState("saving");
       const done = api
@@ -374,13 +346,63 @@ export function useNotebook({
           return "failed";
         })
         .finally(() => {
-          if (saving.current?.done === done) saving.current = null;
+          if (track && saving.current?.done === done) saving.current = null;
         });
-      saving.current = { page: target, text, done };
+      if (track) saving.current = { page: target, text, done };
       return done;
     },
     [refresh, hold],
   );
+
+  /**
+   * Writes `text` over the file `target` was read as.
+   *
+   * The answer is applied only if the same opening of the same file is still
+   * in the editor — see `session`. A save started on one note and answered
+   * after another had opened is about a file no longer on screen: applied, it
+   * made the old note current again under the new one's text, and the next
+   * autosave wrote that text into the old file. The outcome is returned either
+   * way, for the one caller that has to know — a rename.
+   *
+   * `mine` is the opening it was asked in, taken once. A save queued behind
+   * another runs later, by which time the editor may have left the file, and
+   * taken then it would count as current and put the old page back.
+   */
+  const write = useCallback(
+    (target: Page, text: string, mine = session.current): Promise<Flushed> => {
+      const underway = saving.current;
+      if (underway && same(underway.page, target) && underway.text === text) return underway.done;
+      // Another save of this file is still out. Sent now, this one would carry
+      // the fingerprint from before it, and the host would refuse it as the
+      // file having changed on disk — which it has, by this editor's own hand,
+      // and the conflict shown would be against the last keystroke. So it goes
+      // once the first has answered, with the fingerprint that one brought back.
+      //
+      // Sent straight, not through `write` again. Back through the queue, a
+      // second save queued behind this one became the save this one waited
+      // for while that one waited for this: three saves in quick succession
+      // (a debounce, then a flush on blur) and no flush ever answered. This
+      // one stays the queue's tail until its own save has answered.
+      if (underway && same(underway.page, target)) {
+        const after: Promise<Flushed> = underway.done
+          .then((first) => {
+            if (first !== "written") return first;
+            const base =
+              landed.current && same(landed.current, target) ? landed.current : target;
+            return send(base, text, mine, false);
+          })
+          .finally(() => {
+            if (saving.current?.done === after) saving.current = null;
+          });
+        saving.current = { page: target, text, done: after };
+        return after;
+      }
+      return send(target, text, mine, true);
+    },
+    [send],
+  );
+
+
 
   /**
    * Writes now whatever is waiting to be written.

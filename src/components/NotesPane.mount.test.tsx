@@ -522,6 +522,46 @@ describe("saving a note", () => {
     expect(host.textContent).not.toContain("changed on disk");
   });
 
+  it("lands every save queued behind one still out, in order", async () => {
+    // Two queued behind a slow one each waited on the other, and neither went:
+    // a debounce, then a flush on blur or send, was enough.
+    vi.useFakeTimers();
+    let answer: (value: unknown) => void = () => {};
+    const sent: { text: string; fingerprint: string }[] = [];
+    answering({
+      list_pages: () => [ref("Notes")],
+      read_page: () => page("Notes", "# Notes\n"),
+      save_page: (args: never) => {
+        const { text, fingerprint } = args as { text: string; fingerprint: string };
+        sent.push({ text, fingerprint });
+        const written = { type: "written", page: { ...page("Notes", text), fingerprint: `v${sent.length}` } };
+        if (sent.length === 1) {
+          return new Promise((resolve) => {
+            answer = () => resolve(written);
+          });
+        }
+        return written;
+      },
+    });
+    const { host, click, type } = await mount();
+    await click(host.querySelector(".notes-row"));
+    for (const line of ["a", "b", "c"]) {
+      await type(host.querySelector("textarea"), `# Notes\n\n${line}\n`);
+      await act(async () => {
+        vi.advanceTimersByTime(900);
+      });
+    }
+    expect(sent).toHaveLength(1);
+
+    await act(async () => answer(undefined));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(sent.map((s) => s.text)).toEqual(["# Notes\n\na\n", "# Notes\n\nb\n", "# Notes\n\nc\n"]);
+    expect(sent.map((s) => s.fingerprint)).toEqual(["32-1000", "v1", "v2"]);
+  });
+
   it("keeps both versions when somebody got there first", async () => {
     // The rule this exists for: the one thing that must not happen is the app
     // deciding whose work to throw away.
