@@ -182,6 +182,11 @@ impl Speakable {
             return Some(Line::Break);
         }
         let (marker, own) = marker(trimmed);
+        // `- [x` may still be `- [x] `, whose box isn't said. Decided now, the
+        // box would be read out as part of the item.
+        if !complete && might_be_a_checkbox(&trimmed[marker..]) {
+            return None;
+        }
         self.said = indent + marker;
         Some(Line::Prose { own })
     }
@@ -193,6 +198,14 @@ pub fn sentences(text: &str) -> Vec<String> {
     let mut out = filter.push(text);
     out.extend(filter.finish());
     out
+}
+
+/// Whether `rest` is the start of a checkbox that hasn't finished arriving.
+fn might_be_a_checkbox(rest: &str) -> bool {
+    !rest.is_empty()
+        && ["[ ] ", "[x] ", "[X] "]
+            .iter()
+            .any(|checkbox| checkbox.len() > rest.len() && checkbox.starts_with(rest))
 }
 
 /// Whether `trimmed` is still only digits, which could become `12. `.
@@ -707,6 +720,17 @@ mod tests {
                 "Plus"
             ]
         );
+    }
+
+    #[test]
+    fn a_checkbox_split_across_chunks_is_not_said() {
+        let mut filter = Speakable::new();
+        let mut out = filter.push("- [x");
+        out.extend(filter.push("] Task done\n"));
+        out.extend(filter.finish());
+        assert_eq!(out, ["Task done"]);
+        // Prose that only starts like one still gets said.
+        assert_eq!(sentences("[x is a variable."), ["[x is a variable."]);
     }
 
     #[test]

@@ -1046,15 +1046,28 @@ fn describe(file: &str, before: &State, after: &State) -> TurnChange {
 /// The log is a file on disk like any other, and a rewind writes wherever it
 /// says. Resolving through the same guard the tools use means a hand-edited or
 /// corrupted log cannot reach outside the workspace it belongs to.
+///
+/// The folder is resolved, and the name is put back on unresolved. What a
+/// rewind puts back is the entry itself, and a link the turn left there is
+/// part of what it changed: resolved through, a link to another file had that
+/// file overwritten and the link kept, and one out of the workspace was
+/// refused and kept.
 fn restore(workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restored {
-    let path = match crate::path_guard::resolve(workspace, file) {
-        Ok(path) => path,
-        Err(e) => {
-            return Restored::Skipped {
-                path: file.to_string(),
-                reason: e.to_string(),
-            }
-        }
+    let skipped = |reason: String| Restored::Skipped {
+        path: file.to_string(),
+        reason,
+    };
+    let raw = Path::new(file);
+    let Some(name) = raw.file_name() else {
+        return skipped(format!("{file} doesn't name a file"));
+    };
+    let folder = raw
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| ".".to_string(), |p| p.to_string_lossy().into_owned());
+    let path = match crate::path_guard::resolve(workspace, &folder) {
+        Ok(folder) => folder.join(name),
+        Err(e) => return skipped(e.to_string()),
     };
 
     let outcome = match state {
@@ -1066,24 +1079,30 @@ fn restore(workspace: &Path, file: &str, state: &State, dry_run: bool) -> Restor
                 reason: reason.clone(),
             }
         }
-        State::Absent => {
-            if dry_run || !path.exists() {
-                Ok(())
-            } else {
-                std::fs::remove_file(&path)
-            }
-        }
+        // Asked of the entry, not through it: a link the turn made whose
+        // target is gone `exists()` as nothing, and would be left behind.
+        State::Absent => match std::fs::symlink_metadata(&path) {
+            Ok(_) if !dry_run => std::fs::remove_file(&path),
+            _ => Ok(()),
+        },
         State::Text { content } => {
             if dry_run {
                 Ok(())
             } else {
+                // A link the turn put where the file was goes first. Written
+                // through, the pre-image would land wherever the link points,
+                // outside the workspace as easily as in it.
+                let unlinked = match std::fs::symlink_metadata(&path) {
+                    Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(&path),
+                    _ => Ok(()),
+                };
                 // A turn can have created the directory too, so a plain write
                 // to a path whose parent is gone would fail.
-                match path.parent() {
+                unlinked.and_then(|()| match path.parent() {
                     Some(parent) => std::fs::create_dir_all(parent)
                         .and_then(|()| std::fs::write(&path, content)),
                     None => std::fs::write(&path, content),
-                }
+                })
             }
         }
     };
@@ -2384,6 +2403,35 @@ mod tests {
 
         f.store.rewind("s1", &f.root, 1, false).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rewind_takes_out_a_link_the_turn_left_rather_than_acting_through_it() {
+        let f = Fixture::new();
+        let outside = tempfile::TempDir::new().unwrap();
+        let elsewhere = outside.path().join("target");
+        std::fs::write(&elsewhere, "not the workspace's").unwrap();
+        std::fs::write(f.path("a.txt"), "before").unwrap();
+
+        let turn = f.store.begin_turn("s1", &f.root, "relink");
+        turn.capture(&f.path("a.txt")).await;
+        turn.capture(&f.path("gone")).await;
+        // The turn swaps a.txt for a link out of the workspace, and leaves a
+        // link to nothing where no file was.
+        std::fs::remove_file(f.path("a.txt")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, f.path("a.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("nothing"), f.path("gone")).unwrap();
+
+        f.store.rewind("s1", &f.root, 1, false).unwrap();
+        let a = std::fs::symlink_metadata(f.path("a.txt")).unwrap();
+        assert!(a.file_type().is_file());
+        assert_eq!(std::fs::read_to_string(f.path("a.txt")).unwrap(), "before");
+        assert_eq!(
+            std::fs::read_to_string(&elsewhere).unwrap(),
+            "not the workspace's"
+        );
+        assert!(std::fs::symlink_metadata(f.path("gone")).is_err());
     }
 
     #[tokio::test]

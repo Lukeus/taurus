@@ -302,10 +302,10 @@ fn pump_input(
 #[derive(Default)]
 pub struct Terminals {
     open: DashMap<String, Arc<Shell>>,
-    /// The shell opened most recently, which is the one the agent reads. The
-    /// dock holds one at a time, so in practice this is *the* shell; a
-    /// restart replaces it.
-    latest: Mutex<Option<String>>,
+    /// The shells open, oldest first. The newest is the one the agent reads;
+    /// closing it hands reading back to the one before it, rather than to
+    /// nothing while older tabs are still open.
+    order: Mutex<Vec<String>>,
 }
 
 impl Terminals {
@@ -393,7 +393,7 @@ impl Terminals {
         let shell = Shell::new(pair.master, writer, killer, credit.clone(), name)?;
         let blocks = shell.blocks.clone();
         self.open.insert(id.clone(), Arc::new(shell));
-        *lock(&self.latest) = Some(id.clone());
+        lock(&self.order).push(id.clone());
 
         let (tx, rx) = mpsc::channel::<Pump>(READ_BACKLOG);
 
@@ -439,6 +439,7 @@ impl Terminals {
             // can no longer be written to. Left in the map it would be an id
             // that accepts input and swallows it.
             terminals.open.remove(&closing);
+            lock(&terminals.order).retain(|id| *id != closing);
         });
 
         info!(terminal = %id, cwd = %cwd.display(), "shell started");
@@ -467,8 +468,11 @@ impl Terminals {
 
     /// The shell the agent reads, if one is open.
     fn reading(&self) -> Option<Arc<Shell>> {
-        let latest = lock(&self.latest).clone()?;
-        self.open.get(&latest).map(|e| e.clone())
+        let order = lock(&self.order);
+        order
+            .iter()
+            .rev()
+            .find_map(|id| self.open.get(id).map(|e| e.clone()))
     }
 
     /// Credits `bytes` of output the pane has drawn, so the shell can send
