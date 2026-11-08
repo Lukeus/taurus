@@ -4,7 +4,7 @@
 // and that a running turn keeps the rows from switching.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi, type Mock } from "vitest";
 
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
@@ -12,8 +12,8 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 const RECENT = ["/code/taurus", "/code/site", "/notes/journal"];
 let root: Root;
-let onSwitch: ReturnType<typeof vi.fn>;
-let onBrowse: ReturnType<typeof vi.fn>;
+let onSwitch: Mock<(path: string) => void>;
+let onBrowse: Mock<() => void>;
 
 const mount = (blocked: string | null = null) =>
   act(async () =>
