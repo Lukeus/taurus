@@ -1,9 +1,18 @@
-# One package. Listed so that pnpm 9, which CI installs with, reads this file as
-# a workspace — without `packages` it refuses the install outright ("packages
-# field missing or empty"). pnpm 10 and later read the setting below from here:
-# they run no dependency's build script unless it is named, and esbuild's
-# postinstall is the one this repository needs.
 packages:
   - "."
-onlyBuiltDependencies:
-  - esbuild
+# pnpm runs no dependency's build script unless it is allowed here, and
+# esbuild's postinstall is the one this repository needs.
+allowBuilds:
+  esbuild: true
+# Security floors for packages pulled in under ranges that exclude the fix:
+# nanoid, lodash-es and katex all come through Excalidraw and Mermaid; undici
+# through jsdom; source-map-js through Tailwind and jsdom.
+overrides:
+  "nanoid@<3.3.18": "^3.3.18"
+  "nanoid@>=4 <5.1.16": "^5.1.16"
+  "lodash-es@<4.18.0": "^4.18.1"
+  "katex@<0.18.2": "^0.18.2"
+  # These two are in range already, but pnpm keeps a locked transitive version
+  # until something forces it to move.
+  "undici@>=8 <8.12.2": "^8.12.2"
+  "source-map-js@<1.2.2": "^1.2.2"

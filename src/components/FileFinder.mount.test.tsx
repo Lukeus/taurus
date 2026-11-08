@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -15,8 +15,8 @@ import { FileFinder } from "./FileFinder";
 
 const PATHS = ["README.md", "src/App.tsx", "src/components/Canvas.tsx", "src/lib/mod.rs"];
 let root: Root;
-let onOpen: ReturnType<typeof vi.fn>;
-let onClose: ReturnType<typeof vi.fn>;
+let onOpen: Mock<(path: string) => void>;
+let onClose: Mock<() => void>;
 
 const mount = async (open: string[] = []) => {
   await act(async () =>
