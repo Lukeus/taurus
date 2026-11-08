@@ -80,11 +80,15 @@ impl Tool for LoadSkill {
                 .names()
                 .filter(|name| catalog.get(name).is_some_and(|s| s.model_invocable()))
                 .collect();
-            return Err(ToolError::InvalidInput(if known.is_empty() {
-                "There are no skills available.".into()
+            // `Rejected`, not `InvalidInput`: the call is well formed and the
+            // name is simply not one this session discovered. Which skills
+            // exist is a runtime fact, so the schema cannot hold them and
+            // pointing the model at it helps nothing — the message lists them.
+            return Err(ToolError::Rejected(if known.is_empty() {
+                "there are no skills available".into()
             } else {
                 format!(
-                    "No skill named '{}'. Available: {}.",
+                    "no skill named '{}'. Available: {}",
                     input.name,
                     known.join(", ")
                 )
@@ -172,9 +176,11 @@ impl Tool for RunSkillScript {
 
         let (script_path, interpreter_name, skill_dir) = {
             let catalog = self.catalog.read().await;
-            let skill = catalog.get(&input.skill).ok_or_else(|| {
-                ToolError::InvalidInput(format!("No skill named '{}'.", input.skill))
-            })?;
+            // Both of these are the same case as `load_skill` above: a well
+            // formed call naming something this session does not have.
+            let skill = catalog
+                .get(&input.skill)
+                .ok_or_else(|| ToolError::Rejected(format!("no skill named '{}'", input.skill)))?;
             let script = skill
                 .frontmatter
                 .scripts
@@ -187,11 +193,11 @@ impl Tool for RunSkillScript {
                         .iter()
                         .map(|s| s.path.as_str())
                         .collect();
-                    ToolError::InvalidInput(if known.is_empty() {
-                        format!("Skill '{}' has no scripts.", input.skill)
+                    ToolError::Rejected(if known.is_empty() {
+                        format!("skill '{}' has no scripts", input.skill)
                     } else {
                         format!(
-                            "Skill '{}' has no script '{}'. It has: {}.",
+                            "skill '{}' has no script '{}'. It has: {}",
                             input.skill,
                             input.script,
                             known.join(", ")
@@ -854,7 +860,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(err.contains("No skill named 'deploy'"), "{err}");
+        assert!(err.contains("no skill named 'deploy'"), "{err}");
         assert!(err.contains("alpha"), "{err}");
         assert!(!err.contains("Available: alpha, deploy"), "{err}");
         assert!(

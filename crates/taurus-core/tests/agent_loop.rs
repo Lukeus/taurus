@@ -44,6 +44,18 @@ fn harness_on(
     prompt: Box<dyn PermissionPrompt>,
     config: AgentConfig,
 ) -> Harness {
+    harness_using(provider, prompt, config, ToolRegistry::with_builtins())
+}
+
+/// The one place a test agent is wired. Everything above it is a shorthand for
+/// a common set of arguments; the registry is a parameter for the two tests
+/// that need a tool the builtins do not provide.
+fn harness_using(
+    provider: Arc<FakeProvider>,
+    prompt: Box<dyn PermissionPrompt>,
+    config: AgentConfig,
+    registry: ToolRegistry,
+) -> Harness {
     let dir = TempDir::new().unwrap();
     let workspace = dir.path().canonicalize().unwrap();
     let cancel = CancellationToken::new();
@@ -53,12 +65,7 @@ fn harness_on(
         prompt,
     ));
     let tools = ToolContext::new(workspace.clone(), permissions, cancel.clone());
-    let agent = Agent::new(
-        provider.clone(),
-        ToolRegistry::with_builtins(),
-        tools,
-        config,
-    );
+    let agent = Agent::new(provider.clone(), registry, tools, config);
     Harness {
         agent,
         provider,
@@ -1480,7 +1487,7 @@ async fn repeating_one_failing_call_unchanged_stops_the_turn() {
         .last()
         .unwrap()
         .text()
-        .contains("failed 3 times"));
+        .contains("came back 3 times"));
 }
 
 #[tokio::test]
@@ -1534,43 +1541,35 @@ async fn alternating_between_two_failing_calls_stops_the_turn() {
 }
 
 /// A harness with `update_plan` wired the way a real turn wires it: the tool in
-/// the registry, the board on the agent, both sharing one `PlanBoard`.
+/// the registry, the board on the agent, both sharing one `PlanBoard` — which
+/// is what `Host::build_agent` does for a real turn.
 fn plan_harness(turns: Vec<ScriptedTurn>) -> Harness {
-    let dir = TempDir::new().unwrap();
-    let workspace = dir.path().canonicalize().unwrap();
-    let cancel = CancellationToken::new();
-    let permissions = Arc::new(PermissionEngine::new(
-        &workspace,
-        workspace.join(".taurus"),
-        Box::new(AllowAll),
-    ));
-    let tools = ToolContext::new(workspace.clone(), permissions, cancel.clone());
-    let provider = FakeProvider::with_context_length(turns, 128_000);
-
     let board = taurus_tools::PlanBoard::new();
     let mut registry = ToolRegistry::with_builtins();
     registry.register(Arc::new(taurus_tools::builtin::plan::UpdatePlan::new(
         board.clone(),
     )));
-
+    let h = harness_using(
+        FakeProvider::new(turns),
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        registry,
+    );
     Harness {
-        agent: Agent::new(provider.clone(), registry, tools, AgentConfig::default())
-            .with_plan(board),
-        provider,
-        cancel,
-        _dir: dir,
-        workspace,
+        agent: h.agent.with_plan(board),
+        ..h
     }
 }
 
+/// One fixed two-step plan, with only the field `update_plan` ignores varying —
+/// which is how a model rewords a call it has just been refused for.
 fn set_plan(id: &str, active_form: &str) -> ScriptedTurn {
-    ScriptedTurn::tool_call(
+    plan_call(
         id,
-        "update_plan",
-        serde_json::json!({ "steps": [
+        serde_json::json!([
             { "text": "Verify the project setup", "state": "active", "active_form": active_form },
             { "text": "Execute implementation phase-by-phase", "state": "todo" },
-        ] }),
+        ]),
     )
 }
 
@@ -1650,6 +1649,140 @@ async fn a_refused_call_is_not_told_to_retry() {
         !refusal.contains("retry"),
         "a refusal must not end by asking for the call again: {refusal}"
     );
+}
+
+#[tokio::test]
+async fn three_different_calls_the_user_denies_are_not_a_stall() {
+    /*
+     * The counted identity is the answer, and `Denied` is one fixed sentence
+     * whatever was asked for — so three *different* calls the user turned down
+     * arrived as three identical rounds and killed the turn on the third.
+     *
+     * Which punished the model for obeying: the denial tells it to choose
+     * another approach, and it did, twice, and was cut off before it could say
+     * so. An answer that describes no particular call cannot identify one, so
+     * these fall back to comparing what was asked.
+     */
+    let h = harness_with(
+        vec![
+            ScriptedTurn::tool_call(
+                "t1",
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "one"}),
+            ),
+            ScriptedTurn::tool_call(
+                "t2",
+                "write_file",
+                serde_json::json!({"path": "b.txt", "content": "two"}),
+            ),
+            ScriptedTurn::tool_call(
+                "t3",
+                "write_file",
+                serde_json::json!({"path": "c.txt", "content": "three"}),
+            ),
+            ScriptedTurn::text("You have turned all three down — what would you prefer?"),
+        ],
+        Box::new(DenyAll),
+        AgentConfig::default(),
+        128_000,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "write the files").await;
+
+    assert!(
+        outcome.is_ok(),
+        "three different denied calls are three attempts, not one repeated: {outcome:?}"
+    );
+    assert_eq!(
+        session.messages.last().unwrap().text(),
+        "You have turned all three down — what would you prefer?",
+        "the model must get the turn where it asks the user what to do instead"
+    );
+}
+
+#[tokio::test]
+async fn repeating_one_call_stops_the_turn_however_the_error_reads() {
+    /*
+     * The other side of counting the answer: an error that carries a detail
+     * which moves on every attempt — a request id, a retry-after, a timestamp
+     * out of a server's own error body — never matches the round before it, so
+     * a model resending one identical call ran to the iteration ceiling.
+     *
+     * What repeats here is the call, so that is what has to be noticed.
+     */
+    let mut registry = ToolRegistry::with_builtins();
+    registry.register(Arc::new(FailsFreshly::default()));
+    let h = harness_using(
+        FakeProvider::new(vec![
+            flaky_search("t1"),
+            flaky_search("t2"),
+            flaky_search("t3"),
+            ScriptedTurn::text("never reached"),
+        ]),
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        registry,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "search").await;
+
+    assert!(
+        matches!(outcome, Err(AgentError::Stalled(3))),
+        "the same call three times is a stall however the error reads: {outcome:?}"
+    );
+    assert_eq!(
+        h.provider.request_count().await,
+        3,
+        "the turn should stop rather than spend its whole iteration budget"
+    );
+}
+
+fn flaky_search(id: &str) -> ScriptedTurn {
+    ScriptedTurn::tool_call(id, "flaky_search", serde_json::json!({ "query": "tokio" }))
+}
+
+/// Fails every time, and never with the same sentence twice — a rate limiter
+/// that puts a fresh request id in every rejection.
+#[derive(Default)]
+struct FailsFreshly {
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl taurus_tools::Tool for FailsFreshly {
+    fn name(&self) -> &str {
+        "flaky_search"
+    }
+
+    fn description(&self) -> &str {
+        "Searches, badly."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } },
+            "required": ["query"],
+        })
+    }
+
+    fn effect(&self) -> taurus_tools::Effect {
+        taurus_tools::Effect::Read
+    }
+
+    async fn execute(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> taurus_tools::ToolResult {
+        let n = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(taurus_tools::ToolError::Failed(format!(
+            "rate limited; wait before searching again (429): {{\"retry_after\":{},\"id\":\"a1f{n}\"}}",
+            60 - n
+        )))
+    }
 }
 
 #[tokio::test]
@@ -2232,33 +2365,12 @@ async fn the_check_can_be_turned_off() {
 
 // ------------------------------------------------------------------ the plan
 
-/// A harness whose registry carries `update_plan`, wired to the same board the
-/// agent restates from — which is what `Host::build_agent` does for a real turn.
+/// [`plan_harness`] as the three pieces these tests read. They drive the agent
+/// and inspect the requests; the cancel token and workspace are the harness's
+/// to keep.
 fn planning(turns: Vec<ScriptedTurn>) -> (Agent, Arc<FakeProvider>, TempDir) {
-    let dir = TempDir::new().unwrap();
-    let workspace = dir.path().canonicalize().unwrap();
-    let cancel = CancellationToken::new();
-    let permissions = Arc::new(PermissionEngine::new(
-        &workspace,
-        workspace.join(".taurus"),
-        Box::new(AllowAll),
-    ));
-
-    let board = taurus_tools::PlanBoard::new();
-    let mut registry = ToolRegistry::with_builtins();
-    registry.register(Arc::new(taurus_tools::builtin::plan::UpdatePlan::new(
-        board.clone(),
-    )));
-
-    let provider = FakeProvider::new(turns);
-    let agent = Agent::new(
-        provider.clone(),
-        registry,
-        ToolContext::new(workspace, permissions, cancel),
-        AgentConfig::default(),
-    )
-    .with_plan(board);
-    (agent, provider, dir)
+    let h = plan_harness(turns);
+    (h.agent, h.provider, h._dir)
 }
 
 fn plan_call(id: &str, steps: serde_json::Value) -> ScriptedTurn {

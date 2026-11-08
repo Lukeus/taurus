@@ -139,7 +139,10 @@ impl Tool for ReadFile {
             .await
             .is_ok_and(|meta| meta.is_dir())
         {
-            return Err(ToolError::InvalidInput(format!(
+            // Well formed, and refused for what is on disk rather than for how
+            // the call was written — a schema that says `path: string` cannot
+            // say "a file". Same for every refusal below.
+            return Err(ToolError::Rejected(format!(
                 "{} is a directory; use list_dir",
                 input.path
             )));
@@ -173,7 +176,7 @@ impl Tool for ReadFile {
         // the file's length to correct itself. That length is always known,
         // because finding the window counts every line on the way.
         if !window.found {
-            return Err(ToolError::InvalidInput(format!(
+            return Err(ToolError::Rejected(format!(
                 "{} has {} lines; offset {} is past the end",
                 ctx.display(&path),
                 total,
@@ -634,8 +637,8 @@ impl Tool for EditFile {
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let input: EditFileInput = parse_input(input)?;
         if input.old_string == input.new_string {
-            return Err(ToolError::InvalidInput(
-                "old_string and new_string are identical".into(),
+            return Err(ToolError::Rejected(
+                "old_string and new_string are identical, so this edit would change nothing".into(),
             ));
         }
         let path = ctx.resolve(&input.path)?;
@@ -710,25 +713,32 @@ struct NearMiss {
 const MAX_NEAR_MISS_LINES: usize = 12;
 
 impl EditProblem {
+    /// `Rejected` rather than `InvalidInput`: the call is well formed and the
+    /// file simply does not say what it was told to look for. The advice that
+    /// used to follow — check the schema and retry — contradicted the sentence
+    /// in front of it, and "retry" is the whole of the failure here: a model
+    /// that re-sends a stale `old_string` gets the identical answer forever.
+    ///
+    /// Neither message ends in a period. The renderer supplies one.
     fn explain(self, display: &str) -> ToolError {
-        ToolError::InvalidInput(match self {
+        ToolError::Rejected(match self {
             Self::NotFound(Miss::Nothing) => format!(
                 "old_string was not found in {display}. Read the file again and match its exact \
-                 current text, including whitespace."
+                 current text, including whitespace"
             ),
             Self::NotFound(Miss::AlreadyApplied) => format!(
                 "old_string was not found in {display}, but new_string is already there — this \
                  edit looks like it has been made once already. Read the file before making it \
-                 again."
+                 again"
             ),
             Self::NotFound(Miss::Near(near)) => near.explain(display),
             Self::Ambiguous(n) => format!(
                 "old_string appears {n} times in {display}. Include surrounding context to make \
-                 it unique, or set replace_all."
+                 it unique, or set replace_all"
             ),
             Self::NothingToFind => format!(
                 "old_string is empty, which matches everywhere in {display}. Say what to replace, \
-                 or use write_file to give a file its whole contents."
+                 or use write_file to give a file its whole contents"
             ),
         })
     }
@@ -1766,6 +1776,54 @@ mod tests {
         assert!(err.contains("the first 12 of those lines"), "{err}");
         assert!(err.contains("from line 13"), "{err}");
         assert!(!err.contains("line 20"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_stale_edit_is_not_told_to_check_the_schema_and_retry() {
+        /*
+         * The highest-traffic version of the refusal problem. A model re-sends
+         * an `old_string` the file no longer has, and the message tells it to
+         * read the file again — then the layer above appended "Check the
+         * tool's schema and retry", contradicting the sentence in front of it
+         * with the one instruction that keeps the loop going. Nothing about
+         * this call is a schema question.
+         */
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let message = EditFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "old_string": "nope", "new_string": "x"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_model_message();
+
+        assert!(message.contains("Read the file again"), "{message}");
+        assert!(!message.contains("retry"), "{message}");
+        assert!(!message.contains("schema"), "{message}");
+        // And no doubled period where the advice is joined on.
+        assert!(!message.contains(".."), "{message}");
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_would_change_nothing_is_refused_on_its_merits() {
+        // Identical strings: perfectly well formed, and cannot succeed however
+        // many times it is sent — the same shape as restating a plan.
+        let (ctx, dir) = test_ctx();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let error = EditFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "old_string": "h", "new_string": "h"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Rejected(_)), "{error}");
+        assert!(
+            error.to_model_message().contains("would change nothing"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

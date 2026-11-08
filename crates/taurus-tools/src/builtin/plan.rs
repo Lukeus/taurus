@@ -279,6 +279,16 @@ fn honor_edits(mut steps: Vec<Step>, rules: &Rules) -> (Vec<Step>, Option<String
 /// `rules.previous` is the plan on the board, which the later rules are about.
 /// A whole-list replacement carries no memory, so the only place a step that
 /// silently un-finished itself can be noticed is here, against what it replaced.
+///
+/// # Which error kind
+///
+/// Split on what is actually wrong, because the two render different advice.
+/// A list that breaks a limit, leaves a field empty, or marks three steps
+/// active is [`ToolError::InvalidInput`], and "check the tool's schema and
+/// retry" is the right thing to tell it. A list that is perfectly well formed
+/// and contradicts what the board already holds is [`ToolError::Rejected`]:
+/// the schema is not the problem, and sending the model to read it is sending
+/// it to the one document that cannot help.
 fn check(steps: &[Step], rules: &Rules) -> Result<(), ToolError> {
     let previous = &rules.previous[..];
     if steps.is_empty() {
@@ -366,7 +376,9 @@ fn check(steps: &[Step], rules: &Rules) -> Result<(), ToolError> {
     if let Some(open) = steps.iter().position(|s| s.state != StepState::Done) {
         if let Some(done) = steps.iter().rposition(|s| s.state == StepState::Done) {
             if done > open {
-                return Err(ToolError::InvalidInput(format!(
+                // Well formed, and wrong about itself. See the note on kinds
+                // above: nothing here is a schema question.
+                return Err(ToolError::Rejected(format!(
                     "step {} is marked 'done' but step {} before it is still '{}'. Steps are \
                      worked in order, so either step {} is finished too and needs marking 'done', \
                      or the list is in the wrong order and the finished steps belong first",
@@ -389,7 +401,8 @@ fn check(steps: &[Step], rules: &Rules) -> Result<(), ToolError> {
                 .iter()
                 .any(|p| p.state == StepState::Done && p.text.trim() == s.text.trim())
     }) {
-        return Err(ToolError::InvalidInput(format!(
+        // Well formed, and contradicts the board. As above.
+        return Err(ToolError::Rejected(format!(
             "step {} '{}' is marked '{}', but you had already marked it 'done'. A finished step \
              does not reopen — send the whole list back with it still 'done'. If the request has \
              moved on, write the new plan with its own steps instead",
@@ -441,9 +454,18 @@ fn check(steps: &[Step], rules: &Rules) -> Result<(), ToolError> {
      * edit, and that clears the note the reminder carries about it.
      */
     if !rules.carried && !rules.edited && same_steps(steps, previous) {
+        // The step the model marked 'active', and only failing that the first
+        // one not finished. They are the same step whenever the list is worked
+        // in order, which is the normal case and why this read as the first
+        // unfinished step for so long. When they differ — nothing forbids an
+        // 'active' step below a 'todo' one — the active step is the one the
+        // reminder in the system prompt marks `[>]` and tells the model to
+        // work, so naming the other one contradicts the instruction it is
+        // reading one line above.
         let next = steps
             .iter()
-            .position(|s| s.state != StepState::Done)
+            .position(|s| s.state == StepState::Active)
+            .or_else(|| steps.iter().position(|s| s.state != StepState::Done))
             .map(|n| n + 1);
         // `Rejected`, not `InvalidInput`: the list is well formed and the call
         // is refused on its merits, so the advice that follows must not be
@@ -822,6 +844,88 @@ mod tests {
         // that was perfectly good.
         assert_eq!(board.steps().len(), 2);
         assert_eq!(board.steps()[0].state, StepState::Active);
+    }
+
+    #[tokio::test]
+    async fn the_step_named_is_the_one_the_model_said_it_was_on() {
+        // Nothing forbids an 'active' step below a 'todo' one, and when that is
+        // the list, "the first step not done" and "the step being worked" are
+        // different steps. The reminder in the system prompt marks the active
+        // one `[>]` and says to work it, so the refusal has to name the same
+        // step or it argues with the instruction above it.
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        let plan = || {
+            input(vec![
+                step("Draft the migration", StepState::Todo),
+                step("Read the parser", StepState::Active),
+            ])
+        };
+
+        tool.execute(plan(), &ctx).await.expect("a valid plan");
+        let error = tool
+            .execute(plan(), &ctx)
+            .await
+            .expect_err("nothing changed");
+        let message = error.to_model_message();
+        assert!(message.contains("step 2"), "{message}");
+        assert!(message.contains("Read the parser"), "{message}");
+        assert!(
+            !message.contains("Draft the migration"),
+            "the refusal pointed at a step the model had not started: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_that_contradicts_the_board_is_not_sent_to_read_the_schema() {
+        /*
+         * Both of these are perfectly well formed — every field present, every
+         * limit respected — and refused for what they say rather than how they
+         * are written. `InvalidInput` would append "Check the tool's schema and
+         * retry", which points at the one document that cannot explain either
+         * of them.
+         */
+        let (ctx, _dir) = test_ctx();
+        let tool = UpdatePlan::new(PlanBoard::new());
+        tool.execute(
+            input(vec![
+                step("Read the parser", StepState::Done),
+                step("Add the token type", StepState::Active),
+            ]),
+            &ctx,
+        )
+        .await
+        .expect("a valid plan");
+
+        // A step that was done and is not any more.
+        let reopened = tool
+            .execute(
+                input(vec![
+                    step("Read the parser", StepState::Todo),
+                    step("Add the token type", StepState::Active),
+                ]),
+                &ctx,
+            )
+            .await
+            .expect_err("step 1 went back to todo")
+            .to_model_message();
+        assert!(reopened.contains("already marked it 'done'"), "{reopened}");
+        assert!(!reopened.contains("schema"), "{reopened}");
+
+        // A finished step sitting after an unfinished one.
+        let out_of_order = tool
+            .execute(
+                input(vec![
+                    step("Read the parser", StepState::Todo),
+                    step("Add the token type", StepState::Done),
+                ]),
+                &ctx,
+            )
+            .await
+            .expect_err("step 2 finished before step 1")
+            .to_model_message();
+        assert!(out_of_order.contains("worked in order"), "{out_of_order}");
+        assert!(!out_of_order.contains("schema"), "{out_of_order}");
     }
 
     #[tokio::test]

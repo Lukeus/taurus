@@ -68,25 +68,30 @@ pub const MAX_LISTED_COLUMNS: usize = 60;
 impl From<DataError> for ToolError {
     /// Which failures the model can fix by calling again, and which it cannot.
     ///
-    /// The split matters more than it looks: `InvalidInput` is rendered back
-    /// with "check the tool's schema and retry", which is the right advice for
-    /// a mistyped name and exactly the wrong advice for an unreadable file.
+    /// The split matters more than it looks, because each variant is rendered
+    /// back with different advice attached. `InvalidInput` appends "check the
+    /// tool's schema and retry", right for a mistyped name and wrong for an
+    /// unreadable file. `Rejected` appends "sending this call again unchanged
+    /// will fail the same way", right for a query that is refused for what it
+    /// says and wrong for anything a later call could find in better shape.
     fn from(error: DataError) -> Self {
         match error {
+            // Refused on the merits of SQL that parsed perfectly well. No
+            // schema describes "must be a SELECT" or "must read `input`" —
+            // `sql` is a string and these are statements about what is in it —
+            // so sending the model to read the schema sends it nowhere. What
+            // each message asks for is different SQL, which is a different
+            // call, so the appended sentence is true as well.
+            DataError::NotReadOnly { .. }
+            | DataError::StepNotReadOnly { .. }
+            | DataError::StepIgnoresInput { .. } => ToolError::Rejected(error.to_string()),
+
             DataError::UnknownFormat { .. }
             | DataError::NoSuchDataset { .. }
             | DataError::NotAFile(_)
             | DataError::BadName { .. }
             | DataError::NameTaken { .. }
-            // Both are the model's SQL rather than the harness's problem, and
-            // both are fixable by writing different SQL — which is what
-            // `InvalidInput` tells it to do.
-            | DataError::NotReadOnly { .. }
             | DataError::BadQuery { .. }
-            // A bad step is a line in a file the model can rewrite, which is
-            // exactly what `InvalidInput` tells it to go and do.
-            | DataError::StepNotReadOnly { .. }
-            | DataError::StepIgnoresInput { .. }
             | DataError::BadStep { .. } => ToolError::InvalidInput(error.to_string()),
             other => ToolError::Failed(other.to_string()),
         }
@@ -101,6 +106,13 @@ impl From<RecipeError> for ToolError {
     fn from(error: RecipeError) -> Self {
         match error {
             RecipeError::Unreadable { .. } => ToolError::Failed(error.to_string()),
+            // Naming a recipe that is not there is not a schema question — the
+            // recipes are files on disk and no schema can list them — and the
+            // message names the ones that do exist, so what it wants next is a
+            // different call. The rest of `RecipeError` describes a malformed
+            // *file*, which the model fixes with an edit and then re-runs this
+            // very call, so those must keep advice that does not forbid it.
+            RecipeError::NotFound { .. } => ToolError::Rejected(error.to_string()),
             other => ToolError::InvalidInput(other.to_string()),
         }
     }
@@ -1545,7 +1557,10 @@ mod calls {
             .execute(serde_json::json!({ "recipe": "clen" }), &ctx)
             .await
             .unwrap_err();
-        assert!(matches!(error, ToolError::InvalidInput(_)), "{error}");
+        // `Rejected`: the call is well formed and no schema lists the recipes
+        // on disk, so "check the schema" would send it nowhere. The message
+        // names the ones that exist instead.
+        assert!(matches!(error, ToolError::Rejected(_)), "{error}");
         assert!(error.to_string().contains("clean"), "{error}");
     }
 
@@ -1573,7 +1588,8 @@ mod calls {
             .execute(serde_json::json!({ "recipe": "clean" }), &ctx)
             .await
             .unwrap_err();
-        assert!(matches!(error, ToolError::InvalidInput(_)), "{error}");
+        // `Rejected`: the SQL parsed, and is refused for what it does.
+        assert!(matches!(error, ToolError::Rejected(_)), "{error}");
         // Named by number, by title, and as SQL rather than as a plan node.
         assert!(error.to_string().contains("step 1 (sneaky)"), "{error}");
         assert!(error.to_string().contains("TABLE"), "{error}");
@@ -1715,7 +1731,8 @@ mod calls {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, ToolError::InvalidInput(_)), "{error}");
+        // `Rejected`: valid SQL, refused because of what it would do.
+        assert!(matches!(error, ToolError::Rejected(_)), "{error}");
         assert!(error.to_string().contains("recipe"), "{error}");
         assert!(!out.exists(), "a refused write still wrote a file");
     }
