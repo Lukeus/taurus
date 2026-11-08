@@ -264,6 +264,9 @@ function sections(page, md) {
 function plain(s) {
   return s
     .replace(/<[^>]+>/g, "")
+    // One pass can leave a tag behind ("<scr<b>ipt>"), and this text is meant
+    // to be plain, so no angle bracket survives at all.
+    .replace(/[<>]/g, "")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[`*]/g, "")
     .replace(/\s+/g, " ")
