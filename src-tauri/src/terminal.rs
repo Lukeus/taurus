@@ -959,8 +959,11 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
         let sent = output_bytes(&seen);
+        // The forwarder may start a send just under the high mark, and a
+        // gathered message stops growing only once it reaches COALESCE_BYTES,
+        // so it can overshoot that by up to one read.
         assert!(
-            sent <= HIGH_WATER + COALESCE_BYTES,
+            sent <= HIGH_WATER + COALESCE_BYTES + READ_CHUNK,
             "{sent} bytes went to a pane that drew none of them"
         );
         assert!(
