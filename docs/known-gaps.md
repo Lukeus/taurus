@@ -829,17 +829,15 @@ the backlog, and they're the minority.
   so a rewind neither restores nor reports it. That's correct, since there's
   nothing to put back. But a conversation's disk footprint grows somewhere
   the **Changes** drawer doesn't account for.
-- **The first index is slow, and a search that arrives early still waits for
-  it.** Embedding this repository takes nearly two minutes through Ollama,
-  and far longer on the built-in engine (see below). Sending a message
-  starts it in the background, so most of it is usually done before anything
-  searches. But a model that calls `search_code` in its first tool call waits
-  for the rest inside that call. The wait is shorter than a fresh start. The
-  search takes over the warm-up instead of starting again, everything
-  embedded so far is already written down, and the turn shows a passage count
-  moving. Closing it fully means answering from a partial index and saying
-  so. That's a different promise from the one the tool makes: every search
-  refreshes first, so a file you just wrote is a file it can find.
+- **A search during a long first index answers from part of it.** Past ten
+  seconds `search_code` stops waiting and searches the files embedded so far,
+  newest first, and says so under the results. That keeps the turn moving,
+  but an answer in a file the index hasn't reached yet is a miss, and the
+  model only has the note to tell it so. A search that joins a long refresh
+  already running doesn't see files written after that refresh's scan until
+  it finishes. The ten seconds, the 256-passage line for "won't finish in
+  time", and the newest-first order are judgment calls, not measured against
+  how people actually ask.
 - **The index doesn't notice a file that changed without moving.** It compares
   length and modification time, like the sweep, and it's blind in the same
   place. A rewrite to the same length within one filesystem tick is
@@ -860,6 +858,14 @@ the backlog, and they're the minority.
   CUDA back ends, each its own build and test matrix, or onnxruntime, which
   ships as a C++ prebuilt with no build for Intel macOS. A thread cap is the
   cheap half and isn't built yet.
+- **The rules for what isn't embedded only see names and first lines.** A
+  vendored library copied into a folder with an ordinary name, like
+  `src/lib/jquery.js` unminified, gets embedded; `.taurus/index-ignore` is
+  the way to say so. A generated file is caught only by a marker in its first
+  five lines, or Go's in its first forty, because a file that merely
+  mentions a marker further down isn't generated. And as with git, a `!`
+  line can't bring back one file inside a folder that's left out: `!vendor/`
+  then `vendor/big/` is how to keep part of it.
 - **Only the app downloads a built-in model.** `taurus run` uses one that's
   already downloaded, but the CLI has no command to fetch it, so a machine
   that only has the CLI can't turn built-in search on. Copying the folder

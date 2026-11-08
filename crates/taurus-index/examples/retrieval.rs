@@ -171,10 +171,11 @@ async fn main() {
     let base = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
     let provider: Arc<dyn Provider> = Arc::new(taurus_provider_ollama::OllamaProvider::new(base));
 
-    let (files, caveat) = walk(&root);
-    if let Some(caveat) = caveat {
+    let walked = walk(&root);
+    if let Some(caveat) = &walked.caveat {
         println!("note: {caveat}");
     }
+    let files = walked.files;
     // Read once and reused across the variants, so all three are scored on
     // exactly the same corpus. Reading per variant would compare the file
     // lists as much as the chunking.
@@ -185,6 +186,8 @@ async fn main() {
                 .ok()
                 .map(|c| (relative, c))
         })
+        // What the index leaves out by content, as it does.
+        .filter(|(relative, contents)| !taurus_index::skip::generated(relative, contents))
         .collect();
 
     println!(

@@ -838,10 +838,21 @@ impl Host {
 
         // Registered before the task starts rather than inside it, so two turns
         // in quick succession cannot both find nothing running.
-        let (ticket, cancel) = self.indexing.take_over(&CancellationToken::new());
+        // With the `Live` the registry hands out, so a search that arrives
+        // while a long warm-up runs can join it and ask it to write down what
+        // it has, rather than restart it. See `taurus_index::inflight`.
+        let (ticket, cancel, live) = self.indexing.take_over_live(&CancellationToken::new());
         let indexing = self.indexing.clone();
         tokio::spawn(async move {
-            match taurus_index::refresh(&index, &workspace, &provider, &model, &cancel, None).await
+            match taurus_index::refresh(
+                &index,
+                &workspace,
+                &provider,
+                &model,
+                &cancel,
+                Some(&*live),
+            )
+            .await
             {
                 Ok((_, report)) => tracing::debug!(summary = %report.summary(), "warmed the index"),
                 Err(e) => tracing::debug!(error = %e, "the index warm-up stopped"),

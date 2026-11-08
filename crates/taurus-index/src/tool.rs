@@ -19,9 +19,18 @@
 //! would answer from before the edit — which is worse than no index, because
 //! the answer looks right. The refresh is cheap after the first one: only files
 //! whose length or modification time moved are re-read.
+//!
+//! # But not for minutes
+//!
+//! A first index on the built-in engine can take many minutes. The search
+//! waits [`WAIT_FOR_INDEX`] for it, then answers from what's embedded so far
+//! and says so, leaving the refresh running. Files go in most recently
+//! changed first, so the file just written is among those searched, and the
+//! promise above holds for it.
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -29,6 +38,7 @@ use serde::Deserialize;
 use taurus_provider::Provider;
 use taurus_tools::tool::{parse_input, schema_for};
 use taurus_tools::{Effect, OutputBudget, Tool, ToolContext, ToolError, ToolResult};
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::build::refresh;
@@ -66,6 +76,38 @@ const MAX_RESULTS: usize = 24;
 /// thirty excerpts is a context window, not an answer.
 const RERANK_CANDIDATES: usize = 30;
 
+/// How long a search waits for the index to be brought up to date before
+/// answering from what's embedded so far.
+///
+/// Long enough for every refresh but a large one: a few changed files take
+/// well under a second on any engine. Short enough that a first index, which
+/// can be many minutes on the built-in engine, doesn't hold the turn: the
+/// model gets an answer from the files it reached, newest first, and the
+/// refresh carries on behind it.
+const WAIT_FOR_INDEX: Duration = Duration::from_secs(10);
+
+/// Passages past which a refresh plainly won't finish inside
+/// [`WAIT_FOR_INDEX`], so the search stops waiting as soon as the scan says
+/// so rather than sitting out the ten seconds first. The built-in engine on
+/// a CPU embeds about ten a second (measured on an M4 Max, slower elsewhere)
+/// and Ollama on a GPU about thirty-five, so this is several times what the
+/// first manages in ten seconds and about what the second does.
+const LONG_REFRESH: usize = 256;
+
+/// How long a search past [`WAIT_FOR_INDEX`] gives the refresh to write down
+/// what it has finished. A batch on the CPU takes a few seconds.
+const FLUSH_WAIT: Duration = Duration::from_secs(5);
+
+/// What the refresh before a search left to search.
+struct Refreshed {
+    entries: Vec<crate::Entry>,
+    /// The refresh's own line, for when nothing is indexed at all.
+    summary: String,
+    /// Whether the index is still being built, so a result has to say what
+    /// it might be missing. `summary` says how much.
+    partial: bool,
+}
+
 /// Lines of an excerpt shown per hit.
 ///
 /// Enough to tell whether the hit is the right place, not enough to be the
@@ -95,6 +137,9 @@ pub struct SearchCode {
     /// track of one. `None` where nothing else could be indexing — a test, an
     /// example, a tool built on its own.
     indexing: Option<Arc<crate::Indexing>>,
+    /// How long a search waits for a refresh before answering from what's
+    /// embedded so far. See [`WAIT_FOR_INDEX`].
+    wait: Duration,
 }
 
 impl SearchCode {
@@ -109,6 +154,7 @@ impl SearchCode {
             dir: dir.into(),
             rerank: None,
             indexing: None,
+            wait: WAIT_FOR_INDEX,
         }
     }
 
@@ -180,6 +226,191 @@ impl SearchCode {
         }
     }
 
+    /// Refreshes, waiting however long it takes. For a tool with no
+    /// [`crate::Indexing`] to leave a refresh running under.
+    async fn refresh_to_the_end(
+        &self,
+        index: &Index,
+        ctx: &ToolContext,
+    ) -> Result<Refreshed, ToolError> {
+        let stop = ctx.cancel.child_token();
+        let (entries, report) = refresh(
+            index,
+            &ctx.workspace,
+            &self.provider,
+            &self.model,
+            &stop,
+            Some(&Reporting(ctx)),
+        )
+        .await
+        .map_err(ToolError::Failed)?;
+        Ok(Refreshed {
+            entries,
+            summary: report.summary(),
+            partial: false,
+        })
+    }
+
+    /// Refreshes, waiting up to [`SearchCode::wait`], and leaves a longer
+    /// refresh running.
+    ///
+    /// Takes over whatever was refreshing, as it always has: the scan that
+    /// starts again is what finds a file written since, and what the old
+    /// refresh had embedded is already written down. The refresh runs as its
+    /// own task, registered with `flight`, so it can outlive this call. A
+    /// refresh that finishes in time is the whole answer, which is every
+    /// refresh except a first index or a large catch-up. One that won't is
+    /// asked to write down what it has finished, and the search answers from
+    /// that and says it's partial. The scan put the most recently changed
+    /// files first, so a file the model just wrote is among them.
+    ///
+    /// Except when a long refresh is already running. Then this joins it
+    /// rather than restarting it: only whole files are written down, so a
+    /// restart throws away the file in progress, and on a first index whose
+    /// newest files are large, a search every turn would keep it from ever
+    /// getting past them.
+    ///
+    /// Independent of the turn: Stop ends the wait, not the refresh, the same
+    /// as the warm-up a turn starts. Leaving the workspace stops it.
+    async fn refresh_with_deadline(
+        &self,
+        index: &Index,
+        flight: &Arc<crate::Indexing>,
+        ctx: &ToolContext,
+    ) -> Result<Refreshed, ToolError> {
+        if let Some(live) = flight
+            .running()
+            .filter(|live| live.planned().is_some_and(|n| n > LONG_REFRESH))
+        {
+            return self.answer_from_part(index, &live, true).await;
+        }
+
+        let (ticket, stop, live) = flight.take_over_live(&CancellationToken::new());
+        let mut task = {
+            let index = index.clone();
+            let workspace = ctx.workspace.clone();
+            let provider = Arc::clone(&self.provider);
+            let model = self.model.clone();
+            let flight = Arc::clone(flight);
+            let live = Arc::clone(&live);
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let refreshed =
+                    refresh(&index, &workspace, &provider, &model, &stop, Some(&*live)).await;
+                flight.finished(ticket);
+                refreshed
+            })
+        };
+
+        let deadline = tokio::time::sleep(self.wait);
+        tokio::pin!(deadline);
+        let mut progress = live.progress.subscribe();
+        let mut planned = live.planned.subscribe();
+        loop {
+            tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => {
+                    return Err(ToolError::Failed(
+                        "the search was stopped; indexing carries on in the background".into(),
+                    ));
+                }
+                joined = &mut task => {
+                    let refreshed = joined.map_err(|e| {
+                        ToolError::Failed(format!("indexing failed to run: {e}"))
+                    })?;
+                    return match refreshed {
+                        Ok((entries, report)) => Ok(Refreshed {
+                            entries,
+                            summary: report.summary(),
+                            partial: false,
+                        }),
+                        // Another refresh took this one over (a second search
+                        // in the same round, or Build index) and is finishing
+                        // the work. What this one embedded is written down, so
+                        // search the index as it stands rather than fail a
+                        // question the index can mostly answer.
+                        Err(_) if stop.is_cancelled() => {
+                            let entries = self.load(index).await?;
+                            Ok(Refreshed {
+                                entries,
+                                summary: "Another refresh of the index took over from this one \
+                                          and is still running, so files it hasn't reached yet \
+                                          won't show up here; grep searches everything."
+                                    .to_string(),
+                                partial: true,
+                            })
+                        }
+                        Err(e) => Err(ToolError::Failed(e)),
+                    };
+                }
+                Ok(()) = progress.changed() => {
+                    let (done, total) = *progress.borrow_and_update();
+                    ctx.report(format!("indexing: {done} of {total} passages")).await;
+                }
+                Ok(()) = planned.changed() => {
+                    if planned.borrow_and_update().1 > LONG_REFRESH {
+                        break;
+                    }
+                }
+                _ = &mut deadline => break,
+            }
+        }
+        self.answer_from_part(index, &live, false).await
+    }
+
+    /// Searches what a running refresh has finished, and says so.
+    ///
+    /// Asks it to write down what it has first, and gives the batches in
+    /// flight a moment to land. `joined` is for a refresh this search found
+    /// running rather than started, whose scan came before any file written
+    /// since.
+    async fn answer_from_part(
+        &self,
+        index: &Index,
+        live: &crate::Live,
+        joined: bool,
+    ) -> Result<Refreshed, ToolError> {
+        live.request_flush();
+        let _ = tokio::time::timeout(FLUSH_WAIT, live.flushed.notified()).await;
+        let entries = self.load(index).await?;
+        // Counted from what was searched, not from the progress reports,
+        // which come in steps and lag behind what was written down.
+        let (kept, total) = *live.planned.borrow();
+        let so_far = if total > 0 {
+            format!(
+                "{} of {} passages searchable so far",
+                entries.len(),
+                kept + total
+            )
+        } else {
+            format!("{} passages searchable so far", entries.len())
+        };
+        let since = if joined {
+            " Files changed since it started aren't in it yet."
+        } else {
+            ""
+        };
+        let summary = format!(
+            "The index is still being built: {so_far}, most recently changed files first, and \
+             it carries on in the background. Files it hasn't reached yet won't show up here; \
+             grep searches everything.{since}"
+        );
+        Ok(Refreshed {
+            entries,
+            summary,
+            partial: true,
+        })
+    }
+
+    /// The index as written down, off the runtime.
+    async fn load(&self, index: &Index) -> Result<Vec<crate::Entry>, ToolError> {
+        let index = index.clone();
+        let key = crate::prefix::key(&self.model);
+        tokio::task::spawn_blocking(move || index.load(&key))
+            .await
+            .map_err(|e| ToolError::Failed(format!("the index couldn't be read: {e}")))
+    }
+
     /// How many passages the cosine pass should hand on.
     fn candidates(&self, keep: usize) -> usize {
         if self.rerank.is_some() {
@@ -242,43 +473,21 @@ impl Tool for SearchCode {
         // Before the search, not on a timer: a model that just wrote a file and
         // then looked for it has to find it.
         ctx.report("indexing the workspace").await;
-        let (ticket, stop) = match &self.indexing {
-            Some(flight) => {
-                let (ticket, stop) = flight.take_over(&ctx.cancel);
-                (Some(ticket), stop)
-            }
-            None => (None, ctx.cancel.child_token()),
+        let Refreshed {
+            entries,
+            summary,
+            partial,
+        } = match &self.indexing {
+            Some(flight) => self.refresh_with_deadline(&index, flight, ctx).await?,
+            None => self.refresh_to_the_end(&index, ctx).await?,
         };
-        let refreshed = refresh(
-            &index,
-            &ctx.workspace,
-            &self.provider,
-            &self.model,
-            &stop,
-            Some(&Reporting(ctx)),
-        )
-        .await;
-        if let (Some(flight), Some(ticket)) = (&self.indexing, ticket) {
-            flight.finished(ticket);
-        }
-        let (entries, summary) = match refreshed {
-            Ok((entries, report)) => (entries, report.summary()),
-            // Another refresh took this one over (a second search in the same
-            // round, or Build index) and is finishing the work. What this one
-            // embedded is written down, so search the index as it stands
-            // rather than fail a question the index can mostly answer.
-            Err(_) if stop.is_cancelled() && !ctx.cancel.is_cancelled() => {
-                let index = index.clone();
-                let key = crate::prefix::key(&self.model);
-                let entries = tokio::task::spawn_blocking(move || index.load(&key))
-                    .await
-                    .map_err(|e| ToolError::Failed(format!("the index couldn't be read: {e}")))?;
-                let summary = "Another refresh of the index took over from this one and is \
-                               still running."
-                    .to_string();
-                (entries, summary)
-            }
-            Err(e) => return Err(ToolError::Failed(e)),
+        // Said under every answer from an index that isn't finished, because
+        // a search that misses reads as "there's nothing like that here"
+        // otherwise, and that's not what it means.
+        let caveat = if partial {
+            format!("\n\n{summary}")
+        } else {
+            String::new()
         };
 
         if entries.is_empty() {
@@ -322,7 +531,7 @@ impl Tool for SearchCode {
         if hits.is_empty() {
             return Ok(format!(
                 "No match for '{query}' in {passages} indexed passages. Try describing it \
-                 differently, or use grep if you know the literal text."
+                 differently, or use grep if you know the literal text.{caveat}"
             )
             .into());
         }
@@ -332,7 +541,7 @@ impl Tool for SearchCode {
         }
         let hits = self.reranked(query, hits, keep).await;
 
-        Ok(render(query, &hits, ctx.workspace.as_path()).into())
+        Ok(format!("{}{caveat}", render(query, &hits, ctx.workspace.as_path())).into())
     }
 }
 
@@ -787,6 +996,197 @@ mod tests {
 
         assert!(out.to_text().contains("src/new.rs"), "{out}");
         drop(dir);
+    }
+
+    /// [`Bagged`], slowly: every request waits before answering, the way the
+    /// built-in engine does on a CPU.
+    struct Slow(Duration);
+
+    #[async_trait]
+    impl Provider for Slow {
+        fn id(&self) -> &str {
+            "slow"
+        }
+        async fn models(&self) -> taurus_provider::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn capabilities(&self, _: &str) -> taurus_provider::Result<Capabilities> {
+            Ok(Capabilities::default())
+        }
+        async fn stream(
+            &self,
+            _: ChatRequest,
+            _: mpsc::Sender<StreamEvent>,
+            _: CancellationToken,
+        ) -> taurus_provider::Result<StopReason> {
+            Ok(StopReason::EndTurn)
+        }
+        async fn embed(
+            &self,
+            model: &str,
+            inputs: &[String],
+        ) -> taurus_provider::Result<Vec<Vec<f32>>> {
+            tokio::time::sleep(self.0).await;
+            Bagged.embed(model, inputs).await
+        }
+    }
+
+    /// Sets a file's modification time `ago` seconds into the past.
+    fn age(path: &Path, ago: u64) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - Duration::from_secs(ago))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_long_first_index_answers_from_the_newest_files_and_carries_on() {
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        // Forty old files of several chunks each, then the one just written:
+        // about 500 passages, more than `LONG_REFRESH`, at 1.5 s a request,
+        // so the whole refresh takes longer than the ten-second wait. The
+        // search keeps that real wait, and shouldn't spend it: the scan says
+        // at once that this won't finish in time.
+        for n in 0..40 {
+            let name = format!("src/old_{n:02}.rs");
+            write(&ctx.workspace, &name, &filler(400));
+            age(&ctx.workspace.join(&name), 100_000);
+        }
+        write(
+            &ctx.workspace,
+            "src/zz_new.rs",
+            &format!(
+                "{}// the retry backoff\nfn retry() {{ backoff(); }}\n",
+                filler(3)
+            ),
+        );
+
+        let flight = Arc::new(crate::Indexing::new());
+        let search = SearchCode::new(
+            Arc::new(Slow(Duration::from_millis(1500))),
+            "test-embed",
+            index_dir.path(),
+        )
+        .with_indexing(Arc::clone(&flight));
+
+        let started = std::time::Instant::now();
+        let out = search
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .expect("a partial index still answers")
+            .to_text()
+            .to_string();
+        assert!(out.contains("still being built"), "{out}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited {:?} for a refresh that was never going to finish",
+            started.elapsed()
+        );
+        assert!(
+            out.contains("src/zz_new.rs"),
+            "the newest file comes first:\n{out}"
+        );
+        assert!(
+            flight.busy(),
+            "the refresh should carry on after the search"
+        );
+
+        // And it carries on: more is written down a little later. Stopped
+        // there rather than waited out, which would cost the test a quarter
+        // of a minute to show what the next write already shows.
+        let key = crate::prefix::key("test-embed");
+        let index = Index::new(index_dir.path(), &ctx.workspace);
+        let at_answer = index.load(&key).len();
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        // Still running, and a stopped refresh writes down every file it
+        // finished, which is how to see what it did since the answer.
+        assert!(flight.busy());
+        flight.stop();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while flight.busy() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .ok();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let later = index.load(&key).len();
+        assert!(
+            later > at_answer,
+            "{later} passages now, {at_answer} at the answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_search_joins_a_long_refresh_rather_than_restarting_it() {
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        for n in 0..40 {
+            write(&ctx.workspace, &format!("src/f{n:02}.rs"), &filler(400));
+        }
+        let provider: Arc<dyn Provider> = Arc::new(Slow(Duration::from_millis(300)));
+
+        // A warm-up, the way the host starts one.
+        let flight = Arc::new(crate::Indexing::new());
+        let (ticket, stop, live) = flight.take_over_live(&CancellationToken::new());
+        {
+            let index = Index::new(index_dir.path(), &ctx.workspace);
+            let workspace = ctx.workspace.clone();
+            let provider = Arc::clone(&provider);
+            let flight = Arc::clone(&flight);
+            let live = Arc::clone(&live);
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let _ = refresh(
+                    &index,
+                    &workspace,
+                    &provider,
+                    "test-embed",
+                    &stop,
+                    Some(&*live),
+                )
+                .await;
+                flight.finished(ticket);
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while live.planned().is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the scan finishes");
+
+        let out = SearchCode::new(provider, "test-embed", index_dir.path())
+            .with_indexing(Arc::clone(&flight))
+            .execute(serde_json::json!({ "query": "ordinary line" }), &ctx)
+            .await
+            .unwrap()
+            .to_text()
+            .to_string();
+        assert!(out.contains("still being built"), "{out}");
+        assert!(out.contains("changed since it started"), "{out}");
+        assert!(!stop.is_cancelled(), "the running refresh was restarted");
+        flight.stop();
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_finishes_in_time_is_the_whole_answer() {
+        let (ctx, _dir) = allowing_ctx();
+        let index_dir = tempfile::TempDir::new().unwrap();
+        two_passage_workspace(&ctx);
+        let flight = Arc::new(crate::Indexing::new());
+
+        let out = tool(index_dir.path())
+            .with_indexing(Arc::clone(&flight))
+            .execute(serde_json::json!({ "query": "retry backoff" }), &ctx)
+            .await
+            .unwrap()
+            .to_text()
+            .to_string();
+        assert!(!out.contains("still being built"), "{out}");
+        assert!(out.contains("src/net.rs"), "{out}");
+        assert!(!flight.busy());
     }
 
     #[tokio::test]
