@@ -4,7 +4,9 @@
 // and what it must not do: speak for the file on screen.
 import { act, useCallback, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+
+import type { Selection } from "../bindings/Selection";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -27,7 +29,7 @@ const flushRef: { current: (() => Promise<boolean>) | null } = { current: null }
 
 let saves: { path: string; text: string }[];
 let disk: Record<string, { path: string; text: string; lines: number; fingerprint: string }>;
-let onSelect: ReturnType<typeof vi.fn>;
+let onSelect: Mock<(selection: Selection | null) => void>;
 let root: Root;
 let host: HTMLElement;
 

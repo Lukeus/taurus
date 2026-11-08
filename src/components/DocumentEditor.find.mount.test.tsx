@@ -4,7 +4,9 @@
 // ends up, and that searching says nothing to the model until it stops.
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+
+import type { Selection } from "../bindings/Selection";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -19,8 +21,8 @@ import { CanvasSlot } from "./CanvasSlot";
 
 const TEXT = "one retry\ntwo\nthree retry\nfour RETRY\n";
 let root: Root;
-let onSelect: ReturnType<typeof vi.fn>;
-let onClose: ReturnType<typeof vi.fn>;
+let onSelect: Mock<(selection: Selection | null) => void>;
+let onClose: Mock<() => void>;
 
 function Harness({ path }: { path: string }) {
   const [mark] = useState(() => () => {});

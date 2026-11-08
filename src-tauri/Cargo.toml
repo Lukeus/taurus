@@ -51,7 +51,12 @@ serde_json.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-updater = "2"
+# Without the default `zip` feature. It unpacks the v1 updater bundles — zipped
+# Windows installers and a tarred AppImage — and `createUpdaterArtifacts: true`
+# publishes neither: Windows and Linux get the raw installer, and macOS's
+# `.app.tar.gz` is unpacked whatever the feature says. It also pulled zip 4,
+# which carries advisories that only zip 9 fixes.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
