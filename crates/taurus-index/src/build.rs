@@ -155,6 +155,12 @@ pub async fn refresh(
     cancel: &CancellationToken,
     progress: Option<&dyn IndexProgress>,
 ) -> Result<(Vec<Entry>, Refreshed), String> {
+    // The name the index is kept under, and what goes before each passage.
+    // See `prefix`: a prefixed model's vectors are kept apart from the ones
+    // the same model made before prefixes were added.
+    let key = crate::prefix::key(model);
+    let document = crate::prefix::prefixes(model).document;
+
     // Off the runtime, all of it. What follows reads the whole index off disk,
     // walks the tree, and stats and reads every file in it — tens of thousands
     // of syscalls on a large repository, none of them yielding. Left inline it
@@ -163,9 +169,9 @@ pub async fn refresh(
     let scanned = {
         let index = index.clone();
         let workspace = workspace.to_path_buf();
-        let model = model.to_string();
+        let key = key.clone();
         let cancel = cancel.clone();
-        tokio::task::spawn_blocking(move || scan(&index, &workspace, &model, &cancel))
+        tokio::task::spawn_blocking(move || scan(&index, &workspace, &key, &cancel))
             .await
             .map_err(|e| format!("indexing failed to run: {e}"))??
     };
@@ -202,7 +208,7 @@ pub async fn refresh(
         .map(|n| {
             let texts: Vec<String> = pending[n * BATCH..pending.len().min((n + 1) * BATCH)]
                 .iter()
-                .map(|(_, _, _, piece)| piece.text.clone())
+                .map(|(_, _, _, piece)| format!("{document}{}", piece.text))
                 .collect();
             let provider = Arc::clone(provider);
             let model = model.to_string();
@@ -226,7 +232,7 @@ pub async fn refresh(
             // getting one, but the next refresh should not start over.
             stopped => {
                 keep.truncate(whole);
-                let _ = write_down(index, model, keep).await;
+                let _ = write_down(index, &key, keep).await;
                 return Err(match stopped {
                     Some(Err(e)) => e.to_string(),
                     _ => "indexing was canceled".into(),
@@ -267,7 +273,7 @@ pub async fn refresh(
             // workspace, and the part-embedded file at the end of them is about
             // to be finished rather than thrown away.
             let rest = keep.split_off(whole);
-            keep = write_down(index, model, keep).await?;
+            keep = write_down(index, &key, keep).await?;
             keep.extend(rest);
             written = Instant::now();
         }
@@ -279,7 +285,7 @@ pub async fn refresh(
     // JSON serialized in-line is 20 MB a streaming turn is not being pumped
     // through.
     let keep = if report.embedded > 0 || report.removed > 0 {
-        write_down(index, model, keep).await?
+        write_down(index, &key, keep).await?
     } else {
         keep
     };
@@ -531,6 +537,74 @@ mod tests {
             .map(|n| format!("fn thing_{n}() {{ compute({n}); }}\n"))
             .collect();
         std::fs::write(path, body).unwrap();
+    }
+
+    /// Remembers what it was sent, for the prefix tests.
+    struct Sent(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl Provider for Sent {
+        fn id(&self) -> &str {
+            "recording"
+        }
+        async fn models(&self) -> taurus_provider::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn capabilities(&self, _: &str) -> taurus_provider::Result<Capabilities> {
+            Ok(Capabilities::default())
+        }
+        async fn stream(
+            &self,
+            _: ChatRequest,
+            _: mpsc::Sender<StreamEvent>,
+            _: CancellationToken,
+        ) -> taurus_provider::Result<StopReason> {
+            Ok(StopReason::EndTurn)
+        }
+        async fn embed(
+            &self,
+            _: &str,
+            inputs: &[String],
+        ) -> taurus_provider::Result<Vec<Vec<f32>>> {
+            self.0.lock().unwrap().extend(inputs.iter().cloned());
+            Ok(inputs.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn passages_are_prefixed_and_kept_apart_from_an_unprefixed_index() {
+        let f = fixture();
+        write(&f.root, "src/a.rs", 5);
+        // An index the same model built before prefixes existed.
+        let old = vec![Entry::new("src/a.rs".into(), 1, 5, 1, 1, &[0.0, 1.0])];
+        f.index.save("nomic-embed-text", &old).unwrap();
+
+        let recording = Arc::new(Sent(Default::default()));
+        let provider: Arc<dyn Provider> = recording.clone();
+        let (entries, report) = refresh(
+            &f.index,
+            &f.root,
+            &provider,
+            "nomic-embed-text",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Built again rather than trusted: the old vectors are unprefixed.
+        assert!(report.embedded > 0);
+        assert!(entries.iter().all(|e| e.path == "src/a.rs"));
+        let sent = recording.0.lock().unwrap().clone();
+        assert!(!sent.is_empty());
+        assert!(
+            sent.iter().all(|t| t.starts_with("search_document: ")),
+            "{sent:?}"
+        );
+        assert!(!f
+            .index
+            .load(&crate::prefix::key("nomic-embed-text"))
+            .is_empty());
     }
 
     #[tokio::test]

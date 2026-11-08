@@ -13,6 +13,21 @@
 //!     cargo run -p taurus-index --example retrieval -- . nomic-embed-text
 //! ```
 //!
+//! Every column sends the task prefixes the index sends (`taurus_index::
+//! prefixes`). `UNPREFIXED=1` adds an Ollama column without them, which is how
+//! the index embedded before it had them.
+//!
+//! In-process engines are scored in the same run too, one column per model,
+//! beside the Ollama column:
+//!
+//! ```sh
+//! LOCAL_MODELS=~/.taurus/models/embeddings/CodeRankEmbed=CodeRankEmbed \
+//! UNPREFIXED=1 cargo run --release -p taurus-index --example retrieval -- . nomic-embed-text
+//! ```
+//!
+//! Each directory holds a model's `config.json`, `tokenizer.json` and
+//! `model.safetensors`, and the id is one `taurus_embed::MODELS` names.
+//!
 //! `index-probe` next door prints hits for a reader to judge by eye, which is the
 //! right check for "is this any good at all" and no check at all for "is this
 //! better than what it replaced". This answers the second question with a
@@ -180,7 +195,11 @@ async fn main() {
 
     // Every query embedded once, with the same model, and reused for all three
     // variants: a question is a question regardless of how the corpus was cut.
-    let questions: Vec<String> = QUERIES.iter().map(|(q, _)| q.to_string()).collect();
+    let prefixes = taurus_index::prefixes(&model);
+    let questions: Vec<String> = QUERIES
+        .iter()
+        .map(|(q, _)| format!("{}{q}", prefixes.query))
+        .collect();
     let query_vectors = provider
         .embed(&model, &questions)
         .await
@@ -255,7 +274,139 @@ async fn main() {
         columns.push(("rerank".to_string(), ranks));
     }
 
+    // Every other engine, against the same passages in the same order: the
+    // corpus is chunked once above and only the vectors differ.
+    let mut others: Vec<(String, Engine)> = Vec::new();
+    if std::env::var("UNPREFIXED").is_ok() {
+        others.push((
+            "-prefix".into(),
+            Engine::Ollama {
+                provider: Arc::clone(&provider),
+                model: model.clone(),
+                prefixes: taurus_index::Prefixes {
+                    query: "",
+                    document: "",
+                },
+            },
+        ));
+    }
+    for entry in std::env::var("LOCAL_MODELS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|e| !e.is_empty())
+    {
+        let (dir, id) = entry
+            .split_once('=')
+            .expect("LOCAL_MODELS entries are dir=id");
+        let spec = taurus_embed::spec(id).unwrap_or_else(|| panic!("{id} isn't a known model"));
+        let started = Instant::now();
+        let embedder = taurus_embed::Embedder::load(std::path::Path::new(dir), spec)
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        println!("loaded {id} in {:.1?}", started.elapsed());
+        others.push((short(id), Engine::Local(Box::new(embedder))));
+    }
+
+    for (name, engine) in &others {
+        let questions: Vec<String> = QUERIES.iter().map(|(q, _)| q.to_string()).collect();
+        let query_vectors = engine.embed(&questions, true).await;
+        let started = Instant::now();
+        let texts: Vec<String> = passages.iter().map(|p| p.text.clone()).collect();
+        let vectors = engine.embed(&texts, false).await;
+        println!(
+            "{name}: {} passages embedded in {:.1?}",
+            vectors.len(),
+            started.elapsed()
+        );
+        let theirs: Vec<Passage> = passages
+            .iter()
+            .zip(vectors)
+            .map(|(p, vector)| Passage {
+                path: p.path.clone(),
+                text: p.text.clone(),
+                vector,
+            })
+            .collect();
+        let ranks = query_vectors
+            .iter()
+            .zip(QUERIES)
+            .map(|(vector, (_, expected))| {
+                rank_in(
+                    cosine_order(&theirs, vector).iter().map(|(p, _)| *p),
+                    expected,
+                )
+            })
+            .collect();
+        columns.push((name.clone(), ranks));
+    }
+    println!();
+
     report(&columns);
+}
+
+/// A column's name, short enough for the table.
+fn short(id: &str) -> String {
+    id.split('-').next().unwrap_or(id).chars().take(7).collect()
+}
+
+/// Where a column's vectors come from.
+enum Engine {
+    /// The same server as the first column, with other prefixes.
+    Ollama {
+        provider: Arc<dyn Provider>,
+        model: String,
+        prefixes: taurus_index::Prefixes,
+    },
+    /// In this process, with the prefixes the index sends it.
+    Local(Box<taurus_embed::Embedder>),
+}
+
+impl Engine {
+    async fn embed(&self, texts: &[String], query: bool) -> Vec<Vec<f32>> {
+        match self {
+            Engine::Ollama {
+                provider,
+                model,
+                prefixes,
+            } => {
+                let prefix = if query {
+                    prefixes.query
+                } else {
+                    prefixes.document
+                };
+                let mut out = Vec::with_capacity(texts.len());
+                for batch in texts.chunks(16) {
+                    let batch: Vec<String> = batch.iter().map(|t| format!("{prefix}{t}")).collect();
+                    out.extend(
+                        provider
+                            .embed(model, &batch)
+                            .await
+                            .unwrap_or_else(|e| panic!("embedding failed: {e}")),
+                    );
+                }
+                out
+            }
+            Engine::Local(embedder) => {
+                let prefixes = taurus_index::prefixes(embedder.spec().id);
+                let prefix = if query {
+                    prefixes.query
+                } else {
+                    prefixes.document
+                };
+                let mut out = Vec::with_capacity(texts.len());
+                // Large slices, because the embedder sorts by length within
+                // what it is handed and batches from there.
+                for batch in texts.chunks(512) {
+                    let batch: Vec<String> = batch.iter().map(|t| format!("{prefix}{t}")).collect();
+                    out.extend(
+                        embedder
+                            .embed(&batch)
+                            .unwrap_or_else(|e| panic!("embedding failed: {e}")),
+                    );
+                }
+                out
+            }
+        }
+    }
 }
 
 async fn embed_corpus(
@@ -274,7 +425,11 @@ async fn embed_corpus(
     // The same batch size the real refresh uses, so the timings above are
     // comparable to what indexing a workspace actually costs.
     for batch in pending.chunks(16) {
-        let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+        let document = taurus_index::prefixes(model).document;
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|(_, text)| format!("{document}{text}"))
+            .collect();
         let vectors = provider
             .embed(model, &texts)
             .await

@@ -1,7 +1,13 @@
 // The Search tab: the web search backend, and the code index behind `search_code`.
 
 import { useEffect, useState } from "react";
-import type { IndexProgress, SearchBackend, SearchSettings } from "../../lib/api";
+import type {
+  EmbeddingDownload,
+  EmbeddingModels,
+  IndexProgress,
+  SearchBackend,
+  SearchSettings,
+} from "../../lib/api";
 import { useStore } from "../../state/store";
 import { Problem } from "../Problem";
 import * as api from "../../lib/api";
@@ -283,6 +289,36 @@ export function CodeSearch({
   // back on the next refresh as the only sign.
   const [error, setError] = useState<string | null>(null);
 
+  // Which engine embeds: none, the models Taurus runs itself, or a model
+  // server. Derived from what is saved, with a draft for "a model server",
+  // which is chosen before there is a model name to save.
+  const engine: Engine =
+    provider.trim() === BUILTIN ? "builtin" : model.trim() ? "server" : "off";
+  const [engineDraft, setEngineDraft] = useState<Engine>(engine);
+  useEffect(() => setEngineDraft(engine), [engine]);
+
+  // The built-in models, asked for only once that engine is chosen: nothing
+  // else on this tab needs them, and the ask goes to disk.
+  const [catalog, setCatalog] = useState<EmbeddingModels | null>(null);
+  const [download, setDownload] = useState<EmbeddingDownload | null>(null);
+  const loadCatalog = () =>
+    api
+      .embeddingModels()
+      .then((fresh) => setCatalog(Array.isArray(fresh?.models) ? fresh : null))
+      .catch((e) => setError(`The models on this computer couldn't be listed: ${e}`));
+  useEffect(() => {
+    if (engineDraft === "builtin") void loadCatalog();
+  }, [engineDraft]);
+  const chosen =
+    engine === "builtin" ? catalog?.models.find((m) => m.id === model.trim()) : undefined;
+  // Search is on only once its model is downloaded, so nothing below the
+  // engine is offered before then — nor while another engine is being chosen,
+  // when the build button would build with the one being left.
+  const ready =
+    engineDraft === engine &&
+    model.trim() !== "" &&
+    (engine !== "builtin" || chosen?.installed === true);
+
   // Model and provider save together, because the backend takes them together:
   // a model with no provider embeds on whichever backend the conversation is
   // using, and Anthropic has no embedding endpoint at all.
@@ -291,16 +327,18 @@ export function CodeSearch({
       nextModel.trim() === model.trim() &&
       nextProvider.trim() === provider.trim()
     ) {
-      return;
+      return true;
     }
     setError(null);
     try {
       await api.setEmbeddingModel(nextModel, nextProvider);
       await refresh();
+      return true;
     } catch (e) {
       setDraft(model);
       setEmbedProviderDraft(provider);
       setError(`The embedding model wasn't saved: ${e}`);
+      return false;
     }
   };
 
@@ -326,6 +364,55 @@ export function CodeSearch({
     }
   };
 
+  // A refused save puts the picker back on what is saved, so it never shows
+  // an engine that isn't the one search runs on.
+  const choose = async (next: Engine) => {
+    setEngineDraft(next);
+    if (next === "off") {
+      setDraft("");
+      setEmbedProviderDraft("");
+      if (!(await save("", ""))) setEngineDraft(engine);
+    } else if (next === "builtin") {
+      const saved = await save(engine === "builtin" ? model : DEFAULT_LOCAL_MODEL, BUILTIN);
+      if (!saved) setEngineDraft(engine);
+    } else {
+      // Nothing to save until a model is named.
+      setDraft(engine === "server" ? model : "");
+      setEmbedProviderDraft(engine === "server" ? provider : "");
+    }
+  };
+
+  const startDownload = async (id: string) => {
+    setError(null);
+    setDownload({ done: 0, total: 0 });
+    try {
+      await api.downloadEmbeddingModel(id, setDownload);
+      await refresh();
+    } catch (e) {
+      if (!String(e).includes("canceled")) {
+        setError(`${id} wasn't downloaded: ${e}`);
+      }
+    } finally {
+      setDownload(null);
+      await loadCatalog();
+    }
+  };
+
+  const remove = async (id: string) => {
+    setError(null);
+    try {
+      await api.deleteEmbeddingModel(id);
+      await refresh();
+    } catch (e) {
+      setError(`${id} wasn't deleted: ${e}`);
+    }
+    await loadCatalog();
+  };
+
+  const downloadPct =
+    download && download.total > 0
+      ? Math.round((download.done / download.total) * 100)
+      : 0;
 
   const pct =
     progress && progress.total > 0
@@ -336,41 +423,115 @@ export function CodeSearch({
     <section className="section">
       <span className="micro">Search the codebase</span>
       {error && <Problem>{error}</Problem>}
-      <Field
-        label="Embedding model"
-        hint={
-          model.trim()
-            ? "Runs on the same server as your chat model. Leave empty to turn semantic search off."
-            : "Off. Name a model your server has pulled — nomic-embed-text is the usual one — to let Taurus find code by meaning rather than by string."
-        }
-      >
-        <input
-          value={draft}
-          spellCheck={false}
-          placeholder="nomic-embed-text"
-          disabled={building}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => save(draft, embedProviderDraft)}
-        />
+      <Field label="Find code by meaning" hint={engineHint(engine)}>
+        <select
+          value={engineDraft}
+          disabled={building || download !== null}
+          onChange={(e) => void choose(e.target.value as Engine)}
+        >
+          <option value="off">Off</option>
+          <option value="builtin">On this computer</option>
+          <option value="server">On a model server</option>
+        </select>
       </Field>
 
-      {draft.trim() && (
-        <Field
-          label="Embedding provider"
-          hint="Which backend serves it. Leave empty to use the one this conversation is on — name another if that backend has no embedding endpoint, which is the case for Anthropic."
-        >
-          <input
-            value={embedProviderDraft}
-            spellCheck={false}
-            placeholder="the one this conversation is on"
-            disabled={building}
-            onChange={(e) => setEmbedProviderDraft(e.target.value)}
-            onBlur={() => save(draft, embedProviderDraft)}
-          />
-        </Field>
+      {engineDraft === "builtin" && catalog && (
+        <>
+          <Field
+            label="Model"
+            hint={chosen ? `${chosen.summary} ${chosen.license} license.` : undefined}
+          >
+            <select
+              value={model}
+              disabled={building || download !== null}
+              onChange={(e) => void save(e.target.value, BUILTIN)}
+            >
+              {catalog.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.installed ? m.id : `${m.id} (not downloaded)`}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {chosen && !chosen.installed && (
+            <>
+              <div className="index-actions flex items-center gap-3">
+                <button
+                  onClick={
+                    download ? api.stopEmbeddingDownload : () => void startDownload(chosen.id)
+                  }
+                >
+                  {download ? "Stop" : `Download ${megabytes(chosen.bytes)}`}
+                </button>
+                {download && download.total > 0 && (
+                  <span className="hint">
+                    {megabytes(download.done)} of {megabytes(download.total)}
+                  </span>
+                )}
+              </div>
+              {download && (
+                <div className="plan-bar index-bar w-full" aria-hidden="true">
+                  <span className="plan-bar-fill" style={{ width: `${downloadPct}%` }} />
+                </div>
+              )}
+              <p className="hint">
+                Downloaded once from Hugging Face, to {catalog.folder}. Nothing
+                leaves this computer after that. Indexing runs on the CPU, so a
+                large repository's first index takes several minutes; after
+                that only changed files are read again.
+              </p>
+            </>
+          )}
+          {chosen?.installed && (
+            <div className="index-actions flex items-center gap-3">
+              <span className="hint">Downloaded, in {catalog.folder}.</span>
+              <button disabled={building} onClick={() => void remove(chosen.id)}>
+                Delete
+              </button>
+            </div>
+          )}
+        </>
       )}
 
-      {model.trim() && (
+      {engineDraft === "server" && (
+        <>
+          <Field
+            label="Embedding model"
+            hint={
+              model.trim()
+                ? "Runs on the same server as your chat model."
+                : "Name a model your server has pulled — nomic-embed-text is the usual one."
+            }
+          >
+            <input
+              value={draft}
+              spellCheck={false}
+              placeholder="nomic-embed-text"
+              disabled={building}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => save(draft, embedProviderDraft)}
+            />
+          </Field>
+
+          {draft.trim() && (
+            <Field
+              label="Embedding provider"
+              hint="Which backend serves it. Leave empty to use the one this conversation is on — name another if that backend has no embedding endpoint, which is the case for Anthropic."
+            >
+              <input
+                value={embedProviderDraft}
+                spellCheck={false}
+                placeholder="the one this conversation is on"
+                disabled={building}
+                onChange={(e) => setEmbedProviderDraft(e.target.value)}
+                onBlur={() => save(draft, embedProviderDraft)}
+              />
+            </Field>
+          )}
+        </>
+      )}
+
+      {ready && (
         <>
           <div className="index-actions flex items-center gap-3">
             <button onClick={building ? api.stopIndexBuild : onBuild}>
@@ -423,7 +584,11 @@ export function CodeSearch({
               <input
                 value={rerankProviderDraft}
                 spellCheck={false}
-                placeholder="the one that embeds"
+                placeholder={
+                  engine === "builtin"
+                    ? "one of your providers; this computer's models can't rerank"
+                    : "the one that embeds"
+                }
                 disabled={building}
                 onChange={(e) => setRerankProviderDraft(e.target.value)}
                 onBlur={() => saveRerank(rerankDraft, rerankProviderDraft)}
@@ -446,4 +611,33 @@ export function statusHint(settings: SearchSettings): string {
   if (settings.selected === null) return "Off. Taurus will not search the web.";
   if (settings.active) return `On, through ${settings.selected}.`;
   return `Selected, but not running yet — ${settings.selected} still needs something below.`;
+}
+
+/** Which engine embeds the workspace for `search_code`. */
+type Engine = "off" | "builtin" | "server";
+
+/**
+ * The `embedding_provider` value for the models Taurus runs itself. The
+ * backend's own constant (`taurus_embed::PROVIDER_ID`); `embedding_models`
+ * returns it too, and a test holds the two together.
+ */
+export const BUILTIN = "builtin";
+
+/** The model the built-in engine starts on: `taurus_embed::DEFAULT_MODEL`. */
+export const DEFAULT_LOCAL_MODEL = "CodeRankEmbed";
+
+export function engineHint(engine: Engine): string {
+  switch (engine) {
+    case "off":
+      return "Off. Lets Taurus find code by what it does, not only by the words in it.";
+    case "builtin":
+      return "Runs here, with no model server. The model is downloaded once.";
+    case "server":
+      return "Embeds on Ollama or another server with an embedding endpoint.";
+  }
+}
+
+/** Bytes as whole megabytes, the way a download size is read. */
+export function megabytes(bytes: number): string {
+  return `${Math.round(bytes / 1_000_000)} MB`;
 }

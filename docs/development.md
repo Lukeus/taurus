@@ -743,6 +743,18 @@ cargo test --release -p taurus-core --lib estimate_cost -- --ignored --nocapture
 cargo run -p taurus-index --example retrieval -- . nomic-embed-text
 RERANK_URL=http://localhost:8012 RERANK_MODEL=bge-reranker-v2-m3 \
     cargo run -p taurus-index --example retrieval -- . nomic-embed-text
+# The built-in models, one column each, beside Ollama's, against the same corpus.
+# Each entry is a folder Settings downloaded a model to, and the model's id.
+# UNPREFIXED=1 adds an Ollama column without task prefixes, the way the index
+# embedded before it had them. Build with --release: candle in a debug build is
+# far too slow for 17,000 passages.
+LOCAL_MODELS=~/.taurus/models/embeddings/CodeRankEmbed=CodeRankEmbed UNPREFIXED=1 \
+    cargo run --release -p taurus-index --example retrieval -- . nomic-embed-text
+
+# The built-in engine against a real model: a question has to land nearer the
+# passage that answers it than one that doesn't.
+TAURUS_EMBED_MODELS=~/.taurus/models/embeddings \
+    cargo test --release -p taurus-embed -- --ignored
 
 # What searching your real transcripts costs, and what it finds. Needs no
 # provider. It reads `~/.taurus/sessions` and writes nothing. Two numbers, and

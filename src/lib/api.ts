@@ -176,6 +176,9 @@ import type { TurnChange } from "../bindings/TurnChange";
 import type { TurnState } from "../bindings/TurnState";
 import type { UiEvent } from "../bindings/UiEvent";
 import type { VoiceDownload } from "../bindings/VoiceDownload";
+import type { EmbeddingDownload } from "../bindings/EmbeddingDownload";
+import type { EmbeddingModel } from "../bindings/EmbeddingModel";
+import type { EmbeddingModels } from "../bindings/EmbeddingModels";
 import type { VoiceModel } from "../bindings/VoiceModel";
 import type { VoiceStatus } from "../bindings/VoiceStatus";
 import type { SpeechEngine } from "../bindings/SpeechEngine";
@@ -188,6 +191,7 @@ import type { UpdateCheck } from "../bindings/UpdateCheck";
 import type { UpdateDownload } from "../bindings/UpdateDownload";
 
 export type { VoiceDownload, VoiceModel, VoiceStatus };
+export type { EmbeddingDownload, EmbeddingModel, EmbeddingModels };
 export type { SpeechEngine, SpeechSettings, SpeechState, SpeechStatus, VoiceInfo };
 export type { AvailableUpdate, UpdateCheck, UpdateDownload };
 
@@ -1088,6 +1092,31 @@ export const setWindowBackground = (color: string) =>
  */
 export const setEmbeddingModel = (model: string, provider = "") =>
   invoke<void>("set_embedding_model", { model, provider });
+
+/**
+ * The embedding models Taurus can run itself, which are downloaded, and the
+ * `embedding_provider` value that picks that engine.
+ */
+export const embeddingModels = () => invoke<EmbeddingModels>("embedding_models");
+
+/**
+ * Downloads an embedding model, resolving once every file's checksum matches
+ * and search has been reloaded to use it. A second call replaces the first.
+ */
+export const downloadEmbeddingModel = (
+  model: string,
+  onProgress: (p: EmbeddingDownload) => void,
+) => {
+  const channel = new Channel<EmbeddingDownload>();
+  channel.onmessage = onProgress;
+  return invoke<void>("embedding_download", { model, onProgress: channel });
+};
+
+/** Stops a download. Partial files are removed. */
+export const stopEmbeddingDownload = () => invoke<void>("stop_embedding_download");
+
+export const deleteEmbeddingModel = (model: string) =>
+  invoke<void>("delete_embedding_model", { model });
 
 /**
  * The optional second stage that reorders search results before the model

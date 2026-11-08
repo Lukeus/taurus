@@ -674,8 +674,9 @@ you already know what the thing is called.
 
 An embedding index is usually a cloud dependency: a service to send your code
 to, a bill, and a vector database to run. For a local-first harness it's none
-of those. The machine already runs a model server, so the index is one more
-endpoint on it and the vectors are a file in the config home.
+of those. Taurus can run the embedding model itself, from files downloaded
+once, or use the model server the machine already runs. Either way the vectors
+are a file in the config home.
 
 ```
 search_code  "where the conversation transcript is written to disk"
@@ -1352,8 +1353,44 @@ taurus usage --all        # every conversation in this workspace
 ```
 
 **Semantic search is off until a model is named.** `search_code` needs
-something to embed with, so it isn't registered until you set one under
-**Settings → Search** or in `settings.json`, which is the same field:
+something to embed with, so it isn't registered until you choose one under
+**Settings → Search → Find code by meaning**, or set it in `settings.json`.
+
+**Taurus can run the model itself.** Choose **On this computer** and press
+**Download**. That fetches CodeRankEmbed (548 MB, MIT license) from Hugging
+Face once, into `~/.taurus/models/embeddings`. Every file is pinned to one
+commit and checked against its SHA-256 before it's used. No model server has
+to be running, and nothing leaves the machine after the download. In
+`settings.json` it's:
+
+```json
+{ "embedding_model": "CodeRankEmbed", "embedding_provider": "builtin" }
+```
+
+The other choice is `nomic-embed-text-v1.5`, which makes the same vectors as
+Ollama's `nomic-embed-text`. `search_code` stays off until the chosen model is
+downloaded, and **Problems** says so instead of the first search failing.
+
+It finds more and costs more time. On this repository's fifteen-question gate,
+CodeRankEmbed ranked the answering file first for 10 questions, against 5 for
+Ollama's `nomic-embed-text`. It runs on the CPU, though, where Ollama uses the
+GPU: a first index of this repository at 17,275 passages (November 2026,
+three times the size measured above) took about 29 minutes on an M4 Max,
+against 9 through Ollama. After that, only changed files are embedded, and a
+search embeds one short question. The model holds about 550 MB of memory
+while it's in use and is let go after five idle minutes.
+
+**Questions and passages are prefixed the way the model was trained.**
+`nomic-embed-text` expects `search_query: ` before a question and
+`search_document: ` before a passage. CodeRankEmbed, `mxbai-embed-large` and
+BAAI's English v1.5 models want a phrase before the question. Taurus adds
+them on every backend, which took Ollama's `nomic-embed-text` from an MRR of
+0.43 to 0.54 on the same gate. A model it doesn't know gets no prefix. An
+index built before prefixes were added is rebuilt once, on its next refresh,
+because its vectors don't compare with prefixed ones.
+
+**A model server works too.** Choose **On a model server** and name the
+model. It's the same field as:
 
 ```json
 { "embedding_model": "nomic-embed-text" }

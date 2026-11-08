@@ -527,6 +527,56 @@ impl Host {
         self.providers.read().await.first().map(|p| p.id.clone())
     }
 
+    /// The backend semantic search embeds `model` on, given the id
+    /// [`Self::embedding_provider_id`] chose.
+    ///
+    /// [`taurus_embed::PROVIDER_ID`] is the models Taurus runs itself, and it
+    /// is checked before the configured providers so that it means the same
+    /// thing on every machine. Refused when the model isn't one of those or
+    /// isn't downloaded: `search_code` is only offered when it can work, the
+    /// rule the comment where it is registered gives.
+    ///
+    /// `deferred` builds a configured provider on first use rather than now —
+    /// see [`Self::deferred_provider`] for why a reload wants that.
+    pub(super) async fn embedding_backend(
+        &self,
+        id: &str,
+        model: &str,
+        deferred: bool,
+    ) -> Result<Arc<dyn taurus_provider::Provider>, String> {
+        if id == taurus_embed::PROVIDER_ID {
+            let spec = taurus_embed::spec(model).ok_or_else(|| {
+                format!(
+                    "semantic search is set to run \"{model}\" on this computer, and Taurus can't. \
+                     It can run {}. Choose one under Settings → Search.",
+                    taurus_embed::MODELS
+                        .iter()
+                        .map(|m| m.id)
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                )
+            })?;
+            self.local_embeddings
+                .files()
+                .ready(spec)
+                .map_err(|e| format!("semantic search is off until its model is ready: {e}"))?;
+            return Ok(Arc::clone(&self.local_embeddings) as Arc<dyn taurus_provider::Provider>);
+        }
+        if deferred {
+            self.deferred_provider(id).await.ok_or_else(|| {
+                format!("semantic search is configured but no provider configured with id '{id}'")
+            })
+        } else {
+            self.provider(id).await
+        }
+    }
+
+    /// The embedding models Taurus runs itself: what Settings downloads,
+    /// deletes, and lists.
+    pub fn local_embeddings(&self) -> &Arc<taurus_embed::Local> {
+        &self.local_embeddings
+    }
+
     /// The reranking provider and model, when both are configured.
     ///
     /// `Ok(None)` is the ordinary case: nothing is configured and the
@@ -580,6 +630,14 @@ impl Host {
     pub async fn set_embedding_model(&self, model: &str, provider: &str) -> Result<(), String> {
         let model = model.trim().to_string();
         let provider = provider.trim().to_string();
+        // A name the built-in engine can't run would only fail later, at the
+        // reload, as a problem the person has to go and find.
+        if provider == taurus_embed::PROVIDER_ID
+            && !model.is_empty()
+            && taurus_embed::spec(&model).is_none()
+        {
+            return Err(taurus_embed::EmbedError::UnknownModel { name: model }.to_string());
+        }
         self.edit_global_setting(|s| {
             s.embedding_model = Some(model);
             s.embedding_provider = Some(provider);
@@ -710,7 +768,7 @@ impl Host {
             .embedding_provider_id()
             .await
             .ok_or("No provider is configured, so there is nothing to embed with.")?;
-        let provider = self.provider(&id).await?;
+        let provider = self.embedding_backend(&id, &model, false).await?;
 
         let workspace = self.workspace.read().await.clone();
         let index = taurus_index::Index::new(
@@ -765,7 +823,7 @@ impl Host {
         let Some(id) = self.embedding_provider_id().await else {
             return;
         };
-        let Ok(provider) = self.provider(&id).await else {
+        let Ok(provider) = self.embedding_backend(&id, &model, false).await else {
             return;
         };
 
