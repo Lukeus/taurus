@@ -590,7 +590,7 @@ requestAnimationFrame(() => {
     });
 
     const transcript = document.querySelector(".transcript");
-    const target = {
+    const shots: Record<string, () => unknown> = {
       top: () => transcript?.scrollTo({ top: 0 }),
       chart: () => scrollTo(transcript, document.querySelectorAll(".view-card")[1]),
       questions: () => scrollTo(transcript, document.querySelector(".questions")),
@@ -1295,7 +1295,9 @@ requestAnimationFrame(() => {
         (await click(".rail-link", (b) => b.startsWith("Memory")))();
         await until(() => document.querySelector(".drawer .card"));
       },
-    }[shot];
+    };
+    // Own keys only: `?shot=constructor` would otherwise find Object's.
+    const target = Object.hasOwn(shots, shot) ? shots[shot] : undefined;
     // A frame for React to paint the seeded entries before anything is
     // measured; the scroll targets do not exist until it has. The flag waits
     // on the target rather than racing it — a shot that clicks through two
