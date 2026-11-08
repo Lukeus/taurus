@@ -30,3 +30,5 @@ bindings/
 # the script's header for why they are shipped at all.
 src-tauri/conpty/
 .ui-samples/
+# The project site, assembled by `node scripts/site.mjs`.
+_site/
