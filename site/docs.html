@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Taurus Docs</title>
+    <meta name="description" content="How to install, configure and use Taurus AI Shell." />
+    <link rel="icon" href="assets/favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" defer></script>
+    <script src="site.js" defer></script>
+    <script src="docs.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="site-header">
+      <div class="wrap" style="max-width: 1400px">
+        <a class="brand" href="./">
+          <img src="assets/taurus-mark.png" alt="" width="30" height="30" />
+          Taurus <span style="color: var(--text-faint); font-weight: 500">docs</span>
+        </a>
+        <button class="btn nav-toggle" aria-controls="sidebar" aria-expanded="false">Menu</button>
+        <nav class="site-nav hide-sm" aria-label="Main">
+          <a class="hide-sm" href="./">Home</a>
+          <a class="hide-sm" href="./#start">Quick start</a>
+          <a class="hide-sm" href="docs.html" aria-current="page">Docs</a>
+          <a class="hide-sm" href="https://github.com/Lukeus/taurus">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar">
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <input id="q" type="search" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" />
+          <kbd>/</kbd>
+        </div>
+        <div id="results" hidden>
+          <p class="nav-label">Results</p>
+          <ul class="results"></ul>
+        </div>
+        <nav id="nav" aria-label="Documentation">
+          <p class="nav-label">Guide</p>
+          <ul class="doc-nav"></ul>
+        </nav>
+      </aside>
+
+      <main class="doc">
+        <div class="doc-meta">
+          <span id="crumb"></span>
+          <a id="edit" href="https://github.com/Lukeus/taurus">Edit on GitHub</a>
+        </div>
+        <article class="prose" id="content">
+          <p class="loading">Loading…</p>
+          <noscript>
+            <p>
+              This page renders the Markdown in the repository's <code>docs/</code> folder, which needs JavaScript.
+              You can read the same files
+              <a href="https://github.com/Lukeus/taurus/tree/main/docs">on GitHub</a>.
+            </p>
+          </noscript>
+        </article>
+        <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
+      </main>
+    </div>
+  </body>
+</html>

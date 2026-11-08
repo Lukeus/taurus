@@ -14,7 +14,8 @@
     "version:check": "node scripts/version.mjs check",
     "version:set": "node scripts/version.mjs set",
     "screenshots": "node scripts/screenshots/capture.mjs",
-    "bench": "vitest bench"
+    "bench": "vitest bench",
+    "site": "node scripts/site.mjs --serve"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
