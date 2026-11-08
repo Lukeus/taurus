@@ -12,18 +12,71 @@
 //! goes), so taking over costs the seconds since the last write rather than the
 //! run.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
 /// The one refresh that may be in flight for a workspace.
 #[derive(Default)]
 pub struct Indexing {
-    /// The running refresh and the number it was given, so a refresh that
-    /// finishes after being taken over does not clear its successor.
-    current: Mutex<Option<(u64, CancellationToken)>>,
+    /// The running refresh, the number it was given (so a refresh that
+    /// finishes after being taken over does not clear its successor), and
+    /// what it shares with anyone who wants to search before it's done.
+    current: Mutex<Option<(u64, CancellationToken, Arc<Live>)>>,
     next: AtomicU64,
+}
+
+/// What a running refresh shares with a search that won't wait for it.
+///
+/// Handed to [`crate::refresh`] as its progress. A refresh started without
+/// it, like **Build index** with its own progress bar, still runs; a search
+/// joining it just can't ask it to write down early, and answers from its
+/// last periodic write instead.
+#[derive(Default)]
+pub struct Live {
+    /// `(done, total)` passages.
+    pub(crate) progress: tokio::sync::watch::Sender<(usize, usize)>,
+    /// What the scan found, once it knows: `(kept, total)` passages already
+    /// current and to embed. `(0, 0)` until then.
+    pub(crate) planned: tokio::sync::watch::Sender<(usize, usize)>,
+    pub(crate) flush: AtomicBool,
+    pub(crate) flushed: tokio::sync::Notify,
+}
+
+impl Live {
+    /// Passages the scan found to embed, `None` before it has finished.
+    pub fn planned(&self) -> Option<usize> {
+        let (_, total) = *self.planned.borrow();
+        (total > 0).then_some(total)
+    }
+
+    /// Asks for what's finished to be written down at the next batch.
+    pub(crate) fn request_flush(&self) {
+        self.flush.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::build::IndexProgress for Live {
+    async fn embedding(&self, done: usize, total: usize) {
+        self.progress.send_replace((done, total));
+    }
+
+    fn planned(&self, kept: usize, total: usize) {
+        self.planned.send_replace((kept, total));
+        self.progress.send_replace((0, total));
+    }
+
+    fn flush_wanted(&self) -> bool {
+        self.flush.load(Ordering::SeqCst)
+    }
+
+    fn flushed(&self) {
+        self.flush.store(false, Ordering::SeqCst);
+        // A permit if nobody is waiting yet, so a search can't miss it.
+        self.flushed.notify_one();
+    }
 }
 
 impl Indexing {
@@ -45,25 +98,50 @@ impl Indexing {
     /// as `cancel` itself, a takeover would cancel whatever else `cancel`
     /// governs, which for `search_code` is the whole turn.
     pub fn take_over(&self, cancel: &CancellationToken) -> (u64, CancellationToken) {
+        let (ticket, own, _) = self.take_over_live(cancel);
+        (ticket, own)
+    }
+
+    /// [`Indexing::take_over`], plus the [`Live`] to refresh with, so a
+    /// search can join this refresh rather than restart it.
+    pub fn take_over_live(
+        &self,
+        cancel: &CancellationToken,
+    ) -> (u64, CancellationToken, Arc<Live>) {
         let ticket = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let own = cancel.child_token();
-        if let Some((_, previous)) = self.current.lock().unwrap().replace((ticket, own.clone())) {
+        let live = Arc::new(Live::default());
+        if let Some((_, previous, _)) =
+            self.current
+                .lock()
+                .unwrap()
+                .replace((ticket, own.clone(), Arc::clone(&live)))
+        {
             previous.cancel();
         }
-        (ticket, own)
+        (ticket, own, live)
+    }
+
+    /// The running refresh's [`Live`], if one is running.
+    pub fn running(&self) -> Option<Arc<Live>> {
+        self.current
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, _, live)| Arc::clone(live))
     }
 
     /// Records that a refresh is over, if it is still the one running.
     pub fn finished(&self, ticket: u64) {
         let mut current = self.current.lock().unwrap();
-        if current.as_ref().is_some_and(|(held, _)| *held == ticket) {
+        if current.as_ref().is_some_and(|(held, _, _)| *held == ticket) {
             *current = None;
         }
     }
 
     /// Stops whatever is refreshing, for a workspace being left.
     pub fn stop(&self) {
-        if let Some((_, cancel)) = self.current.lock().unwrap().take() {
+        if let Some((_, cancel, _)) = self.current.lock().unwrap().take() {
             cancel.cancel();
         }
     }

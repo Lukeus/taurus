@@ -37,7 +37,7 @@ pub mod tool;
 
 pub use build::{refresh, IndexProgress, Refreshed};
 pub use chunk::Chunk;
-pub use inflight::Indexing;
+pub use inflight::{Indexing, Live};
 pub use prefix::{prefixes, Prefixes};
 pub use store::{rerank, search, Entry, Hit, Index, Ranking};
 pub use tool::{SearchCode, SEARCH_CODE_TOOL};

@@ -728,9 +728,38 @@ the model reached for `search_code` on an unindexed workspace.
 
 Instead, sending a message starts the refresh in the background, so the first
 search lands on an index that's been building since. If it lands early, the
-tool takes over the refresh and finishes it with a progress bar in the
-transcript. Everything already embedded is written down, so taking over costs
-seconds, not a restart.
+tool takes over the refresh, which rescans so a file written since is in it,
+and waits up to ten seconds with a progress bar in the transcript. Everything
+already embedded is written down, so taking over costs seconds, not a restart.
+
+A refresh that finishes in that time is the whole answer, and that's every
+refresh except a first index or a big catch-up. One that doesn't keeps
+running in the background, and the search answers from what's embedded so
+far and says so under the results:
+
+```
+The index is still being built: 3104 of 9102 passages searchable so far, most
+recently changed files first, and it carries on in the background. Files it
+hasn't reached yet won't show up here; grep searches everything.
+```
+
+When the refresh plainly can't finish in ten seconds (the scan finds a few
+hundred passages to embed), the search doesn't sit out the ten seconds first.
+It answers in a few seconds, as soon as the next batch is written down.
+
+Most recently changed first is what keeps "a file you just wrote is a file it
+can find" true in a partial index: that file goes in the first batch. On a
+first index it also means the code you're working on is searchable minutes
+before code nobody's touched in a year. Stopping the turn ends the wait, not
+the indexing, the same as the warm-up.
+
+A search that arrives while a long refresh is already running joins it
+rather than starting over. Only whole files are written down, so restarting
+would throw away the file in progress every time, and on a first index a
+search every turn could keep it from getting past the first few large files.
+The note under the results then adds that files changed since the refresh
+started aren't in it yet. They're picked up by the next search after it
+finishes.
 
 Nothing indexes a repository just because you opened it. Indexing needs an
 embedding model configured, the same switch that decides whether

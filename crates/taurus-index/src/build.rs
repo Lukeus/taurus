@@ -87,6 +87,21 @@ pub trait IndexProgress: Send + Sync {
     /// `done` of `total` passages embedded. Called at most [`PROGRESS_STEPS`]
     /// times plus once at the end, never on a refresh that embeds nothing.
     async fn embedding(&self, done: usize, total: usize);
+
+    /// What this refresh is about to do, once the scan knows and before any
+    /// passage is sent: `kept` passages carried over as current and `total`
+    /// to embed. Not called when there is nothing to embed.
+    fn planned(&self, _kept: usize, _total: usize) {}
+
+    /// Whether the caller wants what is finished written down now, rather
+    /// than at the next [`SAVE_EVERY`]. A search that has stopped waiting asks
+    /// for this, so it can answer from everything embedded so far.
+    fn flush_wanted(&self) -> bool {
+        false
+    }
+
+    /// Called after a write that [`IndexProgress::flush_wanted`] asked for.
+    fn flushed(&self) {}
 }
 
 /// Which `done` values are worth reporting, given how many there are in total.
@@ -200,6 +215,9 @@ pub async fn refresh(
     } = scanned;
     report.chunks = pending.len();
     let total = pending.len();
+    if let Some(progress) = progress.filter(|_| total > 0) {
+        progress.planned(keep.len(), total);
+    }
     let mut done = 0;
     let mut written = Instant::now();
     // How much of `keep` belongs to files that are entirely embedded.
@@ -286,7 +304,8 @@ pub async fn refresh(
             }
         }
 
-        if written.elapsed() >= SAVE_EVERY && whole > 0 {
+        let flush = progress.is_some_and(|p| p.flush_wanted());
+        if (written.elapsed() >= SAVE_EVERY || flush) && whole > 0 {
             // Split rather than cloned: these entries carry every vector in the
             // workspace, and the part-embedded file at the end of them is about
             // to be finished rather than thrown away.
@@ -294,6 +313,11 @@ pub async fn refresh(
             keep = write_down(index, &key, keep).await?;
             keep.extend(rest);
             written = Instant::now();
+            if flush {
+                if let Some(progress) = progress {
+                    progress.flushed();
+                }
+            }
         }
     }
 
@@ -434,6 +458,14 @@ fn scan(
 
     // Files the index knew about that are no longer there.
     report.removed = by_file.keys().filter(|path| !seen.contains(*path)).count();
+
+    // Most recently changed first. A file the model just wrote is in the
+    // first batch, so a search that stops waiting for a long refresh can
+    // still find it, and on a first index the code being worked on now is
+    // searchable before the code nobody has touched in a year. Stable, so a
+    // file's chunks stay together and in order, which is what lets a stopped
+    // refresh keep only whole files.
+    pending.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
 
     Ok(Scan {
         keep,
@@ -1258,7 +1290,18 @@ mod tests {
         let sequential = fixture();
         for f in [&overlapped, &sequential] {
             for n in 0..12 {
-                write(&f.root, &format!("src/f{n}.rs"), 120);
+                let name = format!("src/f{n}.rs");
+                write(&f.root, &name, 120);
+                // One time for every file in both trees. Pending files are
+                // ordered newest first, so writes either side of a clock tick
+                // would order the two trees differently for no reason this
+                // test is about.
+                std::fs::File::options()
+                    .write(true)
+                    .open(f.root.join(&name))
+                    .unwrap()
+                    .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+                    .unwrap();
             }
         }
 
