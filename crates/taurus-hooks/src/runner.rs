@@ -443,6 +443,28 @@ fn compile(globs: &[String]) -> Option<globset::GlobSet> {
     builder.build().ok()
 }
 
+/// Starts a hook's process tree, trying again for a moment on "text file busy".
+///
+/// Linux refuses to exec a file that some process holds open for writing. A
+/// script written by this process an instant ago can still be held that way by
+/// a child forked on another thread, which keeps a copy of the descriptor until
+/// it execs. The descriptor goes away within milliseconds, so a short retry
+/// rides it out rather than refusing a call over it.
+async fn spawn(build: impl Fn() -> tokio::process::Command) -> std::io::Result<Tree> {
+    // ETXTBSY, on every Unix that has it.
+    const TEXT_FILE_BUSY: i32 = 26;
+    let mut attempts = 0;
+    loop {
+        match Tree::spawn(build()) {
+            Err(e) if cfg!(unix) && e.raw_os_error() == Some(TEXT_FILE_BUSY) && attempts < 5 => {
+                attempts += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20 * attempts)).await;
+            }
+            spawned => return spawned,
+        }
+    }
+}
+
 /// Starts one hook, feeds it the payload, and reads its verdict.
 async fn execute(
     name: &str,
@@ -463,41 +485,44 @@ async fn execute(
     }
     .unwrap_or_else(|_| b"{}".to_vec());
 
-    let mut command = tokio::process::Command::new(&hook.command);
-    taurus_process::path::apply(&mut command)
-        .args(&hook.args)
-        // Run where the work is. A hook that checks a file has to be able to
-        // name it the way every other tool in the turn does.
-        .current_dir(&payload.workspace)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("TAURUS_HOOK_EVENT", payload.event.label())
-        .env("TAURUS_WORKSPACE", &payload.workspace)
-        // A timeout is only a timeout if it takes the process with it. Tokio
-        // *detaches* a child whose future is dropped unless this is set, so
-        // without it the branch below reported a hook as "stopped" and left it
-        // running — a turn leaking one every time a hook hung, and the message
-        // saying the opposite of what had happened.
-        .kill_on_drop(true);
-    if let Some(tool) = &payload.tool {
-        command.env("TAURUS_TOOL", tool);
-    }
-    if let Some(foreign) = foreign {
-        // What a hook written for Claude Code, Codex or Copilot reads its
-        // project from, then the entry's own `env` and `cwd`.
-        command.env("CLAUDE_PROJECT_DIR", &payload.workspace);
-        command.envs(&foreign.env);
-        if let Some(cwd) = &foreign.cwd {
-            command.current_dir(payload.workspace.join(cwd));
+    let build = || {
+        let mut command = tokio::process::Command::new(&hook.command);
+        taurus_process::path::apply(&mut command)
+            .args(&hook.args)
+            // Run where the work is. A hook that checks a file has to be able to
+            // name it the way every other tool in the turn does.
+            .current_dir(&payload.workspace)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("TAURUS_HOOK_EVENT", payload.event.label())
+            .env("TAURUS_WORKSPACE", &payload.workspace)
+            // A timeout is only a timeout if it takes the process with it. Tokio
+            // *detaches* a child whose future is dropped unless this is set, so
+            // without it the branch below reported a hook as "stopped" and left it
+            // running — a turn leaking one every time a hook hung, and the message
+            // saying the opposite of what had happened.
+            .kill_on_drop(true);
+        if let Some(tool) = &payload.tool {
+            command.env("TAURUS_TOOL", tool);
         }
-    }
+        if let Some(foreign) = foreign {
+            // What a hook written for Claude Code, Codex or Copilot reads its
+            // project from, then the entry's own `env` and `cwd`.
+            command.env("CLAUDE_PROJECT_DIR", &payload.workspace);
+            command.envs(&foreign.env);
+            if let Some(cwd) = &foreign.cwd {
+                command.current_dir(payload.workspace.join(cwd));
+            }
+        }
+        command
+    };
     // A tree rather than a single child, so the timeout below can reach what
     // the hook started and not only the hook. A hook is usually a script, so
     // the child is `/bin/sh` or `cmd.exe` and the work is *its* child —
     // measured, every shape of script leaked the program it called when only
     // the child was killed, including the plainest one there is.
-    let mut child = match Tree::spawn(command) {
+    let mut child = match spawn(build).await {
         Ok(child) => child,
         Err(e) => {
             // The common case is a path typo, so the message names the program

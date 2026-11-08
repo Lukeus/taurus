@@ -268,6 +268,46 @@ h4 {
   flex-wrap: wrap;
   position: relative;
 }
+/* A note in the margin, written by hand: the one thing on the page that is
+   not finished, so it is the one thing that does not look finished. */
+.scribble {
+  --hand: "Caveat", "Bradley Hand", "Segoe Print", cursive;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 14px auto 0;
+  color: var(--peach);
+  font: 600 clamp(22px, 2.6vw, 27px) / 1.1 var(--hand);
+  transform: rotate(-2.5deg);
+  position: relative;
+}
+.scribble svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.scribble-arrow {
+  width: 46px;
+  height: 37px;
+  flex: none;
+  margin-top: -14px;
+}
+.scribble-text {
+  position: relative;
+  padding-top: 6px;
+}
+.scribble-line {
+  position: absolute;
+  left: -2%;
+  bottom: -9px;
+  width: 104%;
+  height: 10px;
+  opacity: 0.8;
+}
+
 .providers {
   display: flex;
   flex-wrap: wrap;

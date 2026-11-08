@@ -195,28 +195,42 @@ mod live {
     #[test]
     fn a_missed_change_switches_the_watcher_off_and_names_the_file() {
         let w = Watched::new();
-        // Plant a file in the picture that is not on disk, as a watcher that
-        // missed its deletion would leave it.
-        {
-            let mut inner = w.slot.inner();
-            let Phase::Live { live, .. } = &mut inner.phase else {
-                panic!("not live");
-            };
-            let picture = live.picture.as_mut().expect("a picture");
-            picture.files.insert(w.root.join("phantom.txt"), (7, None));
-            live.answered = VERIFY_EVERY - 1;
+        // A look is allowed to decline the picture rather than check it: a
+        // cookie that is late on a loaded machine, or a late FSEvents event for
+        // the freshly made root, which re-lists the root and drops the phantom
+        // honestly. Either retakes the picture, and walking is always correct.
+        // So plant again and look again; only a watcher that never notices is
+        // a failure.
+        for _ in 0..5 {
+            // Plant a file in the picture that is not on disk, as a watcher
+            // that missed its deletion would leave it.
+            {
+                let mut inner = w.slot.inner();
+                let Phase::Live { live, .. } = &mut inner.phase else {
+                    panic!("not live");
+                };
+                let Some(picture) = live.picture.as_mut() else {
+                    drop(inner);
+                    w.slot.files(&w.root);
+                    continue;
+                };
+                picture.files.insert(w.root.join("phantom.txt"), (7, None));
+                live.answered = VERIFY_EVERY - 1;
+            }
+
+            // Whatever this look did, it answers with the disk, not the
+            // phantom.
+            let files = w.slot.files(&w.root).unwrap();
+            assert!(files
+                .iter()
+                .all(|(path, ..)| !path.ends_with("phantom.txt")));
+
+            if let Watching::Off(reason) = w.slot.watching(&w.root) {
+                assert!(reason.contains("phantom.txt"), "{reason}");
+                return;
+            }
         }
-
-        // The look that verifies answers with the walk, not the bad picture.
-        let files = w.slot.files(&w.root).unwrap();
-        assert!(files
-            .iter()
-            .all(|(path, ..)| !path.ends_with("phantom.txt")));
-
-        let Watching::Off(reason) = w.slot.watching(&w.root) else {
-            panic!("still trusting a watcher that missed a change");
-        };
-        assert!(reason.contains("phantom.txt"), "{reason}");
+        panic!("still trusting a watcher that missed a change");
     }
 
     #[test]
