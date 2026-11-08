@@ -286,7 +286,7 @@ you put things back afterwards.
   code or tool output. Your computer's own voice, ElevenLabs, or anything
   shaped like OpenAI's speech endpoint.
 - [**Finding code by what it does**](docs/working-with-it.md#finding-code-by-what-it-does):
-  local semantic search, no external service.
+  local semantic search, with the model run in-process or on your own server.
 - [**When a turn stops**](docs/working-with-it.md#when-a-turn-stops) and
   [**the context window**](docs/working-with-it.md#the-context-window): what
   ends a turn, and what it costs. The meter above the composer shows how much.
@@ -490,6 +490,7 @@ crates/
   taurus-mcp/               MCP client
   taurus-web/               Web search and page fetching
   taurus-index/             Local semantic search: chunking, embedding, ranking
+  taurus-embed/             Embedding models run in-process with candle, and their pinned downloads
   taurus-watch/             Workspace file watching that says what changed or admits it can't
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-voice/             Dictation: microphone capture, whisper.cpp transcription

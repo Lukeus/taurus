@@ -830,7 +830,8 @@ the backlog, and they're the minority.
   nothing to put back. But a conversation's disk footprint grows somewhere
   the **Changes** drawer doesn't account for.
 - **The first index is slow, and a search that arrives early still waits for
-  it.** Embedding this repository takes nearly two minutes. Sending a message
+  it.** Embedding this repository takes nearly two minutes through Ollama,
+  and far longer on the built-in engine (see below). Sending a message
   starts it in the background, so most of it is usually done before anything
   searches. But a model that calls `search_code` in its first tool call waits
   for the rest inside that call. The wait is shorter than a fresh start. The
@@ -850,23 +851,34 @@ the backlog, and they're the minority.
   lands badly returns three confident near-misses. The tool says they're
   leads, not answers, and that's all it can do about it. Where you know the
   literal text, grep is exact and this is only close.
-- **Nothing here embeds in-process.** An index needs a backend with an
-  embedding endpoint, and every provider Taurus speaks to except Anthropic
-  has one. So this is a gap for exactly one setup: chatting to Claude with no
-  other backend reachable. Closing it means running an embedding model inside
-  this process. That's a model to download on first use and a
-  machine-learning runtime to carry on all three platforms, for a case a
-  second provider entry already covers. It isn't built, and it's not
-  obviously worth building.
+- **Built-in search embeds on the CPU, and uses every core while it does.**
+  The models Taurus runs itself (**On this computer**) go through candle,
+  which is pure Rust and builds on all three platforms. It has no GPU path
+  here. The first index of this repository took about 29 minutes on an M4
+  Max, against 9 through Ollama on the GPU. Nothing caps the threads, so the
+  machine runs hot for that first index. Closing it means candle's Metal and
+  CUDA back ends, each its own build and test matrix, or onnxruntime, which
+  ships as a C++ prebuilt with no build for Intel macOS. A thread cap is the
+  cheap half and isn't built yet.
+- **Only the app downloads a built-in model.** `taurus run` uses one that's
+  already downloaded, but the CLI has no command to fetch it, so a machine
+  that only has the CLI can't turn built-in search on. Copying the folder
+  from `~/.taurus/models/embeddings` on another machine works, since the
+  check is each file's size.
+- **Stopping a built-in index finishes the batch in flight.** Stop is raced
+  against each request, so the index stops at once. But the embedding thread
+  can't be interrupted mid-batch, so the CPU stays busy for the few seconds
+  that batch takes.
 - **Reranking needs a second server, and most backends can't be it.** The
   `/rerank` route is Cohere's shape, not OpenAI's, and OpenAI has none to
   imitate. So it's served by llama.cpp started with `--reranking`, by
   text-embeddings-inference, by the hosted rerankers, and by almost nothing
   else. Ollama, where most local setups embed, has no such route at all.
   That's why `rerank_provider` is a setting separate from the embedding
-  provider. Closing this properly means running a reranking model in-process
-  instead of asking for an endpoint. That's the same unbuilt piece that would
-  let the index work with no local server at all.
+  provider. The built-in engine embeds but can't rerank either, so with
+  **On this computer** the reranker has to be one of your providers. Closing
+  this properly means running a reranking model in-process too: the
+  embedding half of that exists now, in `taurus-embed`.
 - **A reranked score can't be compared to anything but its own result set.**
   Voyage and Cohere normalize to 0–1. llama.cpp returns the cross-encoder's
   raw logit, where negative values are ordinary. Taurus orders by it and never
@@ -1670,6 +1682,29 @@ the backlog, and they're the minority.
   that isn't Rust and TypeScript, could land differently. So the setting
   stays, and the default stays empty. Run the harness with your own reranker
   before trusting it.
+- **Built-in search defaults to CodeRankEmbed, because it measured best.**
+  Measured 2026-11-07 with the retrieval gate on this repository: 17,275
+  passages, every engine scored against the same corpus in one run, with each
+  model's task prefixes. Times are an M4 Max; Ollama ran on the GPU, the
+  in-process models on the CPU.
+
+  | | MRR | hit@1 | hit@5 | first index |
+  |---|---|---|---|---|
+  | Ollama `nomic-embed-text`, no prefixes (as shipped before) | 0.426 | 20% | 80% | 524 s |
+  | Ollama `nomic-embed-text`, prefixed | 0.535 | 33% | 80% | 570 s |
+  | bge-small-en-v1.5, in-process | 0.428 | 27% | 67% | 836 s |
+  | snowflake-arctic-embed-s, in-process | 0.394 | 20% | 73% | 794 s |
+  | nomic-embed-text-v1.5, in-process | 0.535 | 33% | 80% | 1,781 s |
+  | CodeRankEmbed, in-process | 0.752 | 67% | 80% | 1,757 s |
+
+  The two small models weren't shipped. They're a quarter the download and
+  no better than what search already had. In-process nomic matched Ollama's
+  exactly, which is the check that candle computes the same network.
+
+  It's the same small sample as the results above: fifteen questions, Rust
+  and TypeScript, one machine. One question moves hit@1 by seven points, so
+  MRR is the number to read. A workspace in another language could land
+  differently, and re-running the gate is how to find out.
 - **A theme sets fourteen colors, three typefaces, a wordmark and logo, a
   corner radius and two column insets, and nothing else.** That's not a
   stub; the ceiling is the point.

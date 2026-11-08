@@ -244,6 +244,10 @@ pub struct Host {
     /// struct: the warm-up a turn kicks off, `search_code` when the model
     /// reaches for it, and **Build index now**. See [`taurus_index::inflight`].
     indexing: Arc<taurus_index::Indexing>,
+    /// The embedding models Taurus runs itself, for search with no model
+    /// server. One for the whole process, so a model loaded for one search is
+    /// there for the next. See [`taurus_embed::Local`].
+    local_embeddings: Arc<taurus_embed::Local>,
     /// The commands running in the background.
     ///
     /// On the host rather than beside a session because that is what they are:
@@ -384,6 +388,9 @@ impl Host {
             jobs: Arc::new(taurus_tools::Jobs::new()),
             sweeps: Arc::new(taurus_tools::SweepCache::new()),
             indexing: Arc::new(taurus_index::Indexing::new()),
+            local_embeddings: Arc::new(taurus_embed::Local::new(
+                config::home_dir().join("models").join("embeddings"),
+            )),
             instructions: RwLock::new(Vec::new()),
             instructions_seen: RwLock::new(Freshness::default()),
             profile: RwLock::new(Profile::default()),
@@ -635,8 +642,8 @@ impl Host {
             match id {
                 // Deferred: this runs on every reload, including the one the
                 // window waits on, and building the provider reads its key.
-                Some(id) => match self.deferred_provider(&id).await {
-                    Some(provider) => {
+                Some(id) => match self.embedding_backend(&id, &embedding_model, true).await {
+                    Ok(provider) => {
                         info!(model = %embedding_model, provider = %id, "semantic search enabled");
                         let mut search = taurus_index::SearchCode::new(
                             provider.clone(),
@@ -666,12 +673,9 @@ impl Host {
                         }
                         registry.register(Arc::new(search));
                     }
-                    None => problems.push(Problem {
+                    Err(message) => problems.push(Problem {
                         source: ProblemSource::Providers,
-                        message: format!(
-                            "semantic search is configured but no provider configured with id \
-                             '{id}'"
-                        ),
+                        message,
                     }),
                 },
                 None => problems.push(Problem {

@@ -13,18 +13,20 @@
 //!     cargo run -p taurus-index --example retrieval -- . nomic-embed-text
 //! ```
 //!
+//! Every column sends the task prefixes the index sends (`taurus_index::
+//! prefixes`). `UNPREFIXED=1` adds an Ollama column without them, which is how
+//! the index embedded before it had them.
+//!
 //! In-process engines are scored in the same run too, one column per model,
-//! beside the Ollama column. `PREFIXED=1` adds an Ollama column with nomic's
-//! task prefixes, which the shipping index doesn't send:
+//! beside the Ollama column:
 //!
 //! ```sh
-//! LOCAL_MODELS=~/models/bge-small=bge-small-en-v1.5,~/models/nomic=nomic-embed-text-v1.5 \
-//! PREFIXED=1 cargo run --release -p taurus-index --example retrieval -- . nomic-embed-text
+//! LOCAL_MODELS=~/.taurus/models/embeddings/CodeRankEmbed=CodeRankEmbed \
+//! UNPREFIXED=1 cargo run --release -p taurus-index --example retrieval -- . nomic-embed-text
 //! ```
 //!
 //! Each directory holds a model's `config.json`, `tokenizer.json` and
-//! `model.safetensors`, and the id is one `taurus_embed::MODELS` names, which is
-//! where its pooling and prefixes come from.
+//! `model.safetensors`, and the id is one `taurus_embed::MODELS` names.
 //!
 //! `index-probe` next door prints hits for a reader to judge by eye, which is the
 //! right check for "is this any good at all" and no check at all for "is this
@@ -193,7 +195,11 @@ async fn main() {
 
     // Every query embedded once, with the same model, and reused for all three
     // variants: a question is a question regardless of how the corpus was cut.
-    let questions: Vec<String> = QUERIES.iter().map(|(q, _)| q.to_string()).collect();
+    let prefixes = taurus_index::prefixes(&model);
+    let questions: Vec<String> = QUERIES
+        .iter()
+        .map(|(q, _)| format!("{}{q}", prefixes.query))
+        .collect();
     let query_vectors = provider
         .embed(&model, &questions)
         .await
@@ -271,14 +277,16 @@ async fn main() {
     // Every other engine, against the same passages in the same order: the
     // corpus is chunked once above and only the vectors differ.
     let mut others: Vec<(String, Engine)> = Vec::new();
-    if std::env::var("PREFIXED").is_ok() {
+    if std::env::var("UNPREFIXED").is_ok() {
         others.push((
-            "+prefix".into(),
+            "-prefix".into(),
             Engine::Ollama {
                 provider: Arc::clone(&provider),
                 model: model.clone(),
-                query: "search_query: ",
-                document: "search_document: ",
+                prefixes: taurus_index::Prefixes {
+                    query: "",
+                    document: "",
+                },
             },
         ));
     }
@@ -342,15 +350,13 @@ fn short(id: &str) -> String {
 
 /// Where a column's vectors come from.
 enum Engine {
-    /// The same server as the first column, with prefixes the first column
-    /// doesn't send.
+    /// The same server as the first column, with other prefixes.
     Ollama {
         provider: Arc<dyn Provider>,
         model: String,
-        query: &'static str,
-        document: &'static str,
+        prefixes: taurus_index::Prefixes,
     },
-    /// In this process, with the prefixes its spec names.
+    /// In this process, with the prefixes the index sends it.
     Local(Box<taurus_embed::Embedder>),
 }
 
@@ -360,10 +366,13 @@ impl Engine {
             Engine::Ollama {
                 provider,
                 model,
-                query: q,
-                document: d,
+                prefixes,
             } => {
-                let prefix = if query { q } else { d };
+                let prefix = if query {
+                    prefixes.query
+                } else {
+                    prefixes.document
+                };
                 let mut out = Vec::with_capacity(texts.len());
                 for batch in texts.chunks(16) {
                     let batch: Vec<String> = batch.iter().map(|t| format!("{prefix}{t}")).collect();
@@ -377,11 +386,11 @@ impl Engine {
                 out
             }
             Engine::Local(embedder) => {
-                let spec = embedder.spec();
+                let prefixes = taurus_index::prefixes(embedder.spec().id);
                 let prefix = if query {
-                    spec.query_prefix
+                    prefixes.query
                 } else {
-                    spec.document_prefix
+                    prefixes.document
                 };
                 let mut out = Vec::with_capacity(texts.len());
                 // Large slices, because the embedder sorts by length within
@@ -416,7 +425,11 @@ async fn embed_corpus(
     // The same batch size the real refresh uses, so the timings above are
     // comparable to what indexing a workspace actually costs.
     for batch in pending.chunks(16) {
-        let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+        let document = taurus_index::prefixes(model).document;
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|(_, text)| format!("{document}{text}"))
+            .collect();
         let vectors = provider
             .embed(model, &texts)
             .await

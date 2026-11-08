@@ -7509,6 +7509,7 @@ dependencies = [
  "taurus-agents",
  "taurus-core",
  "taurus-data",
+ "taurus-embed",
  "taurus-host",
  "taurus-mcp",
  "taurus-provider",
@@ -7597,11 +7598,21 @@ dependencies = [
 name = "taurus-embed"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "futures",
+ "reqwest",
  "serde_json",
+ "sha2",
+ "taurus-provider",
+ "tempfile",
+ "thiserror 2.0.20",
  "tokenizers",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -7638,6 +7649,7 @@ dependencies = [
  "taurus-agents",
  "taurus-core",
  "taurus-data",
+ "taurus-embed",
  "taurus-hooks",
  "taurus-index",
  "taurus-mcp",

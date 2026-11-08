@@ -276,6 +276,58 @@ async fn wiring_in_semantic_search_reads_no_key_until_something_is_embedded() {
     assert_eq!(secrets::reads(id) - before, 1);
 }
 
+#[tokio::test]
+async fn built_in_search_is_offered_only_once_its_model_is_downloaded() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let model = taurus_embed::DEFAULT_MODEL;
+    host.set_embedding_model(model, taurus_embed::PROVIDER_ID)
+        .await
+        .unwrap();
+    host.reload_local().await;
+
+    // Not downloaded: no tool for the model to try, and a problem that says
+    // where to go.
+    assert!(host.registry.read().await.get("search_code").is_none());
+    let problems: Vec<String> = host
+        .problems()
+        .await
+        .into_iter()
+        .map(|p| p.message)
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|m| m.contains(model) && m.contains("Settings → Search")),
+        "{problems:?}"
+    );
+
+    // Downloaded — files of the pinned sizes are what "installed" checks.
+    let spec = taurus_embed::spec(model).unwrap();
+    let folder = host.local_embeddings().files().path(spec);
+    std::fs::create_dir_all(&folder).unwrap();
+    for file in &spec.files {
+        let f = std::fs::File::create(folder.join(file.name)).unwrap();
+        f.set_len(file.bytes).unwrap();
+    }
+    host.reload_local().await;
+    assert!(host.registry.read().await.get("search_code").is_some());
+}
+
+#[tokio::test]
+async fn the_built_in_engine_refuses_a_model_it_cannot_run() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let err = host
+        .set_embedding_model("nomic-embed-text", taurus_embed::PROVIDER_ID)
+        .await
+        .unwrap_err();
+    assert!(err.contains("CodeRankEmbed"), "{err}");
+    assert!(host.settings().await.embedding_model.is_empty());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn the_theme_in_force_is_read_again_only_when_its_file_moves() {

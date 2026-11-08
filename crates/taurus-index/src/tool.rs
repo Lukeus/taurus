@@ -269,8 +269,8 @@ impl Tool for SearchCode {
             // rather than fail a question the index can mostly answer.
             Err(_) if stop.is_cancelled() && !ctx.cancel.is_cancelled() => {
                 let index = index.clone();
-                let model = self.model.clone();
-                let entries = tokio::task::spawn_blocking(move || index.load(&model))
+                let key = crate::prefix::key(&self.model);
+                let entries = tokio::task::spawn_blocking(move || index.load(&key))
                     .await
                     .map_err(|e| ToolError::Failed(format!("the index couldn't be read: {e}")))?;
                 let summary = "Another refresh of the index took over from this one and is \
@@ -292,7 +292,13 @@ impl Tool for SearchCode {
         ctx.report("searching").await;
         let vector = self
             .provider
-            .embed(&self.model, std::slice::from_ref(&query.to_string()))
+            .embed(
+                &self.model,
+                &[format!(
+                    "{}{query}",
+                    crate::prefix::prefixes(&self.model).query
+                )],
+            )
             .await
             .map_err(|e| ToolError::Failed(e.to_string()))?
             .into_iter()

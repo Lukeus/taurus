@@ -58,6 +58,43 @@ const mount = async (
   return host;
 };
 
+/** Picks "On a model server", which saves nothing until a model is named. */
+const mountServer = async () => {
+  const host = await mount("");
+  await choose(host, "server");
+  return host;
+};
+
+const choose = async (host: HTMLElement, engine: string) => {
+  const select = host.querySelector("select")!;
+  await act(async () => {
+    select.value = engine;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+};
+
+const catalog = (installed: boolean) => ({
+  provider: "builtin",
+  default_model: "CodeRankEmbed",
+  folder: "/home/me/.taurus/models/embeddings",
+  models: [
+    {
+      id: "CodeRankEmbed",
+      summary: "The default.",
+      license: "MIT",
+      bytes: 547_651_342,
+      installed,
+    },
+  ],
+});
+
+/** Answers `embedding_models` with `catalog(installed)`, everything else as before. */
+const withCatalog = (installed: boolean) =>
+  invoke.mockImplementation(((command: string) =>
+    Promise.resolve(
+      command === "embedding_models" ? catalog(installed) : "Index is current: 412 files.",
+    )) as never);
+
 const fieldNamed = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("label, .field")].find((el) =>
     el.textContent?.includes(label),
@@ -67,7 +104,8 @@ const button = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent === label);
 
 beforeEach(() => {
-  invoke.mockClear();
+  invoke.mockReset();
+  invoke.mockImplementation(() => Promise.resolve("Index is current: 412 files."));
   refresh.mockClear();
 });
 
@@ -81,7 +119,8 @@ describe("building the code index from settings", () => {
     // model the whole feature is off, and the field is what turns it on.
     const host = await mount("");
     expect(button(host, "Build index now")).toBeUndefined();
-    expect(host.textContent).toMatch(/nomic-embed-text/);
+    expect(host.querySelector("input")).toBeNull();
+    expect(host.textContent).toMatch(/On this computer/);
   });
 
   it("offers the build once a model is named", async () => {
@@ -92,7 +131,7 @@ describe("building the code index from settings", () => {
   it("writes the model on blur rather than on every keystroke", async () => {
     // Each write reloads the registry, so saving per character would rebuild
     // the tool set once per letter of "nomic-embed-text".
-    const host = await mount("");
+    const host = await mountServer();
     const field = host.querySelector("input")!;
 
     await act(async () => {
@@ -183,7 +222,7 @@ describe("building the code index from settings", () => {
 
   it("says why a model wasn't saved, and puts the field back", async () => {
     invoke.mockImplementationOnce(() => Promise.reject("settings.json is read-only"));
-    const host = await mount("");
+    const host = await mountServer();
     const field = host.querySelector("input")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
@@ -259,7 +298,7 @@ describe("the embedding provider field", () => {
   it("saves the model and the provider in one call", async () => {
     // One decision on the backend: a model saved without a provider embeds on
     // whichever backend the conversation is on, and Anthropic has none.
-    const host = await mount("");
+    const host = await mountServer();
     const field = host.querySelector("input")!;
 
     await act(async () => {
@@ -278,5 +317,66 @@ describe("the embedding provider field", () => {
       model: "nomic-embed-text",
       provider: "",
     });
+  });
+});
+
+describe("the built-in engine", () => {
+  it("saves the default model on this computer when chosen", async () => {
+    withCatalog(false);
+    const host = await mount("");
+    await choose(host, "builtin");
+    expect(invoke).toHaveBeenCalledWith("set_embedding_model", {
+      model: "CodeRankEmbed",
+      provider: "builtin",
+    });
+  });
+
+  it("offers the download, and no build, until the model is downloaded", async () => {
+    // Search is off until the model is on disk, so a build would only fail.
+    withCatalog(false);
+    const host = await mount("CodeRankEmbed", "", "", "builtin");
+    expect(button(host, "Download 548 MB")).toBeTruthy();
+    expect(button(host, "Build index now")).toBeUndefined();
+    expect(host.textContent).toContain("Hugging Face");
+  });
+
+  it("starts the download through its own command", async () => {
+    withCatalog(false);
+    const host = await mount("CodeRankEmbed", "", "", "builtin");
+    await act(async () => {
+      button(host, "Download 548 MB")!.click();
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      "embedding_download",
+      expect.objectContaining({ model: "CodeRankEmbed" }),
+    );
+  });
+
+  it("offers the build and a delete once it is downloaded", async () => {
+    withCatalog(true);
+    const host = await mount("CodeRankEmbed", "", "", "builtin");
+    expect(button(host, "Build index now")).toBeTruthy();
+    expect(button(host, "Delete")).toBeTruthy();
+    expect(button(host, "Download 548 MB")).toBeUndefined();
+  });
+
+  it("puts the engine back when the save is refused", async () => {
+    invoke.mockImplementationOnce(() => Promise.reject("settings.json is read-only"));
+    const host = await mount("");
+    await choose(host, "builtin");
+    expect(host.querySelector("select")!.value).toBe("off");
+    expect(host.textContent).toContain("settings.json is read-only");
+  });
+
+  it("offers no build for the engine being left", async () => {
+    withCatalog(true);
+    const host = await mount("CodeRankEmbed", "", "", "builtin");
+    await choose(host, "server");
+    expect(button(host, "Build index now")).toBeUndefined();
+  });
+
+  it("asks for nothing on disk while another engine is chosen", async () => {
+    await mount("nomic-embed-text");
+    expect(invoke).not.toHaveBeenCalledWith("embedding_models");
   });
 });
