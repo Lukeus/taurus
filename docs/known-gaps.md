@@ -860,6 +860,14 @@ the backlog, and they're the minority.
   CUDA back ends, each its own build and test matrix, or onnxruntime, which
   ships as a C++ prebuilt with no build for Intel macOS. A thread cap is the
   cheap half and isn't built yet.
+- **The rules for what isn't embedded only see names and first lines.** A
+  vendored library copied into a folder with an ordinary name, like
+  `src/lib/jquery.js` unminified, gets embedded; `.taurus/index-ignore` is
+  the way to say so. A generated file is caught only by a marker in its first
+  five lines, or Go's in its first forty, because a file that merely
+  mentions a marker further down isn't generated. And as with git, a `!`
+  line can't bring back one file inside a folder that's left out: `!vendor/`
+  then `vendor/big/` is how to keep part of it.
 - **Only the app downloads a built-in model.** `taurus run` uses one that's
   already downloaded, but the CLI has no command to fetch it, so a machine
   that only has the CLI can't turn built-in search on. Copying the folder

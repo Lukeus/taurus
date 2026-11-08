@@ -31,6 +31,7 @@ pub mod build;
 pub mod chunk;
 pub mod inflight;
 pub mod prefix;
+pub mod skip;
 pub mod store;
 pub mod tool;
 

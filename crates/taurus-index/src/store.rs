@@ -157,6 +157,10 @@ struct Header {
     /// mixing them.
     model: String,
     workspace: String,
+    /// The [`crate::skip::RULES`] this index was last screened against. Absent
+    /// in an index from before there were rules, which reads as 0.
+    #[serde(default)]
+    screened: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -416,10 +420,12 @@ impl Index {
         // every entry written out one unbuffered line at a time.
         let result = (|| {
             let mut out = std::io::BufWriter::new(file);
+            // Every save is of entries a scan has screened, so it can say so.
             let header = Header {
                 version: FORMAT_VERSION,
                 model: model.to_string(),
                 workspace: self.workspace.display().to_string(),
+                screened: crate::skip::RULES,
             };
             let mut write = |record: &RecordRef| -> std::io::Result<()> {
                 serde_json::to_writer(&mut out, record)
@@ -449,6 +455,23 @@ impl Index {
             hold(self.memory, &self.path, model, stamp, entries.to_vec());
         }
         Ok(())
+    }
+
+    /// The [`crate::skip::RULES`] the index on disk was last screened
+    /// against, from its first line alone. 0 for an index from before there
+    /// were rules, and for none at all.
+    pub fn screened(&self) -> u32 {
+        let Ok(file) = std::fs::File::open(&self.path) else {
+            return 0;
+        };
+        let mut first = String::new();
+        if BufReader::new(file).read_line(&mut first).is_err() {
+            return 0;
+        }
+        match serde_json::from_str::<Record>(&first) {
+            Ok(Record::Header(header)) => header.screened,
+            _ => 0,
+        }
     }
 
     /// Discards the index. A missing one is success.
@@ -709,6 +732,7 @@ mod tests {
             version: FORMAT_VERSION,
             model: "nomic-embed-text".into(),
             workspace: "/w".into(),
+            screened: 0,
         };
         assert_eq!(
             serde_json::to_string(&RecordRef::Entry(&e)).unwrap(),

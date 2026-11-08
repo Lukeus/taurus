@@ -29,7 +29,10 @@ use futures::StreamExt;
 use taurus_provider::Provider;
 use tokio_util::sync::CancellationToken;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::chunk;
+use crate::skip;
 use crate::store::{stamp, Entry, Index, MAX_FILES, MAX_FILE_BYTES};
 
 /// Chunks sent to the backend in one request.
@@ -109,6 +112,9 @@ pub struct Refreshed {
     /// Entries dropped because their file is gone.
     pub removed: usize,
     pub chunks: usize,
+    /// Folders and files left out as vendored, lockfiles or generated. See
+    /// [`skip`].
+    pub left_out: usize,
     /// Why this covered less than the whole workspace, when that happened.
     pub caveat: Option<String>,
 }
@@ -135,6 +141,17 @@ impl Refreshed {
                 }
             )
         };
+        // Said when something was embedded, which is when it saved time; a
+        // search on a current index would repeat it every call.
+        if self.embedded > 0 && self.left_out > 0 {
+            line.push_str(&format!(
+                " Left out {} vendored, lock or generated path{} ({} changes this; grep still \
+                 searches them).",
+                self.left_out,
+                if self.left_out == 1 { "" } else { "s" },
+                skip::IGNORE_FILE
+            ));
+        }
         if let Some(caveat) = &self.caveat {
             line.push(' ');
             line.push_str(caveat);
@@ -179,6 +196,7 @@ pub async fn refresh(
         mut keep,
         pending,
         mut report,
+        screened,
     } = scanned;
     report.chunks = pending.len();
     let total = pending.len();
@@ -284,7 +302,7 @@ pub async fn refresh(
     // write goes to a blocking thread for the reason the scan does: 20 MB of
     // JSON serialized in-line is 20 MB a streaming turn is not being pumped
     // through.
-    let keep = if report.embedded > 0 || report.removed > 0 {
+    let keep = if report.embedded > 0 || report.removed > 0 || screened {
         write_down(index, &key, keep).await?
     } else {
         keep
@@ -314,6 +332,9 @@ struct Scan {
     /// Chunks of files that moved, waiting for a vector.
     pending: Vec<(String, u64, u64, chunk::Chunk)>,
     report: Refreshed,
+    /// Whether the held entries were screened against the `skip` rules this
+    /// time, which has to be written down even when nothing else moved.
+    screened: bool,
 }
 
 /// The whole synchronous half of a refresh: read the index, walk the tree, and
@@ -337,11 +358,21 @@ fn scan(
         by_file.entry(entry.path.clone()).or_default().push(entry);
     }
 
-    let (files, caveat) = walk(workspace);
+    let Walk {
+        files,
+        caveat,
+        left_out,
+    } = walk(workspace);
     let mut report = Refreshed {
         caveat,
+        left_out,
         ..Default::default()
     };
+    // An index written before the current `skip` rules may hold files they
+    // now leave out. Those are dropped this once, by reading the head of each
+    // file it holds; nothing else is re-embedded, and the save that follows
+    // marks the index screened so later refreshes skip the reads.
+    let screen_held = index.screened() < skip::RULES;
 
     let mut keep: Vec<Entry> = Vec::new();
     let mut pending: Vec<(String, u64, u64, chunk::Chunk)> = Vec::new();
@@ -368,12 +399,24 @@ fn scan(
                 .first()
                 .is_some_and(|e| e.len == len && e.modified == modified)
             {
+                if screen_held
+                    && skip::head(absolute).is_some_and(|head| skip::generated(relative, &head))
+                {
+                    report.left_out += 1;
+                    continue;
+                }
                 keep.extend(existing.iter().cloned());
                 report.unchanged += 1;
                 continue;
             }
         }
 
+        // The head first, so a generated file a megabyte long is judged on
+        // eight kilobytes of it rather than read whole on every refresh.
+        if skip::head(absolute).is_some_and(|head| skip::generated(relative, &head)) {
+            report.left_out += 1;
+            continue;
+        }
         let Ok(contents) = std::fs::read_to_string(absolute) else {
             // Not text. Nothing to embed and nothing to report — a binary in a
             // source tree is ordinary.
@@ -396,35 +439,62 @@ fn scan(
         keep,
         pending,
         report,
+        screened: screen_held,
     })
 }
 
-/// Every indexable file, as `(workspace-relative, absolute)`.
-/// Every file this index would cover, workspace-relative, with a caveat when
-/// the walk was cut short.
+/// What [`walk`] found.
+pub struct Walk {
+    /// Every file this index would cover, as `(workspace-relative, absolute)`.
+    pub files: Vec<(String, std::path::PathBuf)>,
+    /// Why this covered less than the whole workspace, when that happened.
+    pub caveat: Option<String>,
+    /// Folders and files the [`skip`] rules left out by path. A folder counts
+    /// once, however much is in it.
+    pub left_out: usize,
+}
+
+/// Every file this index would cover.
 ///
 /// Public so a live check can chunk the same corpus this does without
 /// reimplementing the ignore rules — a comparison run against a slightly
 /// different set of files is a comparison of the file lists.
-pub fn walk(workspace: &Path) -> (Vec<(String, std::path::PathBuf)>, Option<String>) {
+pub fn walk(workspace: &Path) -> Walk {
     let mut files = Vec::new();
     let mut truncated = false;
+    let (rules, problem) = skip::Skip::for_workspace(workspace);
+    let rules = Arc::new(rules);
+    let left_out = Arc::new(AtomicUsize::new(0));
 
     // The same rules the search tools walk under, plus `.taurus` — a session
     // transcript in the index would let a search over the project answer with
-    // the conversation about the project.
-    let walker = ignore::WalkBuilder::new(workspace)
-        .hidden(false)
-        // The same setting the search tools use. Without it, ignore rules only
-        // apply inside a git repository — so a workspace that is not one would
-        // have its `target/` embedded, which is both the slowest and the least
-        // useful thing in it.
-        .require_git(false)
-        .filter_entry(|entry| {
-            let name = entry.file_name().to_string_lossy();
-            name != ".git" && name != ".taurus"
-        })
-        .build();
+    // the conversation about the project — plus the index's own (`skip`).
+    let walker = {
+        let rules = Arc::clone(&rules);
+        let left_out = Arc::clone(&left_out);
+        ignore::WalkBuilder::new(workspace)
+            .hidden(false)
+            // The same setting the search tools use. Without it, ignore rules
+            // only apply inside a git repository — so a workspace that is not
+            // one would have its `target/` embedded, which is both the slowest
+            // and the least useful thing in it.
+            .require_git(false)
+            .filter_entry(move |entry| {
+                let name = entry.file_name().to_string_lossy();
+                if name == ".git" || name == ".taurus" {
+                    return false;
+                }
+                // Folders are pruned here, so nothing under `vendor/` is
+                // even listed. The workspace itself is never a candidate.
+                let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+                if entry.depth() > 0 && rules.path(entry.path(), is_dir) {
+                    left_out.fetch_add(1, Ordering::Relaxed);
+                    return false;
+                }
+                true
+            })
+            .build()
+    };
 
     for entry in walker.flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
@@ -439,13 +509,19 @@ pub fn walk(workspace: &Path) -> (Vec<(String, std::path::PathBuf)>, Option<Stri
         files.push((relative, path));
     }
 
-    let caveat = truncated.then(|| {
-        format!(
+    let mut caveats: Vec<String> = Vec::new();
+    if truncated {
+        caveats.push(format!(
             "This workspace holds more than {MAX_FILES} files, so only the first {MAX_FILES} are \
              indexed; grep and glob still cover the rest."
-        )
-    });
-    (files, caveat)
+        ));
+    }
+    caveats.extend(problem);
+    Walk {
+        files,
+        caveat: (!caveats.is_empty()).then(|| caveats.join(" ")),
+        left_out: left_out.load(Ordering::Relaxed),
+    }
 }
 
 #[cfg(test)]
@@ -735,6 +811,116 @@ mod tests {
         assert!(entries.iter().any(|e| e.path.contains("a.rs")));
         assert!(!entries.iter().any(|e| e.path.contains("generated.rs")));
         assert!(!entries.iter().any(|e| e.path.contains("secrets.txt")));
+    }
+
+    #[tokio::test]
+    async fn vendored_lock_and_generated_files_are_left_out() {
+        let f = fixture();
+        write(&f.root, "src/a.rs", 50);
+        write(&f.root, "vendor/dep/lib.rs", 50);
+        write(&f.root, "Cargo.lock", 50);
+        std::fs::write(
+            f.root.join("src/bindings.rs"),
+            format!(
+                "// Code generated by a tool. DO NOT EDIT.\n{}",
+                "fn x() {}\n".repeat(50)
+            ),
+        )
+        .unwrap();
+
+        let (entries, report) = refresh(
+            &f.index,
+            &f.root,
+            &counting(),
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let paths: HashSet<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, HashSet::from(["src/a.rs"]));
+        // vendor/ once, Cargo.lock, and the generated file.
+        assert_eq!(report.left_out, 3);
+        assert!(
+            report.summary().contains("Left out 3"),
+            "{}",
+            report.summary()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_workspace_file_can_put_vendored_code_back() {
+        let f = fixture();
+        write(&f.root, "vendor/dep/lib.rs", 50);
+        std::fs::create_dir_all(f.root.join(".taurus")).unwrap();
+        std::fs::write(f.root.join(skip::IGNORE_FILE), "!vendor/\n").unwrap();
+
+        let (entries, _) = refresh(
+            &f.index,
+            &f.root,
+            &counting(),
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(entries.iter().any(|e| e.path == "vendor/dep/lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn an_index_from_before_the_rules_is_screened_once_without_re_embedding() {
+        let f = fixture();
+        let index = f.index.clone().remembering_alone();
+        write(&f.root, "src/a.rs", 50);
+        std::fs::write(
+            f.root.join("src/gen.rs"),
+            format!("// @generated\n{}", "fn x() {}\n".repeat(50)),
+        )
+        .unwrap();
+        // What an older Taurus wrote: both files held, and no `screened`.
+        let key = crate::prefix::key("m");
+        let held: Vec<Entry> = ["src/a.rs", "src/gen.rs"]
+            .iter()
+            .map(|name| {
+                let (len, modified) = stamp(&f.root.join(name)).unwrap();
+                Entry::new(name.to_string(), 1, 10, len, modified, &[1.0, 0.0])
+            })
+            .collect();
+        index.save(&key, &held).unwrap();
+        let text = std::fs::read_to_string(index.path()).unwrap();
+        std::fs::write(index.path(), text.replace(",\"screened\":1", "")).unwrap();
+        index.release();
+        assert_eq!(index.screened(), 0);
+
+        let provider = Arc::new(Counting {
+            calls: AtomicUsize::new(0),
+            texts: AtomicUsize::new(0),
+        });
+        let as_provider: Arc<dyn Provider> = provider.clone();
+        let (entries, report) = refresh(
+            &index,
+            &f.root,
+            &as_provider,
+            "m",
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["src/a.rs"]);
+        assert_eq!(
+            provider.texts.load(Ordering::SeqCst),
+            0,
+            "nothing re-embedded"
+        );
+        assert_eq!(report.left_out, 1);
+        assert_eq!(index.screened(), skip::RULES);
     }
 
     #[tokio::test]

@@ -703,6 +703,25 @@ second pass:  127.2ms  Index is current: 405 files, nothing to re-read
                6116 passages, 24.7 MB on disk
 ```
 
+**Somebody else's code isn't embedded.** Embedding is the slow part, and on
+this repository nearly half of what git tracks wasn't ours: a vendored copy of
+whisper.cpp and two lockfiles were 8,297 of 17,390 passages. The index leaves
+out what GitHub's linguist calls vendored or generated:
+
+- vendored dependency folders (`vendor/`, `third_party/`, `Pods/`, …)
+- lockfiles (`*.lock`, `package-lock.json`, `pnpm-lock.yaml`, `go.sum`)
+- minified files and source maps
+- files whose first lines say they're generated (`@generated`,
+  `DO NOT EDIT`, Go's `// Code generated … DO NOT EDIT.`)
+
+`.taurus/index-ignore`, in `.gitignore` syntax, changes that. A line adds a
+rule, and a `!` line takes a default back: `!vendor/` puts vendored code in
+the index. This only changes the index. grep and glob still search
+everything, which is how you'd find a symbol in a vendored library anyway.
+
+An index built before these rules drops what they leave out the first time it
+refreshes, without re-embedding anything else.
+
 **The first pass starts with the message, not with the search.** Nearly two
 minutes is a long time to sit in a tool call, and that's where it would go if
 the model reached for `search_code` on an unindexed workspace.
