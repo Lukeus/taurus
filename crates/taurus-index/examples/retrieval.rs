@@ -295,7 +295,7 @@ async fn main() {
         let embedder = taurus_embed::Embedder::load(std::path::Path::new(dir), spec)
             .unwrap_or_else(|e| panic!("{id}: {e}"));
         println!("loaded {id} in {:.1?}", started.elapsed());
-        others.push((short(id), Engine::Local(embedder)));
+        others.push((short(id), Engine::Local(Box::new(embedder))));
     }
 
     for (name, engine) in &others {
@@ -351,7 +351,7 @@ enum Engine {
         document: &'static str,
     },
     /// In this process, with the prefixes its spec names.
-    Local(taurus_embed::Embedder),
+    Local(Box<taurus_embed::Embedder>),
 }
 
 impl Engine {
