@@ -27,57 +27,36 @@ table the model drew](docs/screenshots/app-dark.png)
 
 A turn folds its tool calls into one card, so a nine-step turn reads as one
 step of the conversation. Results you're meant to *look* at, like a table or a
-chart, sit on their own beside the text instead of inside that card.
+chart, sit on their own beside the text instead of inside that card. When a
+decision is really yours, it asks and waits instead of guessing. You can skip
+any question, and "You decide" answers all of them at once, so a turn never
+hangs on an answer that isn't coming.
 
-![The same app in its light theme, showing a bar chart with a tab per series and
-a question card below it, with the pill that offers the way back to the foot of
-the conversation](docs/screenshots/app-light.png)
-
-When a decision is really yours, it asks and waits instead of guessing. You can
-skip any question, and "You decide" answers all of them at once, so a turn
-never hangs on an answer that isn't coming.
-
-![A question card in the transcript, with single-choice and multiple-choice
-questions and a free-text box](docs/screenshots/questions.png)
-
-<sub>Regenerate these with `pnpm screenshots`. They're the real interface,
-driven by fixtures in headless Chrome, not photos of a running window. See
-[`scripts/screenshots/`](scripts/screenshots/capture.mjs) for why, and what
-that costs.</sub>
+More of the interface is under [Screenshots](#screenshots).
 
 ## Quick start
 
-You need Rust 1.89 or newer. The desktop app also needs Node and pnpm (CI uses
-Node 22 and pnpm 12) and the
-[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform. Building the workspace also compiles the whisper.cpp speech engine,
-which needs CMake:
+There are three ways in. The first needs nothing but the download. The second
+needs Rust. The third needs everything.
 
-- **macOS:** `brew install cmake`. libclang comes with Xcode's command line
-  tools.
-- **Windows:** `winget install Kitware.CMake`. Nothing else: Windows builds use
-  checked-in bindings, not libclang.
-- **Linux:** `cmake`, `libclang-dev`, and the ALSA headers (`libasound2-dev`
-  on Debian and Ubuntu).
+### 1. Download the app
 
-See [the speech engine](docs/development.md#the-speech-engine) if the build
-stops in `whisper-rs-sys`.
+Each tagged release attaches installers for all three platforms to
+[GitHub Releases](https://github.com/Lukeus/taurus/releases/latest):
 
-The quickest way to try it is against a local model. Start Ollama, with at
-least one model pulled:
+| Platform | File |
+|---|---|
+| macOS (Apple Silicon and Intel) | `.dmg` |
+| Linux | `.AppImage`, `.deb`, or `.rpm` |
+| Windows | `.msi`, or the `-setup.exe` installer |
 
-```bash
-ollama serve                # in another terminal
-```
+An installed copy updates itself from the same releases.
 
-Then run the desktop app:
+### 2. Install only the CLI
 
-```bash
-pnpm install
-pnpm tauri dev
-```
-
-Or install the CLI:
+The CLI needs Rust 1.89 or newer and a C compiler, and nothing else. It does
+not need Node, pnpm, the Tauri prerequisites, or the speech engine's CMake:
+dictation and reading aloud are desktop features, so none of that is compiled.
 
 ```bash
 cargo install --path crates/taurus-cli
@@ -91,8 +70,51 @@ taurus plugin add <folder or git URL>           # a Claude Code plugin, as it is
 taurus memory add "staging has the migration"   # tell the next conversation something
 ```
 
-Both use `~/.taurus`, so they share providers, skills, and the permission
-allowlist. Approve a tool once in the app and your scripted runs inherit it.
+### 3. Build the desktop app from source
+
+You need:
+
+- **Rust** 1.89 or newer
+- **Node** 22 or newer
+- **pnpm** 12. Older versions don't read the build and override settings in
+  [`pnpm-workspace.yaml`](pnpm-workspace.yaml).
+- the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for
+  your platform
+- **CMake**, for the whisper.cpp speech engine, plus whatever else your
+  platform needs for it:
+  - **macOS:** `brew install cmake`. libclang comes with Xcode's command line
+    tools.
+  - **Windows:** `winget install Kitware.CMake`. Nothing else: Windows builds
+    use checked-in bindings, not libclang.
+  - **Linux:** `cmake`, `libclang-dev`, and the ALSA headers
+    (`libasound2-dev` on Debian and Ubuntu).
+
+See [the speech engine](docs/development.md#the-speech-engine) if the build
+stops in `whisper-rs-sys`.
+
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+### A model to talk to
+
+The quickest model to try it with is a local one. Start Ollama and pull a
+model that can call tools:
+
+```bash
+ollama serve                # in another terminal
+ollama pull qwen3:8b
+```
+
+That's all the configuration a first run needs. With no `--model`, Taurus uses
+the model you used last, and otherwise the provider's first. A model without
+native tool calling still calls tools; see
+[Provider-agnostic, concretely](#provider-agnostic-concretely).
+
+The app and the CLI both use `~/.taurus`, so they share providers, skills, and
+the permission allowlist. Approve a tool once in the app and your scripted runs
+inherit it.
 
 To use a hosted model instead, see [Configuration](docs/configuration.md).
 
@@ -209,271 +231,147 @@ file in your repo. See
 
 ## What it does
 
-Each item links to its own section. The one-liners are here so you can tell
-from this page whether the thing you want exists.
+One line each, so you can tell from this page whether the thing you want
+exists. Each name links to the section that covers it properly.
 
-**[Capabilities](docs/capabilities.md)**: what it reaches for, and what it
-writes down.
+### [Capabilities](docs/capabilities.md)
 
-- [**Instructions**](docs/capabilities.md#instructions): reads the `AGENTS.md`
-  and `CLAUDE.md` you already have, so you don't need a seventh copy.
-- [**Skills**](docs/capabilities.md#skills): works a procedure out once, writes
-  it down, and asks before keeping it. Nothing is saved behind your back. Write
-  your own in the app, or open any skill to change it.
-- [**Memory**](docs/capabilities.md#memory): writes down what you'd otherwise
-  have to tell the next conversation in this workspace again. You can read,
-  change and forget every note, and write your own.
-- [**Sub-agents**](docs/capabilities.md#sub-agents): delegates to a scoped
-  context with its own tools, so a search that would fill the window happens
-  somewhere else. Write, edit and delete them in the app.
-- [**Slash commands**](docs/capabilities.md#slash-commands): one namespace for
-  skills, sub-agents, and built-ins.
+What it reaches for, and what it writes down.
 
-**[Permission, and undo](docs/safety.md)**: what it asks before acting, and how
-you put things back afterwards.
+| Feature | What it is |
+|---|---|
+| [Instructions](docs/capabilities.md#instructions) | Reads the `AGENTS.md`, `CLAUDE.md` and Copilot instructions you already have. |
+| [Skills](docs/capabilities.md#skills) | Works a procedure out once, writes it down, and asks before keeping it. Write your own in the app, or open any skill to change it. |
+| [Memory](docs/capabilities.md#memory) | Notes for the next conversation in this workspace. You can read, change and forget every one, and write your own. |
+| [Sub-agents](docs/capabilities.md#sub-agents) | A scoped context with its own tools, so a search that would fill the window happens somewhere else. |
+| [Slash commands](docs/capabilities.md#slash-commands) | One namespace for skills, sub-agents, and built-ins. |
+| [The canvas](docs/capabilities.md#the-canvas) | A file open beside the conversation, with the lines the model means selected. Select a passage and **Ask about this** sends the selection with your message. You can edit it too: if Taurus changes a file you've been typing in, both versions are kept and you choose, and a save never overwrites a version it hasn't seen. |
+| [The terminal](docs/capabilities.md#the-commands-you-ran) | Your own shell at the bottom of the window (<kbd>Ctrl</kbd>+<kbd>`</kbd>). Each command gets a pass or fail mark, **Ask Taurus** drafts a message from a command and its output, and the model can read your recent commands while the dock is open. |
 
-- [**Permissions**](docs/safety.md#permissions): every write shows up as a diff
-  before you approve it. You can remember a decision for this project or for
-  everywhere.
-- [**Hooks**](docs/configuration.md#hooks): your own programs, run at fixed
-  points in a turn. A hook can refuse a call but never approve one.
-- [**Trusting a workspace**](docs/safety.md#trusting-a-workspace): a cloned
-  repo's own config doesn't configure your agent until you say so, and you're
-  only asked when the folder actually holds something. Next to the count, it
-  names what's *in* those files, including the parts you can't see by looking:
-  a byte that renders as nothing, a comment the renderer hides, a run of base64
-  in a file that should hold prose.
-- [**Running commands**](docs/safety.md#running-commands): a real PTY on each
-  platform, so a program that checks `isatty` behaves the way it does in your
-  terminal.
-- [**Commands that keep running**](docs/safety.md#commands-that-keep-running):
-  a cold build, a whole test suite, or a dev server gets started and left alone
-  instead of waited on. What it changes is still undoable, from the files as
-  they were before it ran.
-- [**Rewinding a turn**](docs/safety.md#rewinding-a-turn): every file a turn
-  touches is recorded first, so you can undo any turn.
-- [**Forking a turn**](docs/safety.md#forking-a-turn): try a turn again in a
-  new conversation, a different way or on a different model, and switch back
-  to the first attempt with its files whenever you like. Edit any question
-  in a fork, fork from what a review found, and compare two branches without
-  switching.
-- [**Keeping a turn**](docs/safety.md#keeping-a-turn): read a turn back as a
-  diff and commit it on its own.
-- [**Reviewing a turn**](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it):
-  hand that diff to an agent that has seen none of the conversation. An agent
-  checking its own turn looks for the mistake with the same reasoning that
-  made it. This one has never seen the code. It can read but not write, and it
-  can't know what you asked for. That's the point, and it's also the cost.
+### [Permission, and undo](docs/safety.md)
 
-**[Working with it](docs/working-with-it.md)**: what a turn looks like in use.
+What it asks before acting, and how you put things back afterwards.
 
-- [**Sessions**](docs/working-with-it.md#sessions): transcripts on disk, per
-  workspace, replayable.
-- [**Finding a conversation**](docs/working-with-it.md#finding-a-conversation):
-  ⌘K opens one box over the window. It finds every panel and action by name,
-  conversations by title, and transcripts by what was said in them. Picking a
-  hit opens the conversation *at* that hit.
-- [**Planning a long task**](docs/working-with-it.md#planning-a-long-task): a
-  plan it pins and keeps current, not one it announces once and forgets.
-- [**Showing it a picture**](docs/working-with-it.md#showing-it-a-picture):
-  paste a screenshot in.
-- [**Talking instead of typing**](docs/working-with-it.md#talking-instead-of-typing):
-  press the mic and talk. Speech becomes text on your own computer, in the box
-  for you to check before it's sent. The audio is never saved or sent
-  anywhere.
-- [**Hearing replies read aloud**](docs/working-with-it.md#hearing-replies-read-aloud):
-  the speaker beside the mic reads each reply as it streams, prose only, never
-  code or tool output. Your computer's own voice, ElevenLabs, or anything
-  shaped like OpenAI's speech endpoint.
-- [**Finding code by what it does**](docs/working-with-it.md#finding-code-by-what-it-does):
-  local semantic search, with the model run in-process or on your own server.
-- [**When a turn stops**](docs/working-with-it.md#when-a-turn-stops) and
-  [**the context window**](docs/working-with-it.md#the-context-window): what
-  ends a turn, and what it costs. The meter above the composer shows how much.
-  Click it to see what it went *on*: a row per tool, the calls that exactly
-  repeated an earlier one, and what every request pays before the conversation
-  even starts.
-- [**Tables, charts, diagrams, and questions**](docs/working-with-it.md#tables-charts-diagrams-and-questions):
-  results you're meant to *look* at sit on their own beside the text,
-  including sequence and flow diagrams. When a decision is really yours, it
-  asks and waits, and you can skip any question.
-- [**Code is colored, and so is a diff**](docs/working-with-it.md#code-is-colored-and-so-is-a-diff):
-  a fenced block is colored by its fence, a diff by the file's extension. One
-  palette covers both, and the query box too. Where one line was rewritten into
-  another, the characters that actually changed are marked inside it.
-- [**Motion that says what it is doing**](docs/working-with-it.md#motion):
-  while a turn runs, it draws a waveform shaped by the kind of work in
-  progress. A running row shows a scan, a write gutter, or an indeterminate
-  hairline. A spinner only tells you a turn is alive. This tells you what it's
-  busy with.
-- [**Working with data**](docs/working-with-it.md#working-with-data): a CSV with
-  a million rows in it isn't a file to read. Taurus loads it as a table,
-  describes every column from the whole file instead of a sample, answers
-  questions about it in SQL, and puts the rows on a pane of their own. A
-  transformation worth keeping becomes a
-  [**recipe**](docs/working-with-it.md#recipes): a chain of SQL steps committed
-  with your code. You can re-run it on next month's export, and it reports
-  what each step did to the row count.
-- [**A query box that knows your columns**](docs/working-with-it.md#writing-the-query):
-  SQL is colored as you type, and completion draws on the real schema of
-  every loaded file, not a keyword list. A column two files share is marked
-  `joins`, so you find the key to join on while you're writing the join.
+| Feature | What it is |
+|---|---|
+| [Permissions](docs/safety.md#permissions) | Every write shows up as a diff before you approve it. Remember a decision for this project or for everywhere. |
+| [Hooks](docs/configuration.md#hooks) | Your own programs, run at fixed points in a turn. A hook can refuse a call but never approve one. |
+| [Trusting a workspace](docs/safety.md#trusting-a-workspace) | A cloned repo's config does nothing until you say so. The prompt names what's *in* those files, including what you can't see by looking: a byte that renders as nothing, a hidden comment, base64 in a file that should hold prose. |
+| [Running commands](docs/safety.md#running-commands) | A real PTY on each platform, so a program that checks `isatty` behaves the way it does in your terminal. |
+| [Commands that keep running](docs/safety.md#commands-that-keep-running) | A cold build, a test suite, or a dev server is started and left alone instead of waited on. What it changes is still undoable. |
+| [Rewinding a turn](docs/safety.md#rewinding-a-turn) | Every file a turn touches is recorded first, so you can undo any turn. |
+| [Forking a turn](docs/safety.md#forking-a-turn) | Try a turn again, another way or on another model, and switch back to the first attempt with its files. Compare two branches without switching. |
+| [Keeping a turn](docs/safety.md#keeping-a-turn) | Read a turn back as a diff and commit it on its own. |
+| [Reviewing a turn](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it) | Hand that diff to an agent that has seen none of the conversation. It can read but not write, and it can't know what you asked for. That's the point, and also the cost. |
 
-![The Data pane: a profile of a 400,000-row file, with the missing values
-marked](docs/screenshots/data.png)
+### [Working with it](docs/working-with-it.md)
 
-The pane doesn't exist until a workspace has loaded something. It takes the
-center column beside the conversation instead of covering it. The box you type
-in never moves, because asking is still how anything gets here.
+What a turn looks like in use.
 
-It works both ways:
+| Feature | What it is |
+|---|---|
+| [Sessions](docs/working-with-it.md#sessions) | Transcripts on disk, per workspace, replayable. |
+| [Finding a conversation](docs/working-with-it.md#finding-a-conversation) | ⌘K finds every panel and action by name, conversations by title, and transcripts by what was said, and opens a conversation *at* the hit. |
+| [Planning a long task](docs/working-with-it.md#planning-a-long-task) | A plan it pins and keeps current, not one it announces once and forgets. |
+| [Showing it a picture](docs/working-with-it.md#showing-it-a-picture) | Paste a screenshot in. |
+| [Talking instead of typing](docs/working-with-it.md#talking-instead-of-typing) | Speech becomes text on your own computer, in the box for you to check. The audio is never saved or sent anywhere. |
+| [Hearing replies read aloud](docs/working-with-it.md#hearing-replies-read-aloud) | Each reply read as it streams, prose only. Your computer's voice, ElevenLabs, or anything shaped like OpenAI's speech endpoint. |
+| [Finding code by what it does](docs/working-with-it.md#finding-code-by-what-it-does) | Local semantic search, with the model run in-process or on your own server. |
+| [When a turn stops](docs/working-with-it.md#when-a-turn-stops) and [the context window](docs/working-with-it.md#the-context-window) | What ends a turn, and what it costs. The meter above the composer breaks it down per tool, flags exact repeat calls, and shows what every request pays before the conversation starts. |
+| [Tables, charts, diagrams, and questions](docs/working-with-it.md#tables-charts-diagrams-and-questions) | Results you're meant to look at, including sequence and flow diagrams, beside the text. Questions wait for you, and any can be skipped. |
+| [Code is colored, and so is a diff](docs/working-with-it.md#code-is-colored-and-so-is-a-diff) | One palette for fences, diffs and the query box. A rewritten line marks the characters that actually changed. |
+| [Motion that says what it is doing](docs/working-with-it.md#motion) | A waveform shaped by the kind of work in progress, not a spinner that only says the turn is alive. |
+| [Working with data](docs/working-with-it.md#working-with-data) | A CSV loaded as a table on its own pane, profiled from every row and queried in SQL. A query the model ran comes with **Run in Query**, and a failed query offers itself back with the error in the message. |
+| [Recipes](docs/working-with-it.md#recipes) | A chain of SQL steps committed with your code, re-runnable on next month's export, reporting what each step did to the row count. |
+| [A query box that knows your columns](docs/working-with-it.md#writing-the-query) | Completion from the real schema of every loaded file. A column two files share is marked `joins`. |
+| [Notes](docs/working-with-it.md#notes) | Plain Markdown files: project notes in `.taurus/notes/`, committed with the repo, and global ones in `~/.taurus/notes/`. A ```` ```mermaid ```` block is drawn by the app's own engines, offline, and says what it couldn't draw. Excalidraw **sketches** sit in the same notebook and embed with one line of Markdown. The model reads and writes notes by name, and asks before writing. |
 
-- A message sent from the pane carries what's on screen, so "which category
-  refunds most?" has something to refer to.
-- A query the model ran leaves a card in the transcript with **Run in Query**
-  on it. That asks the same question again in the pane, at full width.
-- A failed query or a failed recipe run offers itself back to Taurus with the
-  error already in the message.
+### [Configuration](docs/configuration.md)
 
-**[The canvas](docs/capabilities.md#the-canvas)**: a file open beside the
-conversation, not in place of it.
+Providers, keys, MCP servers, and web search.
 
-Ask to see a file and it opens in an editor to the right of the transcript.
-"Show me where the retry logic is" opens the file with that passage selected.
-The model passes the lines it means, so it can point instead of quoting.
-When a file needs the room, ⌘B puts the sidebar away and the arrows in the
-file's header widen the editor to everything but the conversation's floor.
-A link to a file, in an answer or a Markdown file, opens it here at the lines
-it names.
+| Feature | What it is |
+|---|---|
+| [Providers](docs/configuration.md) | Local Ollama, anything OpenAI-compatible, Anthropic, or Google Gemini. Keys live in the OS keychain or an env var, never in a config file. |
+| [Sending jobs to other models](docs/configuration.md#sending-jobs-to-other-models) | Sub-agents, reviews and drafts each on their own provider and model, so a cheap or local one does the small work. |
+| [OpenAI's reasoning models](docs/configuration.md#openais-reasoning-models) | Tools called while they reason, over the Responses API. |
+| [MCP servers](docs/configuration.md#mcp-servers) | Add and test them in the app, in the `mcpServers` format Claude Desktop uses. |
+| [Plugins](docs/configuration.md#plugins) | Skills, sub-agents, MCP servers and hooks under one name, in Claude Code's layout, from a folder or a git URL. |
+| [Themes](docs/configuration.md#themes) | Colors, typefaces, a wordmark and logo, radius and insets, in a file you can commit. A workspace can carry its own. |
 
-![A Markdown file open beside the conversation that asked for it, with the
-lines the model pointed at selected](docs/screenshots/canvas.png)
-
-Select a passage and **Ask about this** starts a sentence in the message box.
-The selection itself goes with that message: which file, which lines, and what
-they said. So "tighten this" is a complete question to the model, the same way
-it is to you looking at the screen. A chip above the box shows that while you
-type, because context you can't see is behavior you can't explain.
-
-You can type in it, and it saves a second after you stop. That's not just a
-convenience. The whole point of the canvas is that you and Taurus are looking
-at the same file. An unsaved buffer breaks that without telling you: you'd ask
-about the paragraph on screen and get an answer about the one on disk.
-
-Taurus writes files too, and neither of you waits for the other. If it changes
-the file you have open and you haven't typed anything, the editor takes the
-new version and tints what moved. If you *have* typed something, nothing gets
-replaced. Both versions are kept, and you choose which one survives.
-
-![Taurus changed the file while it was being typed in, so both versions are kept
-and neither is chosen](docs/screenshots/canvas-conflict.png)
-
-A save never overwrites a version it hasn't seen. The editor keeps a
-fingerprint of the file as it read it, and a save that no longer matches is
-refused. The race is closed at the write, not papered over.
-
-**[The terminal](docs/capabilities.md#the-commands-you-ran)**: your own shell
-at the bottom of the window, and it knows where each command starts and ends.
-
-<kbd>Ctrl</kbd>+<kbd>`</kbd> opens your shell with your own prompt and
-aliases. zsh and bash also get a few hooks that mark each command, so the
-scrollback becomes commands: a mark beside each one, green or red, and the
-last one in a strip under the tabs with its exit code. **Ask Taurus** beside
-it drafts a
-message with the command and the end of its output. While the dock is open,
-the model can read your recent commands itself, so "why did that fail?" is a
-complete question.
-
-![The terminal dock after a failed test run, with a red mark beside the
-command and Ask Taurus under the tabs](docs/screenshots/terminal-blocks.png)
-
-**[Notes](docs/working-with-it.md#notes)**: somewhere to write things down, in
-the repo or in your home directory.
-
-A **Notes** tab sits beside the conversation, holding Markdown files you write
-yourself:
-
-- A *project* note lives in `.taurus/notes/` and gets committed with the repo,
-  so a design note reaches whoever clones it.
-- A *global* note lives in `~/.taurus/notes/` and follows you between
-  projects.
-
-There's no frontmatter and no database. The name in the list is the filename,
-and the file is exactly what you typed. Type `/` at the start of a line for a
-heading, a list, a table, a diagram to start from, or one of your sketches,
-and a list carries on when you press Enter. Write and Read can sit side by
-side, a task ticks from the rendered note, and a link to another note opens
-it.
-
-![The notes pane: both notebooks in the list, one note open in an editor that
-wraps](docs/screenshots/notes.png)
-
-A ```` ```mermaid ```` block draws as a diagram. The same two engines that draw
-`show_flow` and `show_sequence` draw it, not the Mermaid library. So it uses
-the app's own palette, needs no network, and comes out the same every time.
-Those cards can already *write* Mermaid, and this is the other half of the
-round trip: copy a diagram out of a card, paste it into a note, and you get the
-same picture back.
-
-![The same note in Read, with its Mermaid fence drawn as a
-diagram](docs/screenshots/notes-diagram.png)
-
-When it can't draw something, it says so. A `gantt` or an `erDiagram` shows as
-source with a sentence explaining why, not as a broken picture or an empty
-box. A diagram it *did* draw tells you what it left out. Notes save themselves
-and never overwrite a version they haven't seen. That's the canvas's rule, and
-the canvas's code.
-
-A **sketch** is a drawing kept beside your notes, made in
-[Excalidraw](https://excalidraw.com): freehand, shapes, arrows, handwritten
-text. It's a `.excalidraw` file in the same notebook, saved the same way. A
-note shows one with a line of Markdown:
-`![How a sign-in goes](<Auth flow.excalidraw>)`. **Copy embed** on the sketch
-gives you that line. A sketch reopens at the zoom and the spot you left it.
-
-![A sketch open in the editor beside the list of notes](docs/screenshots/sketch.png)
-
-![The sketch drawn into a note that embeds it](docs/screenshots/notes-sketch.png)
-
-Ask about a note and the model reads it with `read_note`, by notebook and name
-instead of by path. A global note is outside the workspace, where `read_file`
-won't go. It can write one with `write_note`, which asks first and shows the
-diff. It can also put one in front of you with `open_note`, which draws a card
-you open yourself. It can't see a sketch, but it's told the words written on
-any sketch a note embeds.
-
-**[Configuration](docs/configuration.md)**: providers, keys, MCP servers, and
-web search.
-
-- Local Ollama, anything OpenAI-compatible, Anthropic, or Google Gemini.
-- [**Sending jobs to other models**](docs/configuration.md#sending-jobs-to-other-models):
-  sub-agents, reviews and drafts each on their own provider and model, so a
-  cheap or local one does the small work and a strong one does the work that
-  counts.
-- [**OpenAI's reasoning models**](docs/configuration.md#openais-reasoning-models)
-  call tools while they reason, over the Responses API.
-- Keys live in the OS keychain or an env var, never in a config file.
-- Everything the Settings drawer writes is a plain file the CLI reads too.
-- [**MCP servers**](docs/configuration.md#mcp-servers): add and test them in
-  the app, in the same `mcpServers` format Claude Desktop uses.
-- [**Plugins**](docs/configuration.md#plugins): skills, sub-agents, MCP
-  servers and hooks under one name, in Claude Code's layout, installed from a
-  folder or a git URL and named under the plugin so they never collide.
-- [**Themes**](docs/configuration.md#themes): fourteen colors, three
-  typefaces, a wordmark and logo, a corner radius and the column insets, in
-  a file you can commit. A
-  workspace can carry its own, so a repo can brand the app for everyone who
-  opens it.
-
-![The MCP panel](docs/screenshots/mcp.png)
-
-![Settings, Appearance](docs/screenshots/appearance.png)
+Everything the Settings drawer writes is a plain file the CLI reads too.
 
 **[Development](docs/development.md)**: tests, the live checks, the app icon,
-regenerating these screenshots, and cutting a release.
+regenerating the screenshots, and cutting a release.
 
 **[Known gaps](docs/known-gaps.md)**: what it doesn't do, written down so you
 can read about it before you run into it.
+
+## Screenshots
+
+<details>
+<summary><b>The conversation</b>: light theme, questions</summary>
+
+| | |
+|---|---|
+| ![The app in its light theme, showing a bar chart with a tab per series and a question card below it](docs/screenshots/app-light.png) | ![A question card with single-choice and multiple-choice questions and a free-text box](docs/screenshots/questions.png) |
+| The light theme: a chart with a tab per series, and the pill back to the foot of the conversation. | Questions it waits on. Skip any, or let "You decide" answer them all. |
+
+</details>
+
+<details>
+<summary><b>Data</b>: the profile pane</summary>
+
+![The Data pane: a profile of a 400,000-row file, with the missing values marked](docs/screenshots/data.png)
+
+The pane takes the center column beside the conversation instead of covering
+it, and only exists once a workspace has loaded something.
+
+</details>
+
+<details>
+<summary><b>The canvas</b>: a file beside the conversation, and a conflict</summary>
+
+| | |
+|---|---|
+| ![A Markdown file open beside the conversation that asked for it, with the lines the model pointed at selected](docs/screenshots/canvas.png) | ![Taurus changed the file while it was being typed in, so both versions are kept and neither is chosen](docs/screenshots/canvas-conflict.png) |
+| The lines the model pointed at, selected. | Taurus wrote while you typed: both versions kept, neither chosen. |
+
+</details>
+
+<details>
+<summary><b>The terminal</b>: command marks and Ask Taurus</summary>
+
+![The terminal dock after a failed test run, with a red mark beside the command and Ask Taurus under the tabs](docs/screenshots/terminal-blocks.png)
+
+</details>
+
+<details>
+<summary><b>Notes and sketches</b></summary>
+
+| | |
+|---|---|
+| ![The notes pane: both notebooks in the list, one note open in an editor that wraps](docs/screenshots/notes.png) | ![The same note in Read, with its Mermaid fence drawn as a diagram](docs/screenshots/notes-diagram.png) |
+| Both notebooks, one note open. | The same note in Read, its Mermaid fence drawn. |
+| ![A sketch open in the editor beside the list of notes](docs/screenshots/sketch.png) | ![The sketch drawn into a note that embeds it](docs/screenshots/notes-sketch.png) |
+| A sketch open beside the notes. | The sketch embedded in a note. |
+
+</details>
+
+<details>
+<summary><b>Configuration</b>: MCP servers, appearance</summary>
+
+| | |
+|---|---|
+| ![The MCP panel](docs/screenshots/mcp.png) | ![Settings, Appearance](docs/screenshots/appearance.png) |
+| The MCP panel. | Settings, Appearance. |
+
+</details>
+
+<sub>Regenerate these with `pnpm screenshots`. They're the real interface,
+driven by fixtures in headless Chrome, not photos of a running window. See
+[`scripts/screenshots/`](scripts/screenshots/capture.mjs) for why, and what
+that costs.</sub>
 
 ## How it is put together
 
