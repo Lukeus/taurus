@@ -857,6 +857,35 @@ the backlog, and they're the minority.
   recommendation are written by whichever model the conversation is on,
   reading diffs that may come from models stronger than it. The diffs are
   there to check it against, and the choice is still a button you press.
+- **In an editor, a conversation can't be reopened from the editor.**
+  `taurus acp` doesn't offer `session/load`, so the editor's history of a
+  Taurus conversation lasts as long as its panel. The transcript is kept, and
+  the app or `taurus repl --resume <id>` picks it up.
+- **The editor's MCP servers aren't started.** An editor can hand an agent MCP
+  servers of its own in `session/new`. Taurus uses the ones in its own config
+  and ignores those, rather than starting programs an editor named without
+  them going through Taurus's trust prompt.
+- **`ask_user` has nobody to ask in an editor.** ACP's way of asking a
+  structured question is an optional capability few editors have, so a
+  question the model asks there is answered "decide for yourself", as it is in
+  a piped `taurus run`.
+- **One folder at a time per `taurus acp`.** One host has one workspace.
+  Sessions in different folders each run in their own, but not at the same
+  time: a turn in a second folder waits until the turns in the first have
+  ended, and the workspace is switched only then, so no running turn has its
+  folder changed under it. Editors start one agent process per window, which
+  is usually one folder anyway.
+- **An editor that quits stops what it started.** Running turns are canceled,
+  a permission question still waiting is answered no, and anything that
+  hasn't stopped ten seconds later is dropped where it is. A command a turn
+  left running in the background is stopped with it.
+- **Pictures and plans don't reach the editor.** An image pasted in the
+  editor's prompt is left out (`promptCapabilities.image` is false), and
+  Taurus's pinned plan isn't sent as an ACP `plan` update. Both are mappings
+  nobody has written yet.
+- **Taurus doesn't host other agents.** It's an ACP agent, not an ACP client,
+  so it can't run Claude Code, Codex or Goose inside its own window with its
+  own undo record. That's the other half of the protocol, and the larger one.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
   is caught, but the calls have to match argument for argument. Say a model
   asks the same unanswerable question three slightly different ways, like

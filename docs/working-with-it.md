@@ -152,6 +152,50 @@ and the checked-out branch. See [Conversations know their branch](safety.md#conv
 The branch field defaults instead of being required, because older
 transcripts don't have it and an upgrade mustn't make them unlistable.
 
+## In your editor
+
+Taurus can run inside an editor that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com): Zed, JetBrains IDEs,
+and the others in the ACP registry. The editor starts `taurus acp` and talks to
+it over stdin and stdout. In Zed's `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Taurus": {
+      "type": "custom",
+      "command": "taurus",
+      "args": ["acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+`--provider` and `--model` after `acp` pick the model, as they do for
+`taurus run`. Without them it's the model you used last.
+
+It's the same agent as the app and the CLI, on the same host:
+
+- **Your setup comes with it.** Providers, skills, sub-agents, hooks, MCP
+  servers and the permission allowlist are all read from `~/.taurus` and the
+  workspace, so a tool you've approved in the app is approved here.
+- **Its turns stream into the editor's panel.** The answer as it's written,
+  reasoning separately, and each tool call as a card that goes from running to
+  done or failed.
+- **What it would ask about, it asks the editor.** A write shows up in the
+  editor's permission prompt with the change as a diff. **Always allow** there
+  is Taurus's own "always allow here", kept in the workspace's
+  `permissions.json`, and it's offered only where Taurus would offer it, so
+  not in a workspace you haven't trusted.
+- **Every conversation is a Taurus conversation.** It has a transcript and an
+  undo record, so `taurus sessions` lists it, `taurus rewind` undoes it, and
+  the app can open it.
+- **Slash commands work.** `/best-of`, a skill or an agent typed in the
+  editor's box runs as it would anywhere else.
+
+What it doesn't do yet is in [Known gaps](known-gaps.md).
+
 ## Finding a conversation
 
 The rail lists this workspace's conversations, today's first. That answers
