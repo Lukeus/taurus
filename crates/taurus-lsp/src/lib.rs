@@ -348,12 +348,16 @@ impl Lsp {
         if command_for(spec).is_none() {
             return Outcome::NotCovered;
         }
-        let started = tokio::time::Instant::now();
+        // Set before anything waits, starting the server and any check
+        // already running on it included: the budget is the longest this
+        // write is held up, and a check that only counted its own time
+        // would let five parallel writes wait five budgets.
+        let deadline = std::time::Instant::now() + self.budget;
         let mut slot = self.slot(spec);
         // In one statement, so the borrow `wait_for` hands back is gone before
         // the next await: held across it, it would make this future unsendable.
-        let ready = match tokio::time::timeout(
-            self.budget,
+        let ready = match tokio::time::timeout_at(
+            deadline.into(),
             slot.wait_for(|s| !matches!(s, Slot::Starting)),
         )
         .await
@@ -368,8 +372,10 @@ impl Lsp {
             Slot::Failed(reason) => return self.unavailable(server, reason),
             Slot::Starting => unreachable!("waited for"),
         };
-        let left = self.budget.saturating_sub(started.elapsed());
-        match handle.check(&path, &language_id, text, left, SETTLE).await {
+        match handle
+            .check(&path, &language_id, text, deadline, SETTLE)
+            .await
+        {
             Ok(Some(diagnostics)) => Outcome::Checked {
                 server,
                 diagnostics,

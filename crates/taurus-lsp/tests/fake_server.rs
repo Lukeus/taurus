@@ -94,3 +94,72 @@ async fn a_server_that_cannot_start_is_reported_once() {
     ));
     assert_eq!(lsp.check(&path, "x").await, Outcome::NotCovered);
 }
+
+#[tokio::test]
+async fn a_second_edit_that_still_breaks_the_file_is_still_reported() {
+    // The server publishes without versions and clears a file it's told
+    // closed. That clear, arriving during the next check, used to be read as
+    // the next edit's answer: "no errors" for a file that has one.
+    // Slow, as a real server's type pass is: the clear has to beat the real
+    // answer to be mistaken for it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.fake");
+    let spec = ServerSpec::custom(
+        "fake",
+        vec![
+            env!("CARGO_BIN_EXE_taurus-fake-lsp").to_string(),
+            "--slow".into(),
+        ],
+        vec!["fake".into()],
+        None,
+    );
+    let lsp = Lsp::new(dir.path(), vec![spec], Duration::from_secs(10));
+    for text in ["BROKEN once", "BROKEN twice"] {
+        std::fs::write(&path, text).unwrap();
+        let outcome = lsp.check(&path, text).await;
+        assert!(
+            matches!(&outcome, Outcome::Checked { diagnostics, .. } if diagnostics.len() == 1),
+            "{text}: {outcome:?}"
+        );
+    }
+    lsp.shutdown().await;
+}
+
+#[tokio::test]
+async fn parallel_writes_each_wait_at_most_the_budget() {
+    // Checks run one at a time per server. The budget is the longest one
+    // write is held up, so it has to count the wait for the others.
+    let dir = tempfile::tempdir().unwrap();
+    let spec = ServerSpec::custom(
+        "fake",
+        vec![env!("CARGO_BIN_EXE_taurus-fake-lsp").to_string()],
+        vec!["fake".into()],
+        None,
+    );
+    let budget = Duration::from_millis(1200);
+    let lsp = std::sync::Arc::new(Lsp::new(dir.path(), vec![spec], budget));
+    // Started first, so what's timed below is the checks alone.
+    let warm = dir.path().join("warm.fake");
+    std::fs::write(&warm, "fine").unwrap();
+    lsp.check(&warm, "fine").await;
+
+    let started = std::time::Instant::now();
+    let checks: Vec<_> = (0..6)
+        .map(|n| {
+            let lsp = lsp.clone();
+            let path = dir.path().join(format!("p{n}.fake"));
+            std::fs::write(&path, "fine").unwrap();
+            tokio::spawn(async move { lsp.check(&path, "fine").await })
+        })
+        .collect();
+    for check in checks {
+        check.await.unwrap();
+    }
+    // Six 400 ms settle windows back to back would be 2.4 s.
+    assert!(
+        started.elapsed() < budget + Duration::from_millis(500),
+        "took {:?}",
+        started.elapsed()
+    );
+    lsp.shutdown().await;
+}

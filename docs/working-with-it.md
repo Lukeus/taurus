@@ -1017,9 +1017,11 @@ errors gets one line saying so, which is how the model knows the check ran.
 A server that hasn't finished starting says so once, and one that can't start
 says why, once. One that answers nothing in time says nothing at all.
 
-The file is opened in the server with what was written, checked, and closed
-again, so the server goes back to reading it from disk, where a command may
-change it next.
+A file stays open in the server once it's been checked, and the next edit
+sends its new text as a numbered change. Before each check, every other open
+file is compared with the disk and sent again if a command changed it, so the
+server isn't left reasoning about a version that's gone. At most 32 files are
+kept open; past that, the one checked longest ago is closed.
 
 Which servers run, and how to add one, is in
 [Language servers](configuration.md#language-servers).

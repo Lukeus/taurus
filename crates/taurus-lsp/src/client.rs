@@ -39,6 +39,20 @@ struct Publish {
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
+/// A file this client has open in the server, and what it last sent of it.
+struct OpenDoc {
+    uri: String,
+    path: std::path::PathBuf,
+    text: String,
+    /// Which check last touched it, for closing the stalest past
+    /// [`MAX_OPEN`].
+    used: u64,
+}
+
+/// Files kept open at once. Past this the one checked longest ago is closed:
+/// each open file is text the server holds and re-analyzes.
+const MAX_OPEN: usize = 32;
+
 pub(crate) struct Server {
     stdin: Arc<tokio::sync::Mutex<ChildStdin>>,
     pending: Pending,
@@ -48,9 +62,10 @@ pub(crate) struct Server {
     alive: Arc<AtomicBool>,
     next_id: AtomicI64,
     next_version: AtomicI64,
-    /// One check at a time: a file can't be open twice, and two checks of
-    /// different files would each wait out the other's publishes.
-    checking: tokio::sync::Mutex<()>,
+    /// The files open in the server, held for the whole of a check: one
+    /// check at a time, because two would each wait out the other's
+    /// publishes. See [`Server::check`] for why files stay open.
+    checking: tokio::sync::Mutex<HashMap<String, OpenDoc>>,
     tree: tokio::sync::Mutex<Tree>,
 }
 
@@ -103,7 +118,7 @@ impl Server {
             alive,
             next_id: AtomicI64::new(1),
             next_version: AtomicI64::new(1),
-            checking: tokio::sync::Mutex::new(()),
+            checking: tokio::sync::Mutex::new(HashMap::new()),
             tree: tokio::sync::Mutex::new(tree),
         };
         let name = root
@@ -140,43 +155,75 @@ impl Server {
         self.alive.load(Ordering::SeqCst)
     }
 
-    /// Opens `path` with `text`, saves it, and returns what the server
-    /// publishes about it within `budget`. `None` when it published nothing
-    /// in time.
+    /// Sends the server `text` as what `path` now holds, saves it, and
+    /// returns what it publishes about it before `deadline`. `None` when it
+    /// published nothing in time, the wait for an earlier check included.
     ///
     /// After the first publish, waits `settle` for more: several servers
     /// publish in stages, syntax first and then types, and the later one is
-    /// the one worth having. The file is closed again afterwards, so the
-    /// server goes back to reading it from disk, where a command may change
-    /// it next.
+    /// the one worth having.
+    ///
+    /// Files stay open between checks, and a later check of one sends its
+    /// new text as a numbered change. Closing each file after its check made
+    /// servers publish an empty list for it, and on a server that doesn't
+    /// number its publishes, that empty list arriving during the next check
+    /// read as "no errors" for code that didn't compile. Kept open, a file's
+    /// text in the server would drift from the disk when a command changes
+    /// it, so every check first sends each other open file again if the disk
+    /// says it changed, and closes it if it's gone.
     pub(crate) async fn check(
         &self,
         path: &Path,
         language_id: &str,
         text: &str,
-        budget: Duration,
+        deadline: Instant,
         settle: Duration,
     ) -> Result<Option<Vec<Diagnostic>>, String> {
-        let _one = self.checking.lock().await;
-        let deadline = Instant::now() + budget;
+        let Ok(mut open) = tokio::time::timeout_at(deadline.into(), self.checking.lock()).await
+        else {
+            return Ok(None);
+        };
         let file_uri = uri::from_path(path);
         let key = uri::key(&file_uri);
-        let version = self.next_version.fetch_add(1, Ordering::SeqCst);
         let mut seq = self.seq.clone();
         let since = *seq.borrow_and_update();
+        let stamp = self.next_version.fetch_add(1, Ordering::SeqCst) as u64;
 
-        self.notify(
-            "textDocument/didOpen",
-            json!({ "textDocument": {
-                "uri": file_uri, "languageId": language_id, "version": version, "text": text
-            }}),
-        )
-        .await?;
+        self.resync(&mut open, &key).await?;
+        let version = self.next_version.fetch_add(1, Ordering::SeqCst);
+        if open.contains_key(&key) {
+            self.notify(
+                "textDocument/didChange",
+                json!({
+                    "textDocument": { "uri": file_uri, "version": version },
+                    "contentChanges": [{ "text": text }]
+                }),
+            )
+            .await?;
+        } else {
+            self.notify(
+                "textDocument/didOpen",
+                json!({ "textDocument": {
+                    "uri": file_uri, "languageId": language_id, "version": version, "text": text
+                }}),
+            )
+            .await?;
+        }
+        open.insert(
+            key.clone(),
+            OpenDoc {
+                uri: file_uri.clone(),
+                path: path.to_path_buf(),
+                text: text.to_string(),
+                used: stamp,
+            },
+        );
         self.notify(
             "textDocument/didSave",
             json!({ "textDocument": { "uri": file_uri } }),
         )
         .await?;
+        self.close_stalest(&mut open).await;
 
         let mut found: Option<Vec<Diagnostic>> = None;
         let mut until = deadline;
@@ -202,14 +249,65 @@ impl Server {
                 Ok(Err(_)) | Err(_) => break,
             }
         }
-
-        let _ = self
-            .notify(
-                "textDocument/didClose",
-                json!({ "textDocument": { "uri": file_uri } }),
-            )
-            .await;
         Ok(found)
+    }
+
+    /// Brings every open file but `except` back in line with the disk.
+    async fn resync(
+        &self,
+        open: &mut HashMap<String, OpenDoc>,
+        except: &str,
+    ) -> Result<(), String> {
+        let others: Vec<String> = open.keys().filter(|k| *k != except).cloned().collect();
+        for key in others {
+            let doc = &open[&key];
+            match tokio::fs::read_to_string(&doc.path).await {
+                Ok(now) if now == doc.text => {}
+                Ok(now) => {
+                    let version = self.next_version.fetch_add(1, Ordering::SeqCst);
+                    self.notify(
+                        "textDocument/didChange",
+                        json!({
+                            "textDocument": { "uri": doc.uri, "version": version },
+                            "contentChanges": [{ "text": now }]
+                        }),
+                    )
+                    .await?;
+                    if let Some(doc) = open.get_mut(&key) {
+                        doc.text = now;
+                    }
+                }
+                Err(_) => {
+                    let doc = open.remove(&key).expect("listed above");
+                    self.notify(
+                        "textDocument/didClose",
+                        json!({ "textDocument": { "uri": doc.uri } }),
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Closes the files checked longest ago, past [`MAX_OPEN`].
+    async fn close_stalest(&self, open: &mut HashMap<String, OpenDoc>) {
+        while open.len() > MAX_OPEN {
+            let Some(key) = open
+                .iter()
+                .min_by_key(|(_, doc)| doc.used)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+            let doc = open.remove(&key).expect("just found");
+            let _ = self
+                .notify(
+                    "textDocument/didClose",
+                    json!({ "textDocument": { "uri": doc.uri } }),
+                )
+                .await;
+        }
     }
 
     /// Asks the server to exit, then ends whatever is left of it.

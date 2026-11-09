@@ -793,9 +793,10 @@ the backlog, and they're the minority.
 - **A check is of one file, after one write.** What the server says about the
   file just written is reported. An edit that breaks a *different* file, by
   renaming a function its callers still use, is only caught when one of those
-  callers is written or the build runs. Asking about every open file would
-  mean keeping them open, and a server's view of a file kept open drifts from
-  the disk the moment a command changes it.
+  callers is written or the build runs. The server knows about the callers
+  that are open, and may have published about them, but only the file just
+  written is reported, so one edit's result doesn't list another file's
+  older problems.
 - **A server that publishes in stages may be caught partway.** After the
   first answer about a file, a check waits 400 ms for a later one, because
   several servers report syntax first and types second. rust-analyzer's
@@ -807,8 +808,9 @@ the backlog, and they're the minority.
   against the original project would report the original's state. They're
   left unchecked rather than checked wrongly.
 - **One check at a time per server.** Two writes to Rust files at once wait
-  for each other. A file can't be open twice, and two checks would each wait
-  out the other's answers.
+  for each other, because two checks would each wait out the other's answers.
+  The wait counts against the same `timeout_ms`, so a write queued behind
+  others gets whatever time is left, and no answer if none is.
 - **A server that exits stays gone until the next reload.** Its first failure
   is reported to the model, once. It isn't restarted on its own, so a server
   that crashes on startup doesn't crash again on every edit. Switching folders,

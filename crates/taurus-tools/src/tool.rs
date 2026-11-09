@@ -159,15 +159,6 @@ impl ToolError {
 /// still writes `Ok("...".into())` and never thinks about blocks.
 pub type ToolResult = Result<taurus_provider::ToolOutput, ToolError>;
 
-/// Where a tool reports what it is doing before it has a result.
-///
-/// Only worth implementing for calls long enough that silence is ambiguous. A
-/// sub-agent can work for a minute, and a card that says "running" for that
-/// long is indistinguishable from one that has hung.
-///
-/// Deliberately one method taking a rendered line, rather than the UI event
-/// type: that lives in `taurus-core`, which depends on this crate, and a tool
-/// reporting progress does not need to know how progress is drawn.
 /// Something that checks a file the file tools just wrote: in practice the
 /// workspace's language servers (`taurus-lsp`), wired in by the host.
 ///
@@ -184,6 +175,15 @@ pub trait Diagnostics: Send + Sync {
     async fn after_write(&self, path: &Path, display: &str, text: &str) -> Option<String>;
 }
 
+/// Where a tool reports what it is doing before it has a result.
+///
+/// Only worth implementing for calls long enough that silence is ambiguous. A
+/// sub-agent can work for a minute, and a card that says "running" for that
+/// long is indistinguishable from one that has hung.
+///
+/// Deliberately one method taking a rendered line, rather than the UI event
+/// type: that lives in `taurus-core`, which depends on this crate, and a tool
+/// reporting progress does not need to know how progress is drawn.
 #[async_trait]
 pub trait ToolProgress: Send + Sync {
     async fn step(&self, label: String);
