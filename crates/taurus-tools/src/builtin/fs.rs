@@ -151,6 +151,9 @@ impl Tool for ReadFile {
         if let Some(image) = read_image(&path, ctx).await? {
             return Ok(image);
         }
+        // A file read is usually a file about to be edited, and a language
+        // server takes a few seconds to start.
+        ctx.warm_diagnostics(&path);
 
         let start = input.offset.unwrap_or(1).max(1) - 1;
         let limit = input.limit.unwrap_or(default_read_lines(ctx.budget)).max(1);
@@ -559,18 +562,19 @@ impl Tool for WriteFile {
         // write into a CRLF repository does not show up as a whole-file diff.
         // On a blocking thread with the write, since both are the disk's.
         let writing = path.clone();
-        let bytes = tokio::task::spawn_blocking(move || {
+        let content = tokio::task::spawn_blocking(move || {
             let content = if uses_crlf(&writing) {
                 to_crlf(&input.content)
             } else {
                 input.content
             };
-            replace_contents(&writing, content.as_bytes()).map(|()| content.len())
+            replace_contents(&writing, content.as_bytes()).map(|()| content)
         })
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?
         .map_err(|e| ToolError::Failed(format!("cannot write {}: {e}", ctx.display(&path))))?;
-        Ok(format!("Wrote {bytes} bytes to {}", ctx.display(&path)).into())
+        let wrote = format!("Wrote {} bytes to {}", content.len(), ctx.display(&path));
+        Ok(with_diagnostics(wrote, ctx, &path, &content).await.into())
     }
 }
 
@@ -650,14 +654,29 @@ impl Tool for EditFile {
         let (updated, count) = apply_edit(&original, &input).map_err(|e| e.explain(&display))?;
 
         let writing = path.clone();
-        tokio::task::spawn_blocking(move || replace_contents(&writing, updated.as_bytes()))
-            .await
-            .map_err(|e| ToolError::Failed(e.to_string()))?
-            .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
-        Ok(match count {
-            1 => format!("Edited {display}").into(),
-            n => format!("Edited {display} ({n} replacements)").into(),
+        let updated = tokio::task::spawn_blocking(move || {
+            replace_contents(&writing, updated.as_bytes()).map(|()| updated)
         })
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?
+        .map_err(|e| ToolError::Failed(format!("cannot write {display}: {e}")))?;
+        let edited = match count {
+            1 => format!("Edited {display}"),
+            n => format!("Edited {display} ({n} replacements)"),
+        };
+        Ok(with_diagnostics(edited, ctx, &path, &updated).await.into())
+    }
+}
+
+/// `done`, followed by what the language server says about the file now.
+///
+/// In the result of the call that caused it rather than anywhere later,
+/// because that's the one place a model reads before its next edit. See
+/// `taurus-lsp`.
+async fn with_diagnostics(done: String, ctx: &ToolContext, path: &Path, text: &str) -> String {
+    match ctx.diagnose(path, text).await {
+        Some(note) => format!("{done}\n\n{note}"),
+        None => done,
     }
 }
 
@@ -1583,6 +1602,59 @@ mod tests {
             .unwrap();
         let text = std::fs::read_to_string(dir.path().join("w.txt")).unwrap();
         assert_eq!(text, "x\r\ny\r\n");
+    }
+
+    /// A checker that remembers what it was asked about and answers with it.
+    #[derive(Default)]
+    struct Checker {
+        warmed: std::sync::Mutex<Vec<std::path::PathBuf>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tool::Diagnostics for Checker {
+        fn warm(&self, path: &Path) {
+            self.warmed.lock().unwrap().push(path.to_path_buf());
+        }
+
+        async fn after_write(&self, _path: &Path, display: &str, text: &str) -> Option<String> {
+            text.contains("bad")
+                .then(|| format!("checker reports 1 error in {display}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn what_the_checker_says_follows_the_write() {
+        let (ctx, dir) = test_ctx();
+        let checker = std::sync::Arc::new(Checker::default());
+        let ctx = ctx.with_diagnostics(checker.clone());
+        std::fs::write(dir.path().join("a.txt"), "good").unwrap();
+
+        ReadFile
+            .execute(serde_json::json!({"path": "a.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(checker.warmed.lock().unwrap().len(), 1, "a read warms");
+
+        let edited = EditFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "old_string": "good", "new_string": "bad"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            edited.to_text(),
+            "Edited a.txt\n\nchecker reports 1 error in a.txt"
+        );
+
+        let wrote = WriteFile
+            .execute(
+                serde_json::json!({"path": "a.txt", "content": "fine"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrote.to_text(), "Wrote 4 bytes to a.txt");
     }
 
     #[tokio::test]

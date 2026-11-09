@@ -11,8 +11,8 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt};
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
-    with_unique_tool_ids, ChatRequest, ContentBlock, Message, Provider, Role, Spend, StopReason,
-    StreamAccumulator, StreamEvent, TokenUsage, ToolDef, ToolIds,
+    with_unique_tool_ids, ChatRequest, ContentBlock, LeakGuard, Message, Provider, Role, Spend,
+    StopReason, StreamAccumulator, StreamEvent, TokenUsage, ToolDef, ToolIds,
 };
 use taurus_tools::{
     Arrival, Effect, OutputBudget, Pending, PlanBoard, ToolContext, ToolError, ToolProgress,
@@ -58,6 +58,46 @@ struct Held {
     text: String,
     /// When this has to go, whatever else has happened by then.
     due: std::time::Instant,
+}
+
+/// What one stream event does once it has arrived: renamed if its id is
+/// taken, shown if it is text, and kept.
+///
+/// Its own function because events reach it from two places: the stream as it
+/// arrives, and what the [`LeakGuard`] was still holding when it ended.
+async fn forward(
+    mut event: StreamEvent,
+    ids: &mut ToolIds,
+    acc: &mut StreamAccumulator,
+    held: &mut Option<Held>,
+    produced_output: &mut bool,
+    ui: &mpsc::Sender<UiEvent>,
+) {
+    ids.apply(&mut event);
+    let delta = match &event {
+        StreamEvent::TextDelta { text } => Some((false, text)),
+        StreamEvent::ThinkingDelta { text } => Some((true, text)),
+        _ => None,
+    };
+    // An empty delta is not output: nothing reaches the screen. It still goes
+    // to the accumulator below, because Anthropic opens every thinking block
+    // with one so a signature has a block to land on. Counted, it would mark
+    // the attempt unretryable before an in-stream overload could arrive, on
+    // every model with thinking on.
+    if let Some((thinking, text)) = delta.filter(|(_, text)| !text.is_empty()) {
+        *produced_output = true;
+        match held {
+            // The two kinds are separate messages on screen, so a run of one
+            // cannot absorb the other.
+            Some(h) if h.thinking == thinking => h.text.push_str(text),
+            Some(_) => {
+                held.take().unwrap().send(ui).await;
+                *held = Some(Held::new(thinking, text));
+            }
+            None => *held = Some(Held::new(thinking, text)),
+        }
+    }
+    acc.push(event);
 }
 
 impl Held {
@@ -1289,6 +1329,9 @@ impl Agent {
         span: &tracing::Span,
     ) -> Result<(Message, TokenUsage, StopReason), FailedAttempt> {
         let (tx, mut rx) = mpsc::channel(128);
+        // A call written as text is a call. See `taurus_provider::leaked`.
+        let mut guard = (!request.tools.is_empty())
+            .then(|| LeakGuard::new(request.tools.iter().map(|t| t.name.clone())));
         let provider = self.provider.clone();
         let cancel = self.tools.cancel.clone();
 
@@ -1333,33 +1376,56 @@ impl Agent {
                 },
                 None => rx.recv().await,
             };
-            let Some(mut event) = arrived else { break };
-            ids.apply(&mut event);
-
-            let delta = match &event {
-                StreamEvent::TextDelta { text } => Some((false, text)),
-                StreamEvent::ThinkingDelta { text } => Some((true, text)),
-                _ => None,
+            let Some(event) = arrived else { break };
+            let events = match &mut guard {
+                Some(guard) => guard.push(event),
+                None => vec![event],
             };
-            // An empty delta is not output: nothing reaches the screen. It
-            // still goes to the accumulator below, because Anthropic opens
-            // every thinking block with one so a signature has a block to land
-            // on. Counted, it would mark the attempt unretryable before an
-            // in-stream overload could arrive, on every model with thinking on.
-            if let Some((thinking, text)) = delta.filter(|(_, text)| !text.is_empty()) {
-                produced_output = true;
-                match &mut held {
-                    // The two kinds are separate messages on screen, so a run
-                    // of one cannot absorb the other.
-                    Some(h) if h.thinking == thinking => h.text.push_str(text),
-                    Some(_) => {
-                        held.take().unwrap().send(ui).await;
-                        held = Some(Held::new(thinking, text));
-                    }
-                    None => held = Some(Held::new(thinking, text)),
-                }
+            for event in events {
+                forward(
+                    event,
+                    &mut ids,
+                    &mut acc,
+                    &mut held,
+                    &mut produced_output,
+                    ui,
+                )
+                .await;
             }
-            acc.push(event);
+        }
+
+        let joined = handle.await.unwrap_or_else(|e| {
+            Err(taurus_provider::ProviderError::Protocol(format!(
+                "stream task failed: {e}"
+            )))
+        });
+
+        // What the guard still holds, settled by how the stream ended: on a
+        // clean end, calls if it was calls; on a failure, only the prose, so a
+        // cut-off call is neither run nor shown.
+        if let Some(guard) = &mut guard {
+            let rest = if joined.is_ok() {
+                guard.finish()
+            } else {
+                guard.abandon()
+            };
+            for event in rest {
+                forward(
+                    event,
+                    &mut ids,
+                    &mut acc,
+                    &mut held,
+                    &mut produced_output,
+                    ui,
+                )
+                .await;
+            }
+            if guard.recovered() > 0 {
+                info!(
+                    calls = guard.recovered(),
+                    "read tool calls the model wrote as text"
+                );
+            }
         }
 
         // Whatever the stream ended mid-window with. Before the error is
@@ -1368,12 +1434,6 @@ impl Agent {
         if let Some(h) = held.take() {
             h.send(ui).await;
         }
-
-        let joined = handle.await.unwrap_or_else(|e| {
-            Err(taurus_provider::ProviderError::Protocol(format!(
-                "stream task failed: {e}"
-            )))
-        });
         let stop = match joined {
             Ok(stop) => stop,
             Err(error) => {

@@ -148,6 +148,9 @@ datacenter.** Every decision here is shaped around an 8k context window:
   ended. Only what the model learned comes from the model.
 - A model with no tool-calling API still calls tools, through prompted parsing.
   The core can't tell that path from the native one.
+- A model that *has* the API and writes its call into the reply anyway still
+  gets the call run. That's the usual way a small model fails in other
+  harnesses: the turn ends on a reply that is JSON, and nothing happens.
 
 It won't turn a small model into a large one. It makes a small one affordable
 to actually run an agent on. See
@@ -256,6 +259,7 @@ What it asks before acting, and how you put things back afterwards.
 | Feature | What it is |
 |---|---|
 | [Permissions](docs/safety.md#permissions) | Every write shows up as a diff before you approve it. Remember a decision for this project or for everywhere. |
+| [Checked as it's written](docs/working-with-it.md#checked-as-its-written) | After each edit, the language server you already have installed says what broke, in the result the model reads next. Only in a trusted workspace. |
 | [Hooks](docs/configuration.md#hooks) | Your own programs, run at fixed points in a turn. A hook can refuse a call but never approve one. |
 | [Trusting a workspace](docs/safety.md#trusting-a-workspace) | A cloned repo's config does nothing until you say so. The prompt names what's *in* those files, including what you can't see by looking: a byte that renders as nothing, a hidden comment, base64 in a file that should hold prose. |
 | [Running commands](docs/safety.md#running-commands) | A real PTY on each platform, so a program that checks `isatty` behaves the way it does in your terminal. |
@@ -392,6 +396,7 @@ crates/
   taurus-index/             Local semantic search: chunking, embedding, ranking
   taurus-embed/             Embedding models run in-process with candle, and their pinned downloads
   taurus-watch/             Workspace file watching that says what changed or admits it can't
+  taurus-lsp/               Language-server diagnostics for what the file tools just wrote
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-voice/             Dictation: microphone capture, whisper.cpp transcription
   taurus-speech/            Reading aloud: the speakable-text filter, voices, playback
@@ -436,6 +441,17 @@ Three things show the abstraction works, instead of just claiming it does:
   and switches to prompted tool calling. It parses `<tool_call>` blocks out of
   the text stream into the exact same events a native adapter emits, and
   `taurus-core` can't tell which path a turn took.
+- **A call written in the wrong place is still a call.** A small model offered
+  tools through the API often writes `{"name": ..., "arguments": ...}` as its
+  reply instead, sometimes in a fence, under a template's `<|python_tag|>`,
+  or in the `<tool_call>` tags its fine-tune learned. A guard on the stream
+  reads those back into calls, but only when the whole reply is calls to
+  tools the request offered, with nothing but a name and arguments in each,
+  or when a `<tool_call>` tag is followed by one.
+  Arguments that are almost JSON are repaired the same way: a fence, a
+  trailing comma or a brace too many is removed, and a truncated object is
+  never closed up. See
+  [Calls written as text](docs/working-with-it.md#calls-written-as-text).
 - **A backend that can describe itself gets asked, not configured.** Ollama
   and Anthropic both answer questions about their own models. So neither needs
   a `context_length` in `providers.json`, and neither can be told the wrong

@@ -7632,6 +7632,7 @@ dependencies = [
  "taurus-embed",
  "taurus-hooks",
  "taurus-index",
+ "taurus-lsp",
  "taurus-mcp",
  "taurus-provider",
  "taurus-provider-anthropic",
@@ -7672,6 +7673,18 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "taurus-lsp"
+version = "0.4.0"
+dependencies = [
+ "dunce",
+ "serde_json",
+ "taurus-process",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 

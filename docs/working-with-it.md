@@ -1037,6 +1037,81 @@ problem.
 One case is deliberately never retried: a request that had already started
 streaming. You've read the first half, and a retry would write it again.
 
+### Calls written as text
+
+A turn also used to stop for a reason that isn't on that list: the model
+wrote its call into the reply instead of making it. A small model offered
+tools through the API does this often. It writes
+`{"name": "read_file", "arguments": {"path": "src/main.rs"}}` as its whole
+answer, or wraps it in a ```` ```json ```` fence, or in the `<tool_call>` tags
+or `<|python_tag|>` prefix its training used. The backend's own parser misses
+it, the reply arrives as text, and the turn ends on it.
+
+Taurus reads those back into calls before the loop sees the reply. Two shapes
+count:
+
+- **The whole reply is calls.** Bare JSON, an array, one or more fenced
+  blocks, or a template prefix, and nothing else. Each call has to name a tool
+  this request offered, and carry only a name and arguments (plus `type` and
+  `id`, which some models copy from OpenAI's format). A reply that's a
+  `package.json` has other keys, so it stays a reply, and so does one naming
+  a tool that doesn't exist.
+- **A `<tool_call>` block anywhere,** prose or not around it, when a JSON
+  object comes straight after the tag and names a tool this request offered.
+  A model explaining the format writes the tag too, so the tag alone isn't
+  enough: one followed by anything else streams as the prose it is, and a
+  block naming a tool that doesn't exist stays text, tags and all.
+
+A reasoning model's thinking doesn't settle anything either way. It streams as
+it always did, and the reply after it is read as above.
+
+To know which it is, a reply that *opens* like a call is held until it ends,
+instead of streaming. That's the visible cost: an answer that starts with
+JSON, or with a `json` fence, appears all at once. Anything else is decided on
+its first characters and streams as before, including a reply that opens
+with a code block in any other language. If the stream fails partway,
+nothing that was held is shown or run, so the attempt can still be retried.
+
+The arguments of a call get the same treatment, on every path. Arguments that
+are almost JSON are repaired when the repair only *removes* something: a
+fence around the object, a trailing comma, a closing brace too many. A
+truncated object is never closed up. A `write_file` cut off at the token
+limit could be made valid JSON by adding `"}}`, and the tool would then write
+half a file without complaint. A schema error the model can answer is the
+better outcome. See [Known gaps](known-gaps.md) for what this doesn't catch.
+### Checked as it's written
+
+A small model's edits tend to fail in one way. Each looks plausible, and the
+third in a row breaks the build, and nothing says so until it runs the tests,
+if it does. A language server already knows, about a second after the write.
+
+So `write_file` and `edit_file` ask it, and the answer goes in the result of
+the call that caused it:
+
+```
+Edited src/parse.rs
+
+rust-analyzer reports 2 errors in src/parse.rs and 1 warning:
+- 41:17: mismatched types: expected `usize`, found `Option<usize>` [E0308]
+- 58:5: cannot find value `cursor` in this scope [E0425]
+```
+
+Errors are listed, at most eight, with the line, the column and the
+compiler's code. Warnings are only counted: a model asked to fix an unused
+import while its edit doesn't compile will fix the import. A file with no
+errors gets one line saying so, which is how the model knows the check ran.
+A server that hasn't finished starting says so once, and one that can't start
+says why, once. One that answers nothing in time says nothing at all.
+
+A file stays open in the server once it's been checked, and the next edit
+sends its new text as a numbered change. Before each check, every other open
+file is compared with the disk and sent again if a command changed it, so the
+server isn't left reasoning about a version that's gone. At most 32 files are
+kept open; past that, the one checked longest ago is closed.
+
+Which servers run, and how to add one, is in
+[Language servers](configuration.md#language-servers).
+
 ### One thing extends a turn
 
 A turn that changed files and never ran anything afterwards is asked, once,
