@@ -216,8 +216,8 @@ the backlog, and they're the minority.
   `old_str`, `new_str`, `file_text`) follow Copilot's documentation. Claude
   Code's format, which Copilot also reads, has run against real Claude Code
   and Codex plugins.
-- **Parts of a Claude Code plugin have nothing here to run them.** LSP
-  servers, output styles, workflows, themes, monitors, `bin/` on `PATH`, a
+- **Parts of a Claude Code plugin have nothing here to run them.** Its LSP
+  servers (Taurus runs its own, from `lsp` in settings), output styles, workflows, themes, monitors, `bin/` on `PATH`, a
   plugin's own settings, `userConfig` and dependencies. Each is listed on the
   plugin by name, with why. A plugin's `commands/` aren't on that list: each
   file in them runs as a one-file skill named `plugin:file`, the way Claude
@@ -787,6 +787,54 @@ the backlog, and they're the minority.
   call a child makes goes through the same permission engine as the parent's,
   so `tools:` is a scope, not a sandbox. A per-agent permission policy would
   be a second thing to keep in step with the first, and there isn't one.
+- **Prose followed by a fenced call is still prose.** A reply that is only a
+  call, in JSON, a fence or a template prefix, is read as one. So is a
+  `<tool_call>` block anywhere. "I'll read it now" followed by a fenced call
+  isn't: catching that would mean holding back every code block in every
+  answer until the reply ends, to see whether anything followed it. See
+  [Calls written as text](working-with-it.md#calls-written-as-text).
+- **A reply that opens like a call doesn't stream.** It's held until it ends,
+  so it can be read as calls or let through as text. An answer that is JSON
+  appears all at once. The hold gives up at 64 KB and streams the rest as
+  text, so a leaked `write_file` with a larger file in it stays text.
+- **A hosted model's JSON answer can become a call.** The guard runs whenever
+  a request offers tools, not only on local models. A reply that is exactly
+  `{"name": <an offered tool>, "arguments": {...}}` runs as that call, through
+  the same permission gate as any other. Restricting it to local backends
+  would leave out the OpenAI-compatible servers most local models are reached
+  through.
+- **Repaired arguments aren't marked.** A call whose JSON needed a trailing
+  comma removed runs as if it had been written correctly, and only the log
+  says otherwise. Nothing is added by a repair, so what runs is what the model
+  wrote, minus the characters JSON doesn't allow.
+- **Only the file tools' writes are checked.** A `sed -i`, a formatter or a
+  script the model ran changes files no language server is asked about, and
+  so does a canvas edit. The model hears about those when it builds.
+- **A check is of one file, after one write.** What the server says about the
+  file just written is reported. An edit that breaks a *different* file, by
+  renaming a function its callers still use, is only caught when one of those
+  callers is written or the build runs. The server knows about the callers
+  that are open, and may have published about them, but only the file just
+  written is reported, so one edit's result doesn't list another file's
+  older problems.
+- **A server that publishes in stages may be caught partway.** After the
+  first answer about a file, a check waits 400 ms for a later one, because
+  several servers report syntax first and types second. rust-analyzer's
+  `cargo check` pass usually takes longer than that, so what's reported is
+  rust-analyzer's own analysis, which misses some errors only the compiler
+  finds, borrow checking among them.
+- **A delegate in its own copy of the workspace isn't checked.** Its writes
+  land outside the folder the servers were started in, and checking them
+  against the original project would report the original's state. They're
+  left unchecked rather than checked wrongly.
+- **One check at a time per server.** Two writes to Rust files at once wait
+  for each other, because two checks would each wait out the other's answers.
+  The wait counts against the same `timeout_ms`, so a write queued behind
+  others gets whatever time is left, and no answer if none is.
+- **A server that exits stays gone until the next reload.** Its first failure
+  is reported to the model, once. It isn't restarted on its own, so a server
+  that crashes on startup doesn't crash again on every edit. Switching folders,
+  changing a setting, or trusting the workspace starts it over.
 - **`/best-of` compares what was kept, not how it was got.** The diffs are
   read, and each report says whether its delegate built and tested. Nothing
   runs the tests again in each copy before the comparison, because the copies

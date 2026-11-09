@@ -48,7 +48,7 @@ pub use plan::{EditRefused, PlanBoard, PlanEdit, RestoredPlan};
 pub use registry::ToolRegistry;
 pub use sweep::{Sweep, SweepCache};
 pub use taurus_process::{no_console, Programs};
-pub use tool::{Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
+pub use tool::{Diagnostics, Effect, Tool, ToolContext, ToolError, ToolProgress, ToolResult};
 pub use vault::SecretVault;
 pub use view::{Answer, Asker, Question, Step, StepState, TranscriptView, Unattended};
 

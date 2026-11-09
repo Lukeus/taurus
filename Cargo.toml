@@ -15,6 +15,7 @@ members = [
     "crates/taurus-index",
     "crates/taurus-data",
     "crates/taurus-hooks",
+    "crates/taurus-lsp",
     "crates/taurus-process",
     "crates/taurus-watch",
     "crates/taurus-embed",
@@ -48,6 +49,7 @@ taurus-mcp = { path = "crates/taurus-mcp" }
 taurus-index = { path = "crates/taurus-index" }
 taurus-data = { path = "crates/taurus-data" }
 taurus-hooks = { path = "crates/taurus-hooks" }
+taurus-lsp = { path = "crates/taurus-lsp" }
 taurus-process = { path = "crates/taurus-process" }
 taurus-watch = { path = "crates/taurus-watch" }
 taurus-embed = { path = "crates/taurus-embed" }
