@@ -236,8 +236,62 @@ h4 {
   background: radial-gradient(closest-side, color-mix(in srgb, var(--cyan) 18%, transparent), transparent);
   pointer-events: none;
 }
+/* Where the project stands, said once and quietly: above the headline, where
+   status is looked for, and out of the way of the buttons below it. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto 18px;
+  padding: 5px 14px 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--peach) 35%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--peach) 8%, var(--surface-1));
+  color: var(--text-dim);
+  font: 500 13px var(--body);
+  position: relative;
+  transition: border-color 180ms var(--ease), background 180ms var(--ease);
+}
+.status:hover {
+  border-color: color-mix(in srgb, var(--peach) 60%, var(--line));
+  background: color-mix(in srgb, var(--peach) 12%, var(--surface-1));
+  color: var(--text);
+  text-decoration: none;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--peach);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--peach) 55%, transparent);
+  animation: status-pulse 2.4s var(--ease) infinite;
+}
+.status-more {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  color: var(--peach);
+}
+@keyframes status-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--peach) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .status-more {
+    display: none;
+  }
+}
 .eyebrow {
-  display: inline-block;
+  display: block;
   font: 500 13px var(--mono);
   color: var(--cyan);
   letter-spacing: 0.04em;
@@ -268,46 +322,6 @@ h4 {
   flex-wrap: wrap;
   position: relative;
 }
-/* A note in the margin, written by hand: the one thing on the page that is
-   not finished, so it is the one thing that does not look finished. */
-.scribble {
-  --hand: "Caveat", "Bradley Hand", "Segoe Print", cursive;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 4px;
-  margin: 14px auto 0;
-  color: var(--peach);
-  font: 600 clamp(22px, 2.6vw, 27px) / 1.1 var(--hand);
-  transform: rotate(-2.5deg);
-  position: relative;
-}
-.scribble svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.scribble-arrow {
-  width: 46px;
-  height: 37px;
-  flex: none;
-  margin-top: -14px;
-}
-.scribble-text {
-  position: relative;
-  padding-top: 6px;
-}
-.scribble-line {
-  position: absolute;
-  left: -2%;
-  bottom: -9px;
-  width: 104%;
-  height: 10px;
-  opacity: 0.8;
-}
-
 .providers {
   display: flex;
   flex-wrap: wrap;
