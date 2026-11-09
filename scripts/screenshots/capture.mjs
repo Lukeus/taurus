@@ -226,6 +226,12 @@ const SHOTS = [
   // opened up. Opened from the top bar's chip, which only exists while
   // delegates are working.
   { name: "activity", shot: "activity", theme: "dark" },
+  // `/best-of` finished: three runs kept in their own copies, each still
+  // offering Apply, and the model's comparison of what each one changed.
+  { name: "best-of", shot: "best-of", theme: "dark" },
+  // An edit whose result carries the language server's error, opened, and
+  // the fix that follows it without a build in between.
+  { name: "diagnostics", shot: "diagnostics", theme: "dark" },
   // A background command, on screen while it is still the model's to read.
   // The tab strip is the whole feature — a test run that failed, a dev server
   // that will not finish on its own, and the shell they sit beside.

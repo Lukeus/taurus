@@ -13,6 +13,8 @@
  * a screenshot should show the latter.
  */
 
+import { reportFromText } from "../../src/lib/delegate";
+
 /**
  * Seconds since the epoch, read at capture time.
  *
@@ -703,6 +705,97 @@ export const MOTION_EVENTS = [
   ...EVENTS.slice(0, -2),
   say("Pulling the iteration cap out of the loop so it can be configured."),
   call("m1", "edit_file", "Edit crates/taurus-core/src/agent.rs"),
+];
+
+/**
+ * `/best-of`: one task on three models, each a coder in its own copy of the
+ * workspace, then the comparison. What the shot is of is the end of it: three
+ * cards that each still offer Apply, because nothing has been applied, and the
+ * model's table saying which one it would pick. The reports are in the shape
+ * `DelegateReport::render` writes, so the cards are rebuilt from them by the
+ * same `reportFromText` a reopened conversation uses.
+ */
+export const BEST_OF_PROMPT =
+  "/best-of ollama/qwen3:8b anthropic/claude-sonnet-5-5 gemini/gemini-3-flash -- add a --json flag to `taurus sessions`";
+
+const BEST_OF_TASK =
+  "Add a --json flag to `taurus sessions` that prints the list as a JSON array, one object per session.";
+
+const kept = (run: string, summary: string, files: string[]) =>
+  `Status: done.\n${summary}\n\nKept as run ${run}, started from 4e1c09a. It worked in a copy of the workspace, so nothing in the workspace has changed yet. Apply it with \`apply_delegate\` and run "${run}", or leave it for the user to apply from its card.\n\nFiles changed: ${files.join(", ")}`;
+
+/** A finished delegation as a live turn has it: the result, then its report. */
+const reported = (id: string, text: string) => [
+  done(id, text),
+  { type: "delegate_report", id, report: reportFromText(text) },
+];
+
+export const BEST_OF_EVENTS = [
+  say("Starting one coder per model, each in its own copy of the workspace."),
+  call("b1", "spawn_subagent", `Delegate to coder: ${BEST_OF_TASK.slice(0, 80)}`),
+  call("b2", "spawn_subagent", `Delegate to coder: ${BEST_OF_TASK.slice(0, 80)}`),
+  call("b3", "spawn_subagent", `Delegate to coder: ${BEST_OF_TASK.slice(0, 80)}`),
+  ...reported(
+    "b1",
+    kept("3f9a1c2e7b40", "Added `--json` and a `serde_json::to_string` over the session list.", [
+      "crates/taurus-cli/src/sessions.rs",
+    ]),
+  ),
+  ...reported(
+    "b2",
+    kept(
+      "a81d5e09c3f2",
+      "Added `--json` with a `SessionRow` struct, so the shape is fixed, and a test for it.",
+      ["crates/taurus-cli/src/sessions.rs", "crates/taurus-cli/src/main.rs", "crates/taurus-cli/tests/sessions.rs"],
+    ),
+  ),
+  ...reported(
+    "b3",
+    kept("c07e44b19d58", "Added `--json`. Tests pass.", [
+      "crates/taurus-cli/src/sessions.rs",
+      "crates/taurus-cli/src/main.rs",
+    ]),
+  ),
+  call("b4", "compare_delegates", "Compare what 3 delegate runs changed"),
+  done("b4", "…"),
+  say(
+    [
+      "All three built. Here is what each one actually changed:",
+      "",
+      "| Model | Files | Builds · tests | What it got wrong |",
+      "| --- | --- | --- | --- |",
+      "| `qwen3:8b` | 1 | ✓ · no test added | Serializes the internal `Session`, so the output changes whenever that struct does |",
+      "| `claude-sonnet-5-5` | 3 | ✓ · 1 new test | Nothing I found |",
+      "| `gemini-3-flash` | 2 | ✓ · ✓ | Prints one object per line, not an array |",
+      "",
+      "I'd apply **claude-sonnet-5-5**: it's the only one with a fixed output shape and a test that holds it there. Apply it from its card when you're ready.",
+    ].join("\n"),
+  ),
+];
+
+/**
+ * An edit checked by the workspace's language server. The first edit comes
+ * back with rust-analyzer's error in its result, in the shape
+ * `taurus_lsp` writes it, and the model fixes it in the next call without
+ * running a build. The shot opens that first result, because the error inside
+ * it is the feature.
+ */
+export const DIAGNOSTICS_PROMPT = "Make the export command take the output path as a &Path instead of a String.";
+
+export const DIAGNOSTICS_EVENTS = [
+  say("Changing the signature and its one caller."),
+  call("l1", "edit_file", "Edit crates/taurus-cli/src/export.rs"),
+  done(
+    "l1",
+    "Edited crates/taurus-cli/src/export.rs (2 replacements)\n\nrust-analyzer reports 1 error in crates/taurus-cli/src/export.rs:\n- 48:22: mismatched types: expected `&Path`, found `&String` [E0308]",
+  ),
+  say("rust-analyzer caught the caller on line 48 still passing the `String`. Fixing that."),
+  call("l2", "edit_file", "Edit crates/taurus-cli/src/export.rs"),
+  done(
+    "l2",
+    "Edited crates/taurus-cli/src/export.rs\n\nrust-analyzer: no errors in crates/taurus-cli/src/export.rs.",
+  ),
+  say("Done. `export` now takes `&Path`, and rust-analyzer reports no errors in the file."),
 ];
 
 /*

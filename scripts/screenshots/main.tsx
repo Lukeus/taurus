@@ -35,7 +35,11 @@ import {
   DATASETS,
   DATA_EVENTS,
   DATA_PROFILE,
+  BEST_OF_EVENTS,
+  BEST_OF_PROMPT,
   DATA_PROMPT,
+  DIAGNOSTICS_EVENTS,
+  DIAGNOSTICS_PROMPT,
   DATA_QUERY,
   DATA_TABLES,
   EVENTS,
@@ -535,20 +539,29 @@ requestAnimationFrame(() => {
       entries: (
         shot === "motion"
           ? MOTION_EVENTS
-          : shot.startsWith("query")
-            ? DATA_EVENTS
-            : shot.startsWith("canvas")
-              ? DOCUMENT_EVENTS
-              : EVENTS
+          : shot === "best-of"
+            ? BEST_OF_EVENTS
+            : shot === "diagnostics"
+              ? DIAGNOSTICS_EVENTS
+              : shot.startsWith("query")
+                ? DATA_EVENTS
+                : shot.startsWith("canvas")
+                  ? DOCUMENT_EVENTS
+                  : EVENTS
       ).reduce(reduce, [
         {
           kind: "user",
           id: "u1",
-          text: shot.startsWith("query")
-            ? DATA_PROMPT
-            : shot.startsWith("canvas")
-              ? DOCUMENT_PROMPT
-              : PROMPT,
+          text:
+            shot === "best-of"
+              ? BEST_OF_PROMPT
+              : shot === "diagnostics"
+                ? DIAGNOSTICS_PROMPT
+                : shot.startsWith("query")
+                  ? DATA_PROMPT
+                  : shot.startsWith("canvas")
+                    ? DOCUMENT_PROMPT
+                    : PROMPT,
         },
       ] as never),
       // The dialog is state, not a route, so seeding it is all it takes to
@@ -578,11 +591,19 @@ requestAnimationFrame(() => {
       // a conversation about something else — the transcript and the header
       // would visibly disagree. The other data shots show the pane, where
       // there is no transcript to disagree with, so they keep the default.
-      ...(shot.startsWith("query")
+      ...(shot.startsWith("query") || shot === "best-of" || shot === "diagnostics"
         ? {
             sessions: SESSIONS.map((session, index) =>
               index === 0
-                ? { ...session, title: "Which category people finish" }
+                ? {
+                    ...session,
+                    title:
+                      shot === "best-of"
+                        ? "A --json flag, three ways"
+                        : shot === "diagnostics"
+                          ? "Export takes a &Path"
+                          : "Which category people finish",
+                  }
                 : session,
             ) as never,
           }
@@ -1109,6 +1130,23 @@ requestAnimationFrame(() => {
       // on hover or focus, which no scene does, and a picture of a hover is a
       // picture of one moment of it. It is checked against a real browser
       // instead; `Tooltip.tsx` says what that check covers.
+      // Three kept runs, none applied, and the comparison under them. Framed
+      // from the end, so the table and the Apply buttons above it share it.
+      "best-of": async () => {
+        await until(() => document.querySelector(".run-row-kept"));
+        const table = await until(() => document.querySelector(".transcript table"));
+        // The model's last sentence, under the table, is the recommendation.
+        const last = [...document.querySelectorAll(".transcript p")].pop() ?? table;
+        last.scrollIntoView({ block: "end" });
+        if (transcript) transcript.scrollTop += 40;
+      },
+      // The first edit's result opened, because the error inside it is the
+      // feature: the row alone reads "✓" either way.
+      diagnostics: async () => {
+        (await click(".run-row-head", (b) => b.includes("Edit")))();
+        await until(() => document.querySelector(".run-row .tool-output"));
+        transcript?.scrollTo({ top: 0 });
+      },
       activity: async () => {
         const now = Date.now();
         const call = (id: string, agent: string, task: string, status: "running" | "ok") => ({

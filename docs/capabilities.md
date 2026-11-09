@@ -608,6 +608,9 @@ It isn't a separate machine. It's the parts above, put together:
    **Kept in its own copy** card, and **Apply to workspace** on the one you
    want is the choice.
 
+![Three coders kept in their own copies of the workspace, each with Apply to
+workspace, and the model's table comparing what each one changed](screenshots/best-of.png)
+
 Each report says which model it ran on, so a card you come back to later
 still says which was which.
 
