@@ -391,7 +391,10 @@ impl StreamAccumulator {
         let parsed = if call.json.trim().is_empty() {
             Some(serde_json::json!({}))
         } else {
-            serde_json::from_str(&call.json).ok()
+            // Repaired only where nothing is added; see `crate::repair`.
+            serde_json::from_str(&call.json)
+                .ok()
+                .or_else(|| crate::repair::repair_json(&call.json))
         };
         match (parsed, self.blocks.get_mut(call.index)) {
             (Some(value), Some(ContentBlock::ToolUse { input, .. })) => *input = value,

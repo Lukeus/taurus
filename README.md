@@ -147,6 +147,9 @@ datacenter.** Every decision here is shaped around an 8k context window:
   ended. Only what the model learned comes from the model.
 - A model with no tool-calling API still calls tools, through prompted parsing.
   The core can't tell that path from the native one.
+- A model that *has* the API and writes its call into the reply anyway still
+  gets the call run. That's the usual way a small model fails in other
+  harnesses: the turn ends on a reply that is JSON, and nothing happens.
 
 It won't turn a small model into a large one. It makes a small one affordable
 to actually run an agent on. See
@@ -434,6 +437,16 @@ Three things show the abstraction works, instead of just claiming it does:
   and switches to prompted tool calling. It parses `<tool_call>` blocks out of
   the text stream into the exact same events a native adapter emits, and
   `taurus-core` can't tell which path a turn took.
+- **A call written in the wrong place is still a call.** A small model offered
+  tools through the API often writes `{"name": ..., "arguments": ...}` as its
+  reply instead, sometimes in a fence, under a template's `<|python_tag|>`,
+  or in the `<tool_call>` tags its fine-tune learned. A guard on the stream
+  reads those back into calls, but only when the whole reply is calls to
+  tools the request offered, with nothing but a name and arguments in each.
+  Arguments that are almost JSON are repaired the same way: a fence, a
+  trailing comma or a brace too many is removed, and a truncated object is
+  never closed up. See
+  [Calls written as text](docs/working-with-it.md#calls-written-as-text).
 - **A backend that can describe itself gets asked, not configured.** Ollama
   and Anthropic both answer questions about their own models. So neither needs
   a `context_length` in `providers.json`, and neither can be told the wrong
