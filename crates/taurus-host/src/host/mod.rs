@@ -174,7 +174,7 @@ pub struct Host {
     /// when it is not. Every message asks for its conversation's provider, so
     /// building one per call put that read on every turn. See
     /// [`Self::provider`].
-    built: std::sync::Mutex<BuiltProviders>,
+    built: Arc<std::sync::Mutex<BuiltProviders>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
     /// The standing brief for this machine and this workspace. Held rather
@@ -379,7 +379,7 @@ impl Host {
         Self {
             worktrees,
             providers: RwLock::new(providers),
-            built: std::sync::Mutex::new(BuiltProviders::default()),
+            built: Arc::default(),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             // The one line in the harness that names a data engine. Everything

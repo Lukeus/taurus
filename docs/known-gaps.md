@@ -796,12 +796,15 @@ the backlog, and they're the minority.
   local models run one after the other at best, and a run's time says more
   about the queue than the model. Mixing one local model with hosted ones is
   where it pays.
-- **A `/best-of` run's model isn't checked until it starts.** A typo in a
-  model name on an existing provider fails that one delegate, with the
-  backend's own error on its card. A provider id that doesn't exist is read as
-  a model name on the conversation's provider, for the reason
+- **A `/best-of` run's model name isn't checked until it starts.** The
+  provider is: a provider with no key, or a name within two letters of a
+  configured provider's id (`anthropc/…`), is refused before any copy of the
+  workspace is made. A typo in the model itself fails that one delegate, with
+  the backend's own error on its card, because only the backend knows which
+  models it has. A prefix nowhere near a provider's id is read as part of a
+  model name on the conversation's provider, for the reason
   [One task on several models](capabilities.md#one-task-on-several-models)
-  gives, and fails the same way.
+  gives.
 - **The comparison is the conversation's model's judgment.** The table and the
   recommendation are written by whichever model the conversation is on,
   reading diffs that may come from models stronger than it. The diffs are
