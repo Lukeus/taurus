@@ -835,6 +835,28 @@ the backlog, and they're the minority.
   is reported to the model, once. It isn't restarted on its own, so a server
   that crashes on startup doesn't crash again on every edit. Switching folders,
   changing a setting, or trusting the workspace starts it over.
+- **`/best-of` compares what was kept, not how it was got.** The diffs are
+  read, and each report says whether its delegate built and tested. Nothing
+  runs the tests again in each copy before the comparison, because the copies
+  are gone by then: each is a commit once its delegate stops. A run worth
+  trusting more than its report says can be applied and tested, and rewound.
+- **The models in a `/best-of` share the machine.** On one local GPU, two
+  local models run one after the other at best, and a run's time says more
+  about the queue than the model. Mixing one local model with hosted ones is
+  where it pays.
+- **A `/best-of` run's model name isn't checked until it starts.** The
+  provider is: a provider with no key, or a name within two letters of a
+  configured provider's id (`anthropc/…`), is refused before any copy of the
+  workspace is made. A typo in the model itself fails that one delegate, with
+  the backend's own error on its card, because only the backend knows which
+  models it has. A prefix nowhere near a provider's id is read as part of a
+  model name on the conversation's provider, for the reason
+  [One task on several models](capabilities.md#one-task-on-several-models)
+  gives.
+- **The comparison is the conversation's model's judgment.** The table and the
+  recommendation are written by whichever model the conversation is on,
+  reading diffs that may come from models stronger than it. The diffs are
+  there to check it against, and the choice is still a button you press.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
   is caught, but the calls have to match argument for argument. Say a model
   asks the same unanswerable question three slightly different ways, like

@@ -102,6 +102,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
     taurus_tools::builtin::terminal::READ_TERMINAL_TOOL,
     taurus_core::APPLY_TOOL,
+    taurus_core::COMPARE_TOOL,
     crate::memory::REMEMBER_TOOL,
     crate::notebook::OPEN_NOTE_TOOL,
 ];
@@ -173,7 +174,7 @@ pub struct Host {
     /// when it is not. Every message asks for its conversation's provider, so
     /// building one per call put that read on every turn. See
     /// [`Self::provider`].
-    built: std::sync::Mutex<BuiltProviders>,
+    built: Arc<std::sync::Mutex<BuiltProviders>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
     /// The standing brief for this machine and this workspace. Held rather
@@ -406,7 +407,7 @@ impl Host {
         Self {
             worktrees,
             providers: RwLock::new(providers),
-            built: std::sync::Mutex::new(BuiltProviders::default()),
+            built: Arc::default(),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             // The one line in the harness that names a data engine. Everything

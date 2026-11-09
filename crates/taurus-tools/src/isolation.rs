@@ -203,4 +203,15 @@ pub trait Isolation: Send + Sync {
         recorder: Option<&crate::checkpoint::TurnRecorder>,
         dry_run: bool,
     ) -> Result<ApplyPlan, String>;
+
+    /// What `run` kept, as a unified diff against the commit it started from,
+    /// with a `--stat` summary first. Read-only. `session` has to be the
+    /// conversation the run was made in, as for [`Self::apply`].
+    ///
+    /// Defaulted, because a provider that keeps nothing to diff has nothing to
+    /// say here, and saying so is the right answer.
+    async fn diff(&self, run: &str, session: Option<&str>) -> Result<String, String> {
+        let _ = session;
+        Err(format!("run {run}'s changes can't be shown here"))
+    }
 }

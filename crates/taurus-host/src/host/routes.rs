@@ -195,18 +195,7 @@ impl Host {
             .provider_config(id)
             .await
             .ok_or_else(|| format!("no provider configured with id '{id}'"))?;
-        if !needs_key(&config) {
-            return Ok(config);
-        }
-        let asked = config.clone();
-        let status = tokio::task::spawn_blocking(move || asked.key_status())
-            .await
-            .map_err(|e| format!("checking the key for '{id}' failed: {e}"))?;
-        if status == secrets::KeyStatus::Missing {
-            return Err(format!(
-                "'{id}' has no API key. Add one under Settings › Models"
-            ));
-        }
+        has_key(&config).await?;
         Ok(config)
     }
 }
@@ -222,4 +211,23 @@ fn needs_key(config: &ProviderConfig) -> bool {
         }
         ProviderKind::Ollama => false,
     }
+}
+
+/// Refuses a provider that can't answer anything because its key is
+/// missing, with the sentence that says where to add one.
+pub(super) async fn has_key(config: &ProviderConfig) -> Result<(), String> {
+    if !needs_key(config) {
+        return Ok(());
+    }
+    let id = config.id.clone();
+    let asked = config.clone();
+    let status = tokio::task::spawn_blocking(move || asked.key_status())
+        .await
+        .map_err(|e| format!("checking the key for '{id}' failed: {e}"))?;
+    if status == secrets::KeyStatus::Missing {
+        return Err(format!(
+            "'{id}' has no API key. Add one under Settings › Models"
+        ));
+    }
+    Ok(())
 }

@@ -577,6 +577,48 @@ two writers at once on a live model, and then a turn that applies them. On
 left the workspace untouched. Asked to run both at once and then apply them,
 the parent did both in 2 of 2 turns.
 
+### One task on several models
+
+Which model is good at *this* task is a question nobody answers well in
+advance, and with a provider-agnostic harness it's one you can just try:
+
+```
+/best-of ollama/qwen3:8b ollama/gemma3:27b anthropic/claude-sonnet-5-5 -- add a --json flag to the export command
+```
+
+Two to six models, then `--`, then the task. A model is named
+`provider/model`, using the provider's id from `providers.json`, or as a bare
+model on the conversation's own provider. A name whose first part isn't a
+configured provider is read as one model, so `meta-llama/Llama-3.3-70B` on an
+OpenAI-compatible server still means that model.
+
+It isn't a separate machine. It's the parts above, put together:
+
+1. One `coder` per model, in the background, each with `model` set and each
+   in its own copy of the workspace, all with the same task. They run as many
+   at once as [How many run at once](#how-many-run-at-once) allows, and the
+   rest queue.
+2. When every report is in, `compare_delegates` reads what each one *kept*,
+   as a diff per run, so the comparison is of the work and not of the reports.
+   It's read-only, and it never runs the repository's own diff program
+   (`diff.external`, a textconv filter), because showing a diff shouldn't run
+   anything.
+3. The answer is a table (model, files changed, whether it built and tested,
+   what it got wrong) and a recommendation. Nothing is applied. Each run is a
+   **Kept in its own copy** card, and **Apply to workspace** on the one you
+   want is the choice.
+
+Each report says which model it ran on, so a card you come back to later
+still says which was which.
+
+The model can do this without the command too. `spawn_subagent` takes a
+`model`, so "try that on the big model as well" is something it can act on.
+The model named in a delegation comes before the agent's own route, which
+comes before the conversation's model.
+
+A skill or agent you've named `best-of` keeps the name. The command is
+Taurus's own and comes last.
+
 ### Watching delegates work
 
 The transcript keeps a delegation as one call and its report. To see what a
@@ -847,6 +889,11 @@ scoping, the same permission gate, and the same depth cap.
 has already established. That's what "now do that part with the explorer"
 means. Both built-ins are reachable this way on a machine with no agents
 directory.
+
+One command is Taurus's own: `/best-of`, tagged **builtin**, which runs a task
+on several models at once. See
+[One task on several models](#one-task-on-several-models). It comes after
+both libraries, so a skill or agent with its name runs instead.
 
 If a skill and an agent share a name, the command runs the skill. That isn't a
 judgment about which is more useful. A command that quietly starts doing

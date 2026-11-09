@@ -28,7 +28,18 @@ pub enum CommandKind {
     /// labeled for what its author wrote. See [`taurus_skills::command_file`].
     Command,
     Agent,
+    /// One of Taurus's own, like `/best-of`. Named after every skill and
+    /// agent, so one of yours with the same name runs instead.
+    Builtin,
 }
+
+/// `/best-of`: one task, run on several models at once, then compared.
+pub const BEST_OF: &str = "best-of";
+
+/// Fewest and most models `/best-of` takes. One isn't a comparison, and past
+/// six the comparison is a reading list (see `taurus_core::compare`).
+const BEST_OF_MIN: usize = 2;
+const BEST_OF_MAX: usize = 6;
 
 impl CommandKind {
     fn of(skill: &taurus_skills::Skill) -> Self {
@@ -82,6 +93,9 @@ pub enum CommandError {
          commands."
     )]
     DelegationDisabled { name: String, tool: &'static str },
+
+    #[error("{usage}")]
+    Usage { name: String, usage: String },
 }
 
 /// The two rosters a `/name` is resolved against.
@@ -139,6 +153,22 @@ impl Rosters<'_> {
             });
         }
 
+        // Last of the three, so an agent or skill called `best-of` keeps its
+        // name.
+        if name == BEST_OF && skill.is_none() {
+            if !self.can_delegate {
+                return Err(CommandError::DelegationDisabled {
+                    name: BEST_OF.into(),
+                    tool: taurus_core::SPAWN_TOOL,
+                });
+            }
+            return Ok(Invocation {
+                name: BEST_OF.into(),
+                kind: CommandKind::Builtin,
+                prompt: best_of(args)?,
+            });
+        }
+
         if skill.is_some() {
             return Err(CommandError::NotUserInvocable {
                 name: name.to_string(),
@@ -192,9 +222,68 @@ impl Rosters<'_> {
                 })
                 .collect();
             out.extend(agents);
+            if !out.iter().any(|c| c.name == BEST_OF) {
+                out.push(CommandSummary {
+                    name: BEST_OF.into(),
+                    kind: CommandKind::Builtin,
+                    when_to_use: "Run one task on several models at once, each in its own copy \
+                                  of the workspace, and compare what they changed."
+                        .into(),
+                    argument_hint: Some("<model> <model> … -- <task>".into()),
+                });
+            }
         }
         out
     }
+}
+
+/// The prompt `/best-of a b -- task` expands to.
+///
+/// The work is all tool calls the model already has: a background `coder` per
+/// model, each in a copy of the workspace, then `compare_delegates` over what
+/// they kept. Nothing is applied: choosing is the person's, from the cards.
+fn best_of(args: &str) -> Result<String, CommandError> {
+    let usage = || CommandError::Usage {
+        name: BEST_OF.into(),
+        usage: format!(
+            "Usage: /{BEST_OF} <model> <model> … -- <task>. Name {BEST_OF_MIN} to {BEST_OF_MAX} \
+             models, as provider/model or a model on this conversation's provider, then `--` \
+             and the task. For example: /{BEST_OF} ollama/qwen3:8b anthropic/claude-sonnet-5-5 \
+             -- add a --json flag to the export command"
+        ),
+    };
+    let (models, task) = args.split_once("--").ok_or_else(usage)?;
+    let task = task.trim();
+    let mut names: Vec<&str> = Vec::new();
+    for model in models.split([' ', ',']).map(str::trim) {
+        if !model.is_empty() && !names.contains(&model) {
+            names.push(model);
+        }
+    }
+    if task.is_empty() || names.len() < BEST_OF_MIN || names.len() > BEST_OF_MAX {
+        return Err(usage());
+    }
+    let tool = taurus_core::SPAWN_TOOL;
+    let coder = taurus_agents::builtin::CODER;
+    let compare = taurus_core::COMPARE_TOOL;
+    let list = names
+        .iter()
+        .map(|m| format!("`{m}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        "Try this task on each of these models, then compare what they did: {list}.\n\n\
+         1. In one round, call `{tool}` once per model, with agent_type \"{coder}\", \
+         background: true, and `model` set to that model. Give every one the same prompt: the \
+         whole task below, word for word, plus anything from this conversation it needs, \
+         since it sees none of it. Each works in its own copy of the workspace.\n\
+         2. Wait for every report. Don't apply any of them.\n\
+         3. Call `{compare}` with every run the reports name (\"Kept as run …\").\n\
+         4. Answer with a table: model, files changed, whether it built and its tests passed, \
+         and what it got wrong. Then say which one you'd apply and why. Leave applying it to \
+         me.\n\n\
+         Task:\n{task}"
+    ))
 }
 
 /// The prompt an `/agent-name` expands to.
@@ -348,6 +437,57 @@ mod tests {
                 can_delegate: true,
             }
         }
+    }
+
+    #[test]
+    fn best_of_runs_one_coder_per_model_and_compares_them() {
+        let fixture = Fixture::new(|_, _| {});
+        let invocation = fixture
+            .rosters()
+            .expand("/best-of ollama/qwen3:8b, anthropic/claude-sonnet-5-5 -- add a --json flag")
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.kind, CommandKind::Builtin);
+        let prompt = invocation.prompt;
+        assert!(prompt.contains("`ollama/qwen3:8b`, `anthropic/claude-sonnet-5-5`"));
+        assert!(prompt.contains("agent_type \"coder\""));
+        assert!(prompt.contains(taurus_core::COMPARE_TOOL));
+        // The task keeps its own `--`.
+        assert!(prompt.ends_with("Task:\nadd a --json flag"), "{prompt}");
+    }
+
+    #[test]
+    fn best_of_without_two_models_and_a_task_explains_itself() {
+        let fixture = Fixture::new(|_, _| {});
+        for text in [
+            "/best-of",
+            "/best-of a b",
+            "/best-of a -- task",
+            "/best-of a b --",
+            "/best-of a b c d e f g -- task",
+        ] {
+            let err = fixture.rosters().expand(text).unwrap().unwrap_err();
+            assert!(
+                err.to_string().starts_with("Usage: /best-of"),
+                "{text}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn best_of_is_offered_and_a_skill_with_its_name_wins() {
+        let fixture = Fixture::new(|_, _| {});
+        let rows = fixture.rosters().summaries();
+        assert!(rows
+            .iter()
+            .any(|c| c.name == BEST_OF && c.kind == CommandKind::Builtin));
+
+        let fixture =
+            Fixture::new(|skills, _| write_skill(skills, "best-of", "My own best-of.", ""));
+        let invocation = fixture.rosters().expand("/best-of x").unwrap().unwrap();
+        assert_eq!(invocation.kind, CommandKind::Skill);
+        let rows = fixture.rosters().summaries();
+        assert_eq!(rows.iter().filter(|c| c.name == BEST_OF).count(), 1);
     }
 
     #[test]

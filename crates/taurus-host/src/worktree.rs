@@ -1263,6 +1263,53 @@ impl Isolation for Worktrees {
     ) -> Result<ApplyPlan, String> {
         self.apply_run(run, session, recorder, dry_run).await
     }
+
+    async fn diff(&self, run: &str, session: Option<&str>) -> Result<String, String> {
+        self.diff_run(run, session).await
+    }
+}
+
+impl Worktrees {
+    /// What run `run` kept, as a `--stat` summary and then the patch, with
+    /// paths relative to the workspace that asked. See [`Isolation::diff`].
+    ///
+    /// With `--no-ext-diff` and `--no-textconv`: either would have git run a
+    /// program the repository's config names, and showing a diff shouldn't
+    /// run anything.
+    async fn diff_run(&self, run: &str, session: Option<&str>) -> Result<String, String> {
+        let record = self.record(run)?;
+        if record.session.as_deref() != session {
+            return Err(format!(
+                "Run {run} belongs to another conversation, so it can't be shown in this one."
+            ));
+        }
+        match record.state {
+            State::Running => return Err(format!("Run {run} is still working.")),
+            State::Empty => return Ok(String::new()),
+            State::Kept | State::Applied | State::Discarded => {}
+        }
+        let Some(result) = record.result.as_deref() else {
+            return Ok(String::new());
+        };
+        let relative = format!("--relative={}", record.prefix);
+        let mut args = vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+        ];
+        if !record.prefix.is_empty() {
+            args.push(&relative);
+        }
+        let mut stat = args.clone();
+        stat.extend(["--stat", record.base.as_str(), result]);
+        let mut patch = args;
+        patch.extend([record.base.as_str(), result]);
+        let summary = self.git(&record.top, &stat, &[]).await?;
+        let body = self.git(&record.top, &patch, &[]).await?;
+        Ok(format!("{}\n{}", summary.trim_end(), body))
+    }
 }
 
 /// The first folder on the way from `workspace` to `inside`'s file that is a

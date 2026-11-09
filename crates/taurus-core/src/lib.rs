@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod apply;
+pub mod compare;
 pub mod event;
 pub mod finish;
 pub mod propose;
@@ -16,6 +17,7 @@ pub mod testing;
 
 pub use agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
 pub use apply::{ApplyDelegate, APPLY_TOOL};
+pub use compare::{CompareDelegates, COMPARE_TOOL};
 pub use event::UiEvent;
 pub use finish::FINISH_TOOL;
 pub use propose::{ProposeAgent, PROPOSE_AGENT_TOOL};
@@ -24,5 +26,7 @@ pub use session::{
     estimate_block, estimate_message, estimate_tokens, owed_results, Cause, Interrupted, Session,
     TrimRules, Trimmed, CEILING_CONTINUE_PROMPT, CONTINUE_PROMPT, MAX_ATTEMPTS,
 };
-pub use subagent::{AgentModel, ModelOverrides, SpawnSubagent, SubagentRecorder, SPAWN_TOOL};
+pub use subagent::{
+    AgentModel, ModelOverrides, ModelResolver, SpawnSubagent, SubagentRecorder, SPAWN_TOOL,
+};
 pub use telemetry::Capture;

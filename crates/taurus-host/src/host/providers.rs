@@ -22,22 +22,7 @@ impl Host {
             .provider_config(id)
             .await
             .ok_or_else(|| format!("no provider configured with id '{id}'"))?;
-        // The keychain read itself, and so off the runtime: it blocks for as
-        // long as the OS takes to answer, which with a locked keychain is as
-        // long as its dialog stays open.
-        let lookup = config.clone();
-        let key = tokio::task::spawn_blocking(move || lookup.api_key())
-            .await
-            .map_err(|e| format!("reading the API key for '{id}' failed: {e}"))?;
-        let provider = Self::build_provider(config, key);
-
-        let mut built = self.built();
-        // Kept only if nothing was forgotten while it was being built: one
-        // built from a config a reload has just replaced must not outlive it.
-        if built.generation == generation {
-            built.providers.insert(id.to_string(), provider.clone());
-        }
-        Ok(provider)
+        build_and_keep(&self.built, generation, config).await
     }
 
     /// [`Self::provider`], for the start of a turn: config edited by hand since
@@ -83,10 +68,14 @@ impl Host {
     }
 
     pub(super) fn built(&self) -> std::sync::MutexGuard<'_, BuiltProviders> {
-        // A panic while this was held leaves a map, not a broken invariant.
-        self.built
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock_built(&self.built)
+    }
+
+    /// The cache [`Self::provider`] keeps, for something that resolves
+    /// providers on the host's behalf after the call that made it has
+    /// returned: a delegation that names its own model.
+    pub(super) fn built_cache(&self) -> Arc<std::sync::Mutex<BuiltProviders>> {
+        self.built.clone()
     }
 
     /// What [`Self::provider`] builds, from a config and the key it resolved.
@@ -414,4 +403,49 @@ impl Provider for DeferredProvider {
     ) -> taurus_provider::Result<Vec<taurus_provider::RerankScore>> {
         self.get().await?.rerank(model, query, documents).await
     }
+}
+
+fn lock_built(
+    built: &std::sync::Mutex<BuiltProviders>,
+) -> std::sync::MutexGuard<'_, BuiltProviders> {
+    // A panic while this was held leaves a map, not a broken invariant.
+    built
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The provider `config` describes, from `built` when it's there and built
+/// and kept there when not. [`Host::provider`]'s work, shared with what
+/// resolves a delegation's model so both reuse one connection and one
+/// keychain read per provider.
+///
+/// `generation` is the cache's as the caller found it: a provider built from
+/// a config a reload has replaced since must not outlive it.
+pub(super) async fn build_and_keep(
+    built: &std::sync::Mutex<BuiltProviders>,
+    generation: u64,
+    config: ProviderConfig,
+) -> Result<Arc<dyn Provider>, String> {
+    let id = config.id.clone();
+    if let Some(provider) = lock_built(built).providers.get(&id) {
+        return Ok(provider.clone());
+    }
+    // The keychain read itself, and so off the runtime: it blocks for as
+    // long as the OS takes to answer, which with a locked keychain is as
+    // long as its dialog stays open.
+    let lookup = config.clone();
+    let key = tokio::task::spawn_blocking(move || lookup.api_key())
+        .await
+        .map_err(|e| format!("reading the API key for '{id}' failed: {e}"))?;
+    let provider = Host::build_provider(config, key);
+    let mut held = lock_built(built);
+    if held.generation == generation {
+        held.providers.insert(id, provider.clone());
+    }
+    Ok(provider)
+}
+
+/// The cache's generation now. See [`build_and_keep`].
+pub(super) fn generation_of(built: &std::sync::Mutex<BuiltProviders>) -> u64 {
+    lock_built(built).generation
 }
