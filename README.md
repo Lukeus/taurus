@@ -156,13 +156,14 @@ It won't turn a small model into a large one. It makes a small one affordable
 to actually run an agent on. See
 [the context window](docs/working-with-it.md#the-context-window).
 
-**One core, two frontends, one state directory.** The desktop app and the
-`taurus` CLI are the same agent. `Host::build_agent` is the only place a
+**One core, three frontends, one state directory.** The desktop app, the
+`taurus` CLI and `taurus acp` inside your editor are the same agent. `Host::build_agent` is the only place a
 session gets assembled. A frontend holds no agent logic, just the way it asks
 you for permission. That means:
 
-- A tool you approve in the app is approved for your scripted runs.
-- A conversation started in one can be resumed in the other.
+- A tool you approve in the app is approved for your scripted runs and in
+  your editor.
+- A conversation started in one can be resumed in another.
 - The agent loop is tested against a scripted provider, with no GUI involved.
 
 They're not identical surfaces, though. Reading a turn back as a diff and
@@ -323,6 +324,16 @@ can read about it before you run into it.
 |---|---|
 | ![The app in its light theme, showing a bar chart with a tab per series and a question card below it](docs/screenshots/app-light.png) | ![A question card with single-choice and multiple-choice questions and a free-text box](docs/screenshots/questions.png) |
 | The light theme: a chart with a tab per series, and the pill back to the foot of the conversation. | Questions it waits on. Skip any, or let "You decide" answer them all. |
+
+</details>
+
+<details>
+<summary><b>Delegates and checks</b>: <code>/best-of</code>, and an edit the language server caught</summary>
+
+| | |
+|---|---|
+| ![Three coders kept in their own copies of the workspace, each with Apply to workspace, and a table comparing what each model changed](docs/screenshots/best-of.png) | ![An edit whose result carries rust-analyzer's error, and the fix that follows it](docs/screenshots/diagnostics.png) |
+| `/best-of` on three models: each run kept, none applied, and a comparison of what each changed. | rust-analyzer's error, in the result of the edit that caused it. The next edit fixes it. |
 
 </details>
 

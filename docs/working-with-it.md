@@ -1096,6 +1096,9 @@ rust-analyzer reports 2 errors in src/parse.rs and 1 warning:
 - 58:5: cannot find value `cursor` in this scope [E0425]
 ```
 
+![An edit's result opened to show rust-analyzer's error, and the next edit
+fixing it](screenshots/diagnostics.png)
+
 Errors are listed, at most eight, with the line, the column and the
 compiler's code. Warnings are only counted: a model asked to fix an unused
 import while its edit doesn't compile will fix the import. A file with no
