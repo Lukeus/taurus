@@ -102,6 +102,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
     taurus_tools::builtin::terminal::READ_TERMINAL_TOOL,
     taurus_core::APPLY_TOOL,
+    taurus_core::COMPARE_TOOL,
     crate::memory::REMEMBER_TOOL,
     crate::notebook::OPEN_NOTE_TOOL,
 ];
@@ -173,7 +174,7 @@ pub struct Host {
     /// when it is not. Every message asks for its conversation's provider, so
     /// building one per call put that read on every turn. See
     /// [`Self::provider`].
-    built: std::sync::Mutex<BuiltProviders>,
+    built: Arc<std::sync::Mutex<BuiltProviders>>,
     settings: RwLock<Settings>,
     catalog: SharedCatalog,
     /// The standing brief for this machine and this workspace. Held rather
@@ -318,6 +319,34 @@ pub struct Host {
     /// `update_plan` calls and the person's edits (see [`Host::restore_plan`]),
     /// and a second copy on disk could disagree with the calls that made it.
     plans: RwLock<std::collections::HashMap<String, PlanBoard>>,
+    /// The language servers for this workspace, and what they were built
+    /// from. See [`Host::refresh_lsp`].
+    ///
+    /// A plain lock, not an async one, because the window's way out
+    /// ([`Host::stop_background`]) isn't async.
+    lsp: std::sync::Mutex<Option<HeldLsp>>,
+}
+
+/// An [`taurus_lsp::Lsp`], with what it was built from so a reload can tell
+/// whether it still applies.
+struct HeldLsp {
+    workspace: PathBuf,
+    settings: config::LspSettings,
+    lsp: Arc<taurus_lsp::Lsp>,
+}
+
+/// The file tools' view of [`taurus_lsp::Lsp`].
+struct LspDiagnostics(Arc<taurus_lsp::Lsp>);
+
+#[async_trait::async_trait]
+impl taurus_tools::Diagnostics for LspDiagnostics {
+    fn warm(&self, path: &Path) {
+        self.0.warm(path);
+    }
+
+    async fn after_write(&self, path: &Path, display: &str, text: &str) -> Option<String> {
+        self.0.check(path, text).await.render(display)
+    }
 }
 
 /// Runs file or keychain work on a blocking thread, for an `async fn` that
@@ -378,7 +407,7 @@ impl Host {
         Self {
             worktrees,
             providers: RwLock::new(providers),
-            built: std::sync::Mutex::new(BuiltProviders::default()),
+            built: Arc::default(),
             settings: RwLock::new(settings),
             workspace: RwLock::new(workspace),
             // The one line in the harness that names a data engine. Everything
@@ -417,6 +446,7 @@ impl Host {
             proposals,
             agent_proposals,
             plans: RwLock::new(std::collections::HashMap::new()),
+            lsp: std::sync::Mutex::new(None),
         }
     }
 
@@ -511,6 +541,7 @@ impl Host {
             drop(held);
         }
         *self.settings.write().await = config::load_settings(Some(&workspace));
+        self.refresh_lsp(&workspace).await;
         problems.extend(Problem::tag(
             ProblemSource::Settings,
             config::settings_problems(Some(&workspace)),

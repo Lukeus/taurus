@@ -64,6 +64,7 @@ cargo install --path crates/taurus-cli
 taurus repl                                     # interactive
 taurus run "summarize the modules in src/"      # one-shot
 taurus run --json "count the rust files" | jq   # for scripts
+taurus acp                                      # inside Zed or a JetBrains IDE, over ACP
 taurus rewind --to last                         # undo what the last turn wrote
 taurus fork --at last                           # try it again, keeping the first try
 taurus plugin add <folder or git URL>           # a Claude Code plugin, as it is
@@ -147,6 +148,9 @@ datacenter.** Every decision here is shaped around an 8k context window:
   ended. Only what the model learned comes from the model.
 - A model with no tool-calling API still calls tools, through prompted parsing.
   The core can't tell that path from the native one.
+- A model that *has* the API and writes its call into the reply anyway still
+  gets the call run. That's the usual way a small model fails in other
+  harnesses: the turn ends on a reply that is JSON, and nothing happens.
 
 It won't turn a small model into a large one. It makes a small one affordable
 to actually run an agent on. See
@@ -244,6 +248,7 @@ What it reaches for, and what it writes down.
 | [Skills](docs/capabilities.md#skills) | Works a procedure out once, writes it down, and asks before keeping it. Write your own in the app, or open any skill to change it. |
 | [Memory](docs/capabilities.md#memory) | Notes for the next conversation in this workspace. You can read, change and forget every one, and write your own. |
 | [Sub-agents](docs/capabilities.md#sub-agents) | A scoped context with its own tools, so a search that would fill the window happens somewhere else. |
+| [One task on several models](docs/capabilities.md#one-task-on-several-models) | `/best-of` runs the same task on two to six models at once, each in its own copy of the workspace, and compares what each one changed. You apply the one you want. |
 | [Slash commands](docs/capabilities.md#slash-commands) | One namespace for skills, sub-agents, and built-ins. |
 | [The canvas](docs/capabilities.md#the-canvas) | A file open beside the conversation, with the lines the model means selected. Select a passage and **Ask about this** sends the selection with your message. You can edit it too: if Taurus changes a file you've been typing in, both versions are kept and you choose, and a save never overwrites a version it hasn't seen. |
 | [The terminal](docs/capabilities.md#the-commands-you-ran) | Your own shell at the bottom of the window (<kbd>Ctrl</kbd>+<kbd>`</kbd>). Each command gets a pass or fail mark, **Ask Taurus** drafts a message from a command and its output, and the model can read your recent commands while the dock is open. |
@@ -255,6 +260,7 @@ What it asks before acting, and how you put things back afterwards.
 | Feature | What it is |
 |---|---|
 | [Permissions](docs/safety.md#permissions) | Every write shows up as a diff before you approve it. Remember a decision for this project or for everywhere. |
+| [Checked as it's written](docs/working-with-it.md#checked-as-its-written) | After each edit, the language server you already have installed says what broke, in the result the model reads next. Only in a trusted workspace. |
 | [Hooks](docs/configuration.md#hooks) | Your own programs, run at fixed points in a turn. A hook can refuse a call but never approve one. |
 | [Trusting a workspace](docs/safety.md#trusting-a-workspace) | A cloned repo's config does nothing until you say so. The prompt names what's *in* those files, including what you can't see by looking: a byte that renders as nothing, a hidden comment, base64 in a file that should hold prose. |
 | [Running commands](docs/safety.md#running-commands) | A real PTY on each platform, so a program that checks `isatty` behaves the way it does in your terminal. |
@@ -271,6 +277,7 @@ What a turn looks like in use.
 | Feature | What it is |
 |---|---|
 | [Sessions](docs/working-with-it.md#sessions) | Transcripts on disk, per workspace, replayable. |
+| [In your editor](docs/working-with-it.md#in-your-editor) | `taurus acp` runs Taurus inside Zed, JetBrains IDEs or any other Agent Client Protocol editor, with your providers, skills, allowlist and undo history. |
 | [Finding a conversation](docs/working-with-it.md#finding-a-conversation) | ⌘K finds every panel and action by name, conversations by title, and transcripts by what was said, and opens a conversation *at* the hit. |
 | [Planning a long task](docs/working-with-it.md#planning-a-long-task) | A plan it pins and keeps current, not one it announces once and forgets. |
 | [Showing it a picture](docs/working-with-it.md#showing-it-a-picture) | Paste a screenshot in. |
@@ -390,6 +397,7 @@ crates/
   taurus-index/             Local semantic search: chunking, embedding, ranking
   taurus-embed/             Embedding models run in-process with candle, and their pinned downloads
   taurus-watch/             Workspace file watching that says what changed or admits it can't
+  taurus-lsp/               Language-server diagnostics for what the file tools just wrote
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-voice/             Dictation: microphone capture, whisper.cpp transcription
   taurus-speech/            Reading aloud: the speakable-text filter, voices, playback
@@ -434,6 +442,17 @@ Three things show the abstraction works, instead of just claiming it does:
   and switches to prompted tool calling. It parses `<tool_call>` blocks out of
   the text stream into the exact same events a native adapter emits, and
   `taurus-core` can't tell which path a turn took.
+- **A call written in the wrong place is still a call.** A small model offered
+  tools through the API often writes `{"name": ..., "arguments": ...}` as its
+  reply instead, sometimes in a fence, under a template's `<|python_tag|>`,
+  or in the `<tool_call>` tags its fine-tune learned. A guard on the stream
+  reads those back into calls, but only when the whole reply is calls to
+  tools the request offered, with nothing but a name and arguments in each,
+  or when a `<tool_call>` tag is followed by one.
+  Arguments that are almost JSON are repaired the same way: a fence, a
+  trailing comma or a brace too many is removed, and a truncated object is
+  never closed up. See
+  [Calls written as text](docs/working-with-it.md#calls-written-as-text).
 - **A backend that can describe itself gets asked, not configured.** Ollama
   and Anthropic both answer questions about their own models. So neither needs
   a `context_length` in `providers.json`, and neither can be told the wrong

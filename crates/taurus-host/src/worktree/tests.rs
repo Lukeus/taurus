@@ -606,3 +606,52 @@ fn the_worktrees_are_beside_the_config_home_and_named_for_it() {
         Worktrees::home_beside(Path::new("/tmp/.tmpB"))
     );
 }
+
+#[tokio::test]
+async fn a_kept_run_shows_as_a_diff_relative_to_the_workspace() {
+    let f = fixture();
+    let opened = f.trees.open(&f.top.join("app"), &who()).await.unwrap();
+    std::fs::write(opened.root.join("src/lib.rs"), "fn b() {}\n").unwrap();
+    f.trees.close(&opened.run).await.unwrap();
+
+    let diff = f.trees.diff(&opened.run, Some("s1")).await.unwrap();
+    // The summary first, then the patch, both named as the workspace names
+    // them rather than from the repository's top.
+    assert!(diff.starts_with(" src/lib.rs | 2 +-"), "{diff}");
+    assert!(diff.contains("-fn a() {}\n+fn b() {}"), "{diff}");
+    assert!(!diff.contains("app/src"), "{diff}");
+}
+
+#[tokio::test]
+async fn a_run_is_shown_only_in_its_own_conversation_and_an_empty_one_is_empty() {
+    let f = fixture();
+    let opened = f.trees.open(&f.top, &who()).await.unwrap();
+    std::fs::write(opened.root.join("a.txt"), "two\n").unwrap();
+    f.trees.close(&opened.run).await.unwrap();
+    let refused = f.trees.diff(&opened.run, Some("someone-else")).await;
+    assert!(refused.unwrap_err().contains("another conversation"));
+
+    let nothing = f.trees.open(&f.top, &who()).await.unwrap();
+    f.trees.close(&nothing.run).await.unwrap();
+    assert_eq!(f.trees.diff(&nothing.run, Some("s1")).await.unwrap(), "");
+}
+
+#[tokio::test]
+async fn showing_a_diff_does_not_run_the_repository_s_diff_program() {
+    let f = fixture();
+    let marker = f.top.join("diff-ran");
+    sh(
+        &f.top,
+        &[
+            "config",
+            "diff.external",
+            &format!("sh -c 'touch {}'", marker.display()),
+        ],
+    );
+    let opened = f.trees.open(&f.top, &who()).await.unwrap();
+    std::fs::write(opened.root.join("a.txt"), "two\n").unwrap();
+    f.trees.close(&opened.run).await.unwrap();
+    let diff = f.trees.diff(&opened.run, Some("s1")).await.unwrap();
+    assert!(diff.contains("+two"), "{diff}");
+    assert!(!marker.exists(), "diff.external ran");
+}

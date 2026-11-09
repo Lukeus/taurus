@@ -216,8 +216,8 @@ the backlog, and they're the minority.
   `old_str`, `new_str`, `file_text`) follow Copilot's documentation. Claude
   Code's format, which Copilot also reads, has run against real Claude Code
   and Codex plugins.
-- **Parts of a Claude Code plugin have nothing here to run them.** LSP
-  servers, output styles, workflows, themes, monitors, `bin/` on `PATH`, a
+- **Parts of a Claude Code plugin have nothing here to run them.** Its LSP
+  servers (Taurus runs its own, from `lsp` in settings), output styles, workflows, themes, monitors, `bin/` on `PATH`, a
   plugin's own settings, `userConfig` and dependencies. Each is listed on the
   plugin by name, with why. A plugin's `commands/` aren't on that list: each
   file in them runs as a one-file skill named `plugin:file`, the way Claude
@@ -787,6 +787,105 @@ the backlog, and they're the minority.
   call a child makes goes through the same permission engine as the parent's,
   so `tools:` is a scope, not a sandbox. A per-agent permission policy would
   be a second thing to keep in step with the first, and there isn't one.
+- **Prose followed by a fenced call is still prose.** A reply that is only a
+  call, in JSON, a fence or a template prefix, is read as one. So is a
+  `<tool_call>` block anywhere. "I'll read it now" followed by a fenced call
+  isn't: catching that would mean holding back every code block in every
+  answer until the reply ends, to see whether anything followed it. See
+  [Calls written as text](working-with-it.md#calls-written-as-text).
+- **A reply that opens like a call doesn't stream.** It's held until it ends,
+  so it can be read as calls or let through as text. An answer that is JSON
+  appears all at once. The hold gives up at 64 KB and streams the rest as
+  text, so a leaked `write_file` with a larger file in it stays text.
+- **A hosted model's JSON answer can become a call.** The guard runs whenever
+  a request offers tools, not only on local models. A reply that is exactly
+  `{"name": <an offered tool>, "arguments": {...}}` runs as that call, through
+  the same permission gate as any other. Restricting it to local backends
+  would leave out the OpenAI-compatible servers most local models are reached
+  through.
+- **Repaired arguments aren't marked.** A call whose JSON needed a trailing
+  comma removed runs as if it had been written correctly, and only the log
+  says otherwise. Nothing is added by a repair, so what runs is what the model
+  wrote, minus the characters JSON doesn't allow.
+- **Only the file tools' writes are checked.** A `sed -i`, a formatter or a
+  script the model ran changes files no language server is asked about, and
+  so does a canvas edit. The model hears about those when it builds.
+- **A check is of one file, after one write.** What the server says about the
+  file just written is reported. An edit that breaks a *different* file, by
+  renaming a function its callers still use, is only caught when one of those
+  callers is written or the build runs. The server knows about the callers
+  that are open, and may have published about them, but only the file just
+  written is reported, so one edit's result doesn't list another file's
+  older problems.
+- **A server that publishes in stages may be caught partway.** After the
+  first answer about a file, a check waits 400 ms for a later one, because
+  several servers report syntax first and types second. rust-analyzer's
+  `cargo check` pass usually takes longer than that, so what's reported is
+  rust-analyzer's own analysis, which misses some errors only the compiler
+  finds, borrow checking among them.
+- **A delegate in its own copy of the workspace isn't checked.** Its writes
+  land outside the folder the servers were started in, and checking them
+  against the original project would report the original's state. They're
+  left unchecked rather than checked wrongly.
+- **One check at a time per server.** Two writes to Rust files at once wait
+  for each other, because two checks would each wait out the other's answers.
+  The wait counts against the same `timeout_ms`, so a write queued behind
+  others gets whatever time is left, and no answer if none is.
+- **A server that exits stays gone until the next reload.** Its first failure
+  is reported to the model, once. It isn't restarted on its own, so a server
+  that crashes on startup doesn't crash again on every edit. Switching folders,
+  changing a setting, or trusting the workspace starts it over.
+- **`/best-of` compares what was kept, not how it was got.** The diffs are
+  read, and each report says whether its delegate built and tested. Nothing
+  runs the tests again in each copy before the comparison, because the copies
+  are gone by then: each is a commit once its delegate stops. A run worth
+  trusting more than its report says can be applied and tested, and rewound.
+- **The models in a `/best-of` share the machine.** On one local GPU, two
+  local models run one after the other at best, and a run's time says more
+  about the queue than the model. Mixing one local model with hosted ones is
+  where it pays.
+- **A `/best-of` run's model name isn't checked until it starts.** The
+  provider is: a provider with no key, or a name within two letters of a
+  configured provider's id (`anthropc/…`), is refused before any copy of the
+  workspace is made. A typo in the model itself fails that one delegate, with
+  the backend's own error on its card, because only the backend knows which
+  models it has. A prefix nowhere near a provider's id is read as part of a
+  model name on the conversation's provider, for the reason
+  [One task on several models](capabilities.md#one-task-on-several-models)
+  gives.
+- **The comparison is the conversation's model's judgment.** The table and the
+  recommendation are written by whichever model the conversation is on,
+  reading diffs that may come from models stronger than it. The diffs are
+  there to check it against, and the choice is still a button you press.
+- **In an editor, a conversation can't be reopened from the editor.**
+  `taurus acp` doesn't offer `session/load`, so the editor's history of a
+  Taurus conversation lasts as long as its panel. The transcript is kept, and
+  the app or `taurus repl --resume <id>` picks it up.
+- **The editor's MCP servers aren't started.** An editor can hand an agent MCP
+  servers of its own in `session/new`. Taurus uses the ones in its own config
+  and ignores those, rather than starting programs an editor named without
+  them going through Taurus's trust prompt.
+- **`ask_user` has nobody to ask in an editor.** ACP's way of asking a
+  structured question is an optional capability few editors have, so a
+  question the model asks there is answered "decide for yourself", as it is in
+  a piped `taurus run`.
+- **One folder at a time per `taurus acp`.** One host has one workspace.
+  Sessions in different folders each run in their own, but not at the same
+  time: a turn in a second folder waits until the turns in the first have
+  ended, and the workspace is switched only then, so no running turn has its
+  folder changed under it. Editors start one agent process per window, which
+  is usually one folder anyway.
+- **An editor that quits stops what it started.** Running turns are canceled,
+  a permission question still waiting is answered no, and anything that
+  hasn't stopped ten seconds later is dropped where it is. A command a turn
+  left running in the background is stopped with it.
+- **Pictures and plans don't reach the editor.** An image pasted in the
+  editor's prompt is left out (`promptCapabilities.image` is false), and
+  Taurus's pinned plan isn't sent as an ACP `plan` update. Both are mappings
+  nobody has written yet.
+- **Taurus doesn't host other agents.** It's an ACP agent, not an ACP client,
+  so it can't run Claude Code, Codex or Goose inside its own window with its
+  own undo record. That's the other half of the protocol, and the larger one.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
   is caught, but the calls have to match argument for argument. Say a model
   asks the same unanswerable question three slightly different ways, like

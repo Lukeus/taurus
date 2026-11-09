@@ -74,6 +74,12 @@ impl Host {
         let concurrent = self.settings.read().await.max_concurrent_agents as usize;
         let models = self.agent_models.read().await.clone();
         let logs = SubagentLogs::new(self.workspace().await, turn.session_id);
+        let built = self.built_cache();
+        let book = Arc::new(ProviderBook {
+            configs: self.providers.read().await.clone(),
+            generation: super::providers::generation_of(&built),
+            built,
+        });
         registry.register(Arc::new(
             SpawnSubagent::new(provider.clone(), self.registry.clone(), model, concurrent)
                 .with_defaults(base.clone())
@@ -85,7 +91,10 @@ impl Host {
                 .with_recorder(Arc::new(logs))
                 // A delegate that writes can have a copy of the workspace, so
                 // it can run beside others and in the background.
-                .with_isolation(self.worktrees.clone()),
+                .with_isolation(self.worktrees.clone())
+                // A delegation can name its model, which is how one task is
+                // tried on several: see `/best-of`.
+                .with_models(book),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same
@@ -98,6 +107,11 @@ impl Host {
         // conversation's own delegates' work, and a delegate has none of its
         // own to apply.
         registry.register(Arc::new(taurus_core::ApplyDelegate::new(
+            self.worktrees.clone(),
+        )));
+        // Beside it, for the same reason: the runs it reads are this
+        // conversation's delegates'.
+        registry.register(Arc::new(taurus_core::CompareDelegates::new(
             self.worktrees.clone(),
         )));
         registry.register(Arc::new(ShowTable));
@@ -458,7 +472,7 @@ impl Host {
         // everything to, and neither widens what may be written.
         let mut readable = self.catalog.read().await.dirs(&workspace);
         readable.push(command_output.clone());
-        ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
+        let context = ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
             .with_readable_roots(readable)
             .with_command_output(command_output)
             // Carried on the context rather than looked up per call, so a
@@ -474,7 +488,59 @@ impl Host {
             // The same for what earlier commands read of the workspace. Held
             // here rather than per turn, a turn's first command costs what its
             // second does.
-            .with_sweep_cache(self.sweeps.clone())
+            .with_sweep_cache(self.sweeps.clone());
+        // On the context for the reason the hooks are: a delegate's edits are
+        // checked by the same servers.
+        match self.language_servers() {
+            Some(lsp) => context.with_diagnostics(Arc::new(LspDiagnostics(lsp))),
+            None => context,
+        }
+    }
+
+    /// The language servers in force, if any. See [`Self::refresh_lsp`].
+    pub fn language_servers(&self) -> Option<Arc<taurus_lsp::Lsp>> {
+        let held = self.lsp.lock().unwrap_or_else(|e| e.into_inner());
+        held.as_ref().map(|h| h.lsp.clone())
+    }
+
+    /// Makes the language servers match the workspace and its settings.
+    ///
+    /// None in a workspace that isn't trusted, whatever the settings say:
+    /// starting rust-analyzer runs the project's build scripts, which is the
+    /// project configuring this machine, the thing the trust prompt is the
+    /// gate for. Built only when something moved, so a reload that changed
+    /// nothing keeps the servers that are already warm; and built lazily, so
+    /// nothing starts until a file one covers is read or written.
+    pub(super) async fn refresh_lsp(&self, workspace: &Path) {
+        let settings = self.settings.read().await.lsp.clone();
+        let wanted = settings.enabled && crate::trust::is_trusted(workspace);
+        let old = {
+            let mut held = self.lsp.lock().unwrap_or_else(|e| e.into_inner());
+            let current = held
+                .as_ref()
+                .is_some_and(|h| h.workspace == workspace && h.settings == settings);
+            if wanted && current {
+                return;
+            }
+            let old = held.take();
+            if wanted {
+                *held = Some(HeldLsp {
+                    workspace: workspace.to_path_buf(),
+                    lsp: Arc::new(taurus_lsp::Lsp::new(
+                        workspace,
+                        settings.specs(),
+                        std::time::Duration::from_millis(u64::from(settings.timeout_ms)),
+                    )),
+                    settings,
+                });
+            }
+            old
+        };
+        if let Some(old) = old {
+            // Not waited for: a server that's slow to exit shouldn't hold a
+            // folder switch.
+            tokio::spawn(async move { old.lsp.shutdown().await });
+        }
     }
 
     /// Ends every background command, for a window closing.
@@ -483,6 +549,14 @@ impl Host {
     /// the OS tidies up a child that outlived the call that spawned it.
     pub fn stop_background(&self) {
         self.jobs.stop_all();
+        // Asked to exit where there's a runtime to ask from. Either way the
+        // handles go, which ends each server's own process, and a server
+        // also exits by itself when this process does: it was told this
+        // process's id, and its stdin closes.
+        let held = self.lsp.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let (Some(held), Ok(runtime)) = (held, tokio::runtime::Handle::try_current()) {
+            runtime.spawn(async move { held.lsp.shutdown().await });
+        }
     }
 
     /// Every background command, for the window that draws them.
@@ -704,6 +778,165 @@ fn accepted_calls(messages: &[Message]) -> std::collections::HashSet<(usize, usi
         })
         .map(|(_, call)| call)
         .collect()
+}
+
+/// The configured providers as a turn found them, for a delegation that names
+/// its own model. See [`taurus_core::ModelResolver`].
+///
+/// A snapshot of the configs rather than the host, so a turn resolves against
+/// the providers it started with, like every other thing it reads at the
+/// start. The built providers are the host's own cache, so six delegations on
+/// one provider share one connection and one keychain read, as a turn's own
+/// requests do.
+struct ProviderBook {
+    configs: Vec<ProviderConfig>,
+    built: Arc<std::sync::Mutex<super::BuiltProviders>>,
+    generation: u64,
+}
+
+/// How close a name has to be to a provider's id to be taken for a typo of
+/// it. Two edits catches `anthropc` and `olama` without catching an
+/// organization's name in a model id.
+const TYPO_DISTANCE: usize = 2;
+
+impl ProviderBook {
+    /// The provider `prefix` was probably meant to be, when it's nearly one.
+    fn nearly(&self, prefix: &str) -> Option<&str> {
+        self.configs
+            .iter()
+            .map(|c| c.id.as_str())
+            .find(|id| edit_distance(id, prefix) <= TYPO_DISTANCE)
+    }
+}
+
+#[async_trait::async_trait]
+impl taurus_core::ModelResolver for ProviderBook {
+    /// `provider/model` when the part before the first slash is a configured
+    /// provider's id, and otherwise the whole name as a model on the
+    /// conversation's provider: `meta-llama/Llama-3.3-70B` is a model, on an
+    /// OpenAI-compatible server, not a provider called `meta-llama`. A prefix
+    /// within [`TYPO_DISTANCE`] of a provider's id is refused instead, before
+    /// a copy of the workspace is made for a delegate that would only fail.
+    async fn resolve(&self, name: &str) -> Result<AgentModel, String> {
+        let Some((prefix, model)) = name.split_once('/') else {
+            return Ok(AgentModel {
+                provider: None,
+                model: name.to_string(),
+            });
+        };
+        let model = model.trim();
+        let Some(config) = self.configs.iter().find(|c| c.id == prefix) else {
+            if let Some(meant) = self.nearly(prefix) {
+                let ids: Vec<&str> = self.configs.iter().map(|c| c.id.as_str()).collect();
+                return Err(format!(
+                    "no provider '{prefix}' (did you mean '{meant}'?). Configured: {}",
+                    ids.join(", ")
+                ));
+            }
+            return Ok(AgentModel {
+                provider: None,
+                model: name.to_string(),
+            });
+        };
+        if model.is_empty() {
+            return Err(format!("'{name}' names provider '{prefix}' but no model"));
+        }
+        super::routes::has_key(config).await?;
+        let provider =
+            super::providers::build_and_keep(&self.built, self.generation, config.clone()).await?;
+        Ok(AgentModel {
+            provider: Some(provider),
+            model: model.to_string(),
+        })
+    }
+}
+
+/// Levenshtein distance, for telling a typo from another name.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = if ca == *cb {
+                prev
+            } else {
+                1 + prev.min(cur).min(row[j])
+            };
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+#[cfg(test)]
+mod book_tests {
+    use super::*;
+    use taurus_core::ModelResolver;
+
+    /// The refusal, for a resolution expected to be refused.
+    fn refused(resolved: Result<AgentModel, String>) -> String {
+        match resolved {
+            Ok(m) => panic!("resolved to {} instead of being refused", m.model),
+            Err(e) => e,
+        }
+    }
+
+    fn book() -> ProviderBook {
+        let configs: Vec<ProviderConfig> = serde_json::from_value(serde_json::json!([
+            {"id": "ollama", "kind": "ollama", "base_url": "http://127.0.0.1:1"},
+            {"id": "anthropic", "kind": "anthropic", "base_url": "https://api.anthropic.com",
+             "api_key_env": "TAURUS_TEST_NO_SUCH_KEY_VAR"}
+        ]))
+        .unwrap();
+        ProviderBook {
+            configs,
+            built: Arc::default(),
+            generation: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_typo_of_a_provider_is_refused_and_says_which_it_meant() {
+        let err = refused(book().resolve("anthropc/claude-sonnet-5-5").await);
+        assert!(err.contains("did you mean 'anthropic'"), "{err}");
+        let err = refused(book().resolve("olama/qwen3:8b").await);
+        assert!(err.contains("'ollama'"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_organization_in_a_model_id_is_still_a_model() {
+        let resolved = book().resolve("meta-llama/Llama-3.3-70B").await.unwrap();
+        assert!(resolved.provider.is_none());
+        assert_eq!(resolved.model, "meta-llama/Llama-3.3-70B");
+    }
+
+    #[tokio::test]
+    async fn one_provider_is_built_once_however_many_delegations_name_it() {
+        let book = book();
+        let a = book.resolve("ollama/qwen3:8b").await.unwrap();
+        let b = book.resolve("ollama/gemma3:27b").await.unwrap();
+        assert!(Arc::ptr_eq(
+            a.provider.as_ref().unwrap(),
+            b.provider.as_ref().unwrap()
+        ));
+        assert_eq!(b.model, "gemma3:27b");
+    }
+
+    #[tokio::test]
+    async fn a_provider_with_no_key_is_refused_before_anything_starts() {
+        let err = refused(book().resolve("anthropic/claude-sonnet-5-5").await);
+        assert!(err.contains("has no API key"), "{err}");
+    }
+
+    #[test]
+    fn edit_distance_counts_edits() {
+        assert_eq!(edit_distance("anthropic", "anthropc"), 1);
+        assert_eq!(edit_distance("ollama", "meta-llama"), 5);
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
 }
 
 #[cfg(test)]

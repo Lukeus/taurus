@@ -671,6 +671,70 @@ live in the transcript, and every copy of it, for as long as the conversation
 is kept. The block is rendered through the same type the loader reads, so what
 comes back will parse.
 
+## Language servers
+
+After `write_file` or `edit_file` changes a file, Taurus asks the language
+server for that file's language what it thinks, and puts the answer in the
+call's result. The model reads it before its next edit. What it reads is
+covered in
+[Checked as it's written](working-with-it.md#checked-as-its-written).
+
+It's on by default, and needs nothing installed beyond the server itself.
+Each of these is used when its program is already on your `PATH`, and only
+then:
+
+| Server | Files | Program |
+|---|---|---|
+| `rust-analyzer` | `.rs` | `rust-analyzer` |
+| `typescript-language-server` | `.ts` `.tsx` `.js` `.jsx` and the `m`/`c` variants | `typescript-language-server` |
+| `pyright` | `.py` `.pyi` | `pyright-langserver`, else `basedpyright-langserver` |
+| `gopls` | `.go` | `gopls` |
+| `clangd` | `.c` `.h` `.cc` `.cpp` `.cxx` `.hh` `.hpp` | `clangd` |
+
+Nothing is downloaded. A server that isn't installed is never mentioned, so a
+machine without `clangd` doesn't hear about it on every C edit.
+
+A server starts the first time a file it covers is read or written, and keeps
+running for the rest of the session. A read starts it without waiting, so it's
+usually ready by the time the file is edited.
+
+**Only in a trusted workspace.** Starting a language server runs the project's
+code: rust-analyzer runs build scripts and proc macros, and other servers load
+a project's own plugins. That's the project configuring your machine, which is
+what the [trust prompt](#trusting-a-workspace) is the gate for. So in a
+workspace you haven't vouched for, none start, whatever the settings say.
+
+Configure it under `lsp` in `settings.json`, globally or per project:
+
+```json
+{
+  "lsp": {
+    "enabled": true,
+    "timeout_ms": 3000,
+    "servers": {
+      "clangd": { "disabled": true },
+      "rust-analyzer": { "command": ["/opt/homebrew/bin/rust-analyzer"] },
+      "ruff": { "command": ["ruff", "server"], "extensions": ["py"] }
+    }
+  }
+}
+```
+
+- `timeout_ms` is the longest one write waits, a server's start included,
+  between 500 and 30,000. A server slower than that keeps starting, and
+  checks the edits after.
+- A server named like a built-in changes that one. `command` replaces its
+  program, `extensions` its files, and `disabled` switches it off.
+- Any other name adds a server, and needs both `command` and `extensions`.
+  `language_id` sets the protocol's name for the language when it isn't the
+  extension. An added server takes over the extensions it names from any
+  built-in, so `ruff` above checks `.py` instead of pyright.
+- The block replaces the one in a lower layer whole, like `speech`. A project
+  that sets `servers` is stating the list it wants.
+
+A plugin's own language servers (`lspServers`, `.lsp.json`) aren't started.
+Name the ones you want here instead.
+
 ## Plugins
 
 A plugin bundles skills, sub-agents, MCP servers and hooks under one name. The

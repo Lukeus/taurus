@@ -1542,6 +1542,10 @@ pub struct Settings {
     /// [`SpeechSettings`].
     #[serde(default)]
     pub speech: SpeechSettings,
+    /// Language servers that check what the file tools write. See
+    /// [`LspSettings`].
+    #[serde(default)]
+    pub lsp: LspSettings,
     /// Plugins switched on or off, by name. A plugin not named here is on
     /// unless its manifest says `defaultEnabled: false`. See
     /// [`crate::plugins`].
@@ -1602,6 +1606,120 @@ pub struct Settings {
     /// nothing on screen to say whose it was.
     #[serde(default)]
     pub from_project: Vec<String>,
+}
+
+/// Language servers that check what `write_file` and `edit_file` wrote, and
+/// put what they find in the call's result. See `taurus_lsp`.
+///
+/// On by default, and each server is used only if its program is already on
+/// the PATH. Never started in a workspace that isn't trusted: rust-analyzer
+/// runs build scripts and proc macros, and other servers load the project's
+/// own plugins, so starting one is running the project's code.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LspSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The longest one write waits for an answer, a server's start included.
+    /// A server that takes longer goes on starting, and checks the edits
+    /// after.
+    #[serde(default = "default_lsp_timeout_ms")]
+    pub timeout_ms: u32,
+    /// Servers by name. A built-in's name (`rust-analyzer`,
+    /// `typescript-language-server`, `pyright`, `gopls`, `clangd`) changes
+    /// or switches off that one; any other name adds a server.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub servers: BTreeMap<String, LspServerSettings>,
+}
+
+impl Default for LspSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_ms: default_lsp_timeout_ms(),
+            servers: BTreeMap::new(),
+        }
+    }
+}
+
+/// One server in [`LspSettings::servers`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LspServerSettings {
+    /// The program and its arguments. Empty keeps a built-in's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
+    /// File extensions it checks, without the dot. Empty keeps a built-in's
+    /// own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+    /// The protocol's name for the language, when it isn't the extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+fn default_lsp_timeout_ms() -> u32 {
+    3_000
+}
+
+impl LspSettings {
+    /// Brought into range rather than refused, like every number in this
+    /// file. Under half a second no server answers; past thirty, a write
+    /// would hold a turn longer than running the build does.
+    fn clamped(mut self) -> Self {
+        self.timeout_ms = self.timeout_ms.clamp(500, 30_000);
+        self
+    }
+
+    /// The servers to look for: configured ones first, so one that covers an
+    /// extension a built-in does takes it over, then the built-ins nothing
+    /// switched off or replaced.
+    pub fn specs(&self) -> Vec<taurus_lsp::ServerSpec> {
+        let builtins = taurus_lsp::builtin_specs();
+        let mut out = Vec::new();
+        for (name, server) in &self.servers {
+            if server.disabled {
+                continue;
+            }
+            let builtin = builtins.iter().find(|b| &b.name == name);
+            let spec = match builtin {
+                Some(b) => {
+                    let mut spec = b.clone();
+                    if !server.command.is_empty() {
+                        spec.commands = vec![server.command.clone()];
+                    }
+                    if !server.extensions.is_empty() {
+                        spec.languages = taurus_lsp::ServerSpec::custom(
+                            name,
+                            Vec::new(),
+                            server.extensions.clone(),
+                            server.language_id.clone(),
+                        )
+                        .languages;
+                    }
+                    spec
+                }
+                // A new server needs both, and one with either missing is
+                // left out rather than guessed at.
+                None if server.command.is_empty() || server.extensions.is_empty() => continue,
+                None => taurus_lsp::ServerSpec::custom(
+                    name,
+                    server.command.clone(),
+                    server.extensions.clone(),
+                    server.language_id.clone(),
+                ),
+            };
+            out.push(spec);
+        }
+        out.extend(
+            builtins
+                .into_iter()
+                .filter(|b| !self.servers.contains_key(&b.name)),
+        );
+        out
+    }
 }
 
 fn default_true() -> bool {
@@ -1862,6 +1980,7 @@ impl Default for Settings {
             voice_model: default_voice_model(),
             voice_language: default_voice_language(),
             speech: SpeechSettings::default(),
+            lsp: LspSettings::default(),
             plugins: BTreeMap::new(),
             notify_when_done: true,
             verify_changes: true,
@@ -1956,6 +2075,9 @@ pub struct StoredSettings {
     /// See [`Settings::speech`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speech: Option<SpeechSettings>,
+    /// See [`Settings::lsp`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<LspSettings>,
     /// See [`Settings::plugins`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, bool>>,
@@ -2022,6 +2144,9 @@ impl StoredSettings {
         // belong together, and half of one project's ElevenLabs settings over
         // the user's would be a voice nobody picked.
         self.speech = other.speech.or(self.speech.take());
+        // Whole, for the reason the speech settings are: which servers run
+        // and how long they're waited for is one decision.
+        self.lsp = other.lsp.or(self.lsp.take());
         self.notify_when_done = other.notify_when_done.or(self.notify_when_done);
         self.verify_changes = other.verify_changes.or(self.verify_changes);
         self.ui_scale = other.ui_scale.or(self.ui_scale);
@@ -2101,6 +2226,7 @@ impl StoredSettings {
                 .filter(|l| !l.trim().is_empty())
                 .unwrap_or(defaults.voice_language),
             speech: self.speech.unwrap_or(defaults.speech),
+            lsp: self.lsp.map(LspSettings::clamped).unwrap_or(defaults.lsp),
             plugins: self.plugins.unwrap_or(defaults.plugins),
             notify_when_done: self.notify_when_done.unwrap_or(defaults.notify_when_done),
             verify_changes: self.verify_changes.unwrap_or(defaults.verify_changes),
@@ -2606,6 +2732,18 @@ mod tests {
                 },
                 ..Default::default()
             }),
+            lsp: Some(LspSettings {
+                enabled: false,
+                timeout_ms: 1_500,
+                servers: BTreeMap::from([(
+                    "zls".into(),
+                    LspServerSettings {
+                        command: vec!["zls".into()],
+                        extensions: vec!["zig".into()],
+                        ..Default::default()
+                    },
+                )]),
+            }),
             plugins: Some(BTreeMap::from([("lint-pack".into(), false)])),
             notify_when_done: Some(false),
             verify_changes: Some(false),
@@ -2794,6 +2932,46 @@ mod tests {
     fn speech_keys_have_their_own_namespace() {
         assert_eq!(speech_key_id(SpeechEngine::ElevenLabs), "speech:elevenlabs");
         assert_eq!(speech_key_id(SpeechEngine::OpenAi), "speech:openai");
+    }
+
+    #[test]
+    fn language_servers_are_on_by_default_with_every_builtin() {
+        let lsp = Settings::default().lsp;
+        assert!(lsp.enabled);
+        let names: Vec<_> = lsp.specs().into_iter().map(|s| s.name).collect();
+        assert!(names.contains(&"rust-analyzer".to_string()));
+        assert!(names.contains(&"pyright".to_string()));
+    }
+
+    #[test]
+    fn a_language_server_can_be_switched_off_replaced_or_added() {
+        let stored: StoredSettings = serde_json::from_str(
+            r#"{"lsp": {"timeout_ms": 99999, "servers": {
+                "clangd": {"disabled": true},
+                "rust-analyzer": {"command": ["/opt/ra", "--log"]},
+                "ruff": {"command": ["ruff", "server"], "extensions": ["py"]},
+                "half": {"command": ["x"]}
+            }}}"#,
+        )
+        .unwrap();
+        let lsp = stored.resolve().lsp;
+        assert_eq!(lsp.timeout_ms, 30_000, "clamped");
+        let specs = lsp.specs();
+        let names: Vec<_> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(!names.contains(&"clangd"));
+        assert!(!names.contains(&"half"), "a new server needs extensions");
+        let ra = specs.iter().find(|s| s.name == "rust-analyzer").unwrap();
+        assert_eq!(
+            ra.commands,
+            vec![vec!["/opt/ra".to_string(), "--log".into()]]
+        );
+        assert_eq!(ra.languages.get("rs").map(String::as_str), Some("rust"));
+        // Added servers come first, so ruff takes `.py` from pyright.
+        let first_py = specs
+            .iter()
+            .find(|s| s.languages.contains_key("py"))
+            .unwrap();
+        assert_eq!(first_py.name, "ruff");
     }
 
     #[test]
