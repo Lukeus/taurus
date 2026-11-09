@@ -248,6 +248,7 @@ What it reaches for, and what it writes down.
 | [Skills](docs/capabilities.md#skills) | Works a procedure out once, writes it down, and asks before keeping it. Write your own in the app, or open any skill to change it. |
 | [Memory](docs/capabilities.md#memory) | Notes for the next conversation in this workspace. You can read, change and forget every one, and write your own. |
 | [Sub-agents](docs/capabilities.md#sub-agents) | A scoped context with its own tools, so a search that would fill the window happens somewhere else. |
+| [One task on several models](docs/capabilities.md#one-task-on-several-models) | `/best-of` runs the same task on two to six models at once, each in its own copy of the workspace, and compares what each one changed. You apply the one you want. |
 | [Slash commands](docs/capabilities.md#slash-commands) | One namespace for skills, sub-agents, and built-ins. |
 | [The canvas](docs/capabilities.md#the-canvas) | A file open beside the conversation, with the lines the model means selected. Select a passage and **Ask about this** sends the selection with your message. You can edit it too: if Taurus changes a file you've been typing in, both versions are kept and you choose, and a save never overwrites a version it hasn't seen. |
 | [The terminal](docs/capabilities.md#the-commands-you-ran) | Your own shell at the bottom of the window (<kbd>Ctrl</kbd>+<kbd>`</kbd>). Each command gets a pass or fail mark, **Ask Taurus** drafts a message from a command and its output, and the model can read your recent commands while the dock is open. |
