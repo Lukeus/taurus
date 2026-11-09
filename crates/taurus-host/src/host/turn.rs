@@ -458,7 +458,7 @@ impl Host {
         // everything to, and neither widens what may be written.
         let mut readable = self.catalog.read().await.dirs(&workspace);
         readable.push(command_output.clone());
-        ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
+        let context = ToolContext::new(workspace, self.permissions.read().await.clone(), cancel)
             .with_readable_roots(readable)
             .with_command_output(command_output)
             // Carried on the context rather than looked up per call, so a
@@ -474,7 +474,59 @@ impl Host {
             // The same for what earlier commands read of the workspace. Held
             // here rather than per turn, a turn's first command costs what its
             // second does.
-            .with_sweep_cache(self.sweeps.clone())
+            .with_sweep_cache(self.sweeps.clone());
+        // On the context for the reason the hooks are: a delegate's edits are
+        // checked by the same servers.
+        match self.language_servers() {
+            Some(lsp) => context.with_diagnostics(Arc::new(LspDiagnostics(lsp))),
+            None => context,
+        }
+    }
+
+    /// The language servers in force, if any. See [`Self::refresh_lsp`].
+    pub fn language_servers(&self) -> Option<Arc<taurus_lsp::Lsp>> {
+        let held = self.lsp.lock().unwrap_or_else(|e| e.into_inner());
+        held.as_ref().map(|h| h.lsp.clone())
+    }
+
+    /// Makes the language servers match the workspace and its settings.
+    ///
+    /// None in a workspace that isn't trusted, whatever the settings say:
+    /// starting rust-analyzer runs the project's build scripts, which is the
+    /// project configuring this machine, the thing the trust prompt is the
+    /// gate for. Built only when something moved, so a reload that changed
+    /// nothing keeps the servers that are already warm; and built lazily, so
+    /// nothing starts until a file one covers is read or written.
+    pub(super) async fn refresh_lsp(&self, workspace: &Path) {
+        let settings = self.settings.read().await.lsp.clone();
+        let wanted = settings.enabled && crate::trust::is_trusted(workspace);
+        let old = {
+            let mut held = self.lsp.lock().unwrap_or_else(|e| e.into_inner());
+            let current = held
+                .as_ref()
+                .is_some_and(|h| h.workspace == workspace && h.settings == settings);
+            if wanted && current {
+                return;
+            }
+            let old = held.take();
+            if wanted {
+                *held = Some(HeldLsp {
+                    workspace: workspace.to_path_buf(),
+                    lsp: Arc::new(taurus_lsp::Lsp::new(
+                        workspace,
+                        settings.specs(),
+                        std::time::Duration::from_millis(u64::from(settings.timeout_ms)),
+                    )),
+                    settings,
+                });
+            }
+            old
+        };
+        if let Some(old) = old {
+            // Not waited for: a server that's slow to exit shouldn't hold a
+            // folder switch.
+            tokio::spawn(async move { old.lsp.shutdown().await });
+        }
     }
 
     /// Ends every background command, for a window closing.
@@ -483,6 +535,14 @@ impl Host {
     /// the OS tidies up a child that outlived the call that spawned it.
     pub fn stop_background(&self) {
         self.jobs.stop_all();
+        // Asked to exit where there's a runtime to ask from. Either way the
+        // handles go, which ends each server's own process, and a server
+        // also exits by itself when this process does: it was told this
+        // process's id, and its stdin closes.
+        let held = self.lsp.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let (Some(held), Ok(runtime)) = (held, tokio::runtime::Handle::try_current()) {
+            runtime.spawn(async move { held.lsp.shutdown().await });
+        }
     }
 
     /// Every background command, for the window that draws them.

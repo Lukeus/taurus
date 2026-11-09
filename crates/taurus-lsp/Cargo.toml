@@ -1,0 +1,29 @@
+[package]
+name = "taurus-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Language-server diagnostics for Taurus: what the compiler says about a file the agent just wrote"
+
+[dependencies]
+taurus-process.workspace = true
+dunce.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
+
+# A language server small enough to read, for the tests to talk to: it reports
+# an error on every line that says BROKEN. Not installed, not shipped.
+[[bin]]
+name = "taurus-fake-lsp"
+path = "fake/lsp.rs"
+test = false
+doc = false

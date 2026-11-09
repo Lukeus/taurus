@@ -993,6 +993,37 @@ problem.
 One case is deliberately never retried: a request that had already started
 streaming. You've read the first half, and a retry would write it again.
 
+### Checked as it's written
+
+A small model's edits tend to fail in one way. Each looks plausible, and the
+third in a row breaks the build, and nothing says so until it runs the tests,
+if it does. A language server already knows, about a second after the write.
+
+So `write_file` and `edit_file` ask it, and the answer goes in the result of
+the call that caused it:
+
+```
+Edited src/parse.rs
+
+rust-analyzer reports 2 errors in src/parse.rs and 1 warning:
+- 41:17: mismatched types: expected `usize`, found `Option<usize>` [E0308]
+- 58:5: cannot find value `cursor` in this scope [E0425]
+```
+
+Errors are listed, at most eight, with the line, the column and the
+compiler's code. Warnings are only counted: a model asked to fix an unused
+import while its edit doesn't compile will fix the import. A file with no
+errors gets one line saying so, which is how the model knows the check ran.
+A server that hasn't finished starting says so once, and one that can't start
+says why, once. One that answers nothing in time says nothing at all.
+
+The file is opened in the server with what was written, checked, and closed
+again, so the server goes back to reading it from disk, where a command may
+change it next.
+
+Which servers run, and how to add one, is in
+[Language servers](configuration.md#language-servers).
+
 ### One thing extends a turn
 
 A turn that changed files and never ran anything afterwards is asked, once,
