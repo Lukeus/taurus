@@ -769,11 +769,15 @@ fn send(events: &Channel<TerminalEvent>, held: &mut Vec<u8>, credit: &Credit) ->
     let data = base64::engine::general_purpose::STANDARD.encode(&held[..]);
     let bytes = held.len();
     held.clear();
+    // Counted before the send, not after it. Once the message is handed over,
+    // the pane can draw it and acknowledge it from another thread before
+    // `send` returns. An acknowledgement that arrives before its bytes are
+    // counted is clamped to what is owed and partly lost, and those bytes then
+    // stay counted as undrawn for good. A failed send needs no correction:
+    // the forwarder stops right after it.
+    credit.sent(bytes);
     match events.send(TerminalEvent::Output { data }) {
-        Ok(()) => {
-            credit.sent(bytes);
-            true
-        }
+        Ok(()) => true,
         Err(e) => {
             // The window closed, or the pane was torn down with output still
             // in flight. The shell is killed by whoever removed it; there is
@@ -927,6 +931,33 @@ mod tests {
             .await
             .expect("a closed shell left its forwarder waiting")
             .unwrap();
+    }
+
+    #[test]
+    fn a_pane_that_draws_before_the_send_returns_owes_nothing() {
+        // The pane acknowledges inside the send itself, which is the earliest
+        // an acknowledgement can arrive. Counted after the send, these bytes
+        // would be owed forever.
+        let credit = Arc::new(Credit::default());
+        let drawing = credit.clone();
+        let events = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                let event: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let drawn = base64::engine::general_purpose::STANDARD
+                    .decode(event["data"].as_str().unwrap())
+                    .unwrap();
+                drawing.ack(drawn.len());
+            }
+            Ok(())
+        });
+
+        let mut held = vec![b'x'; 4096];
+        assert!(send(&events, &mut held, &credit));
+        assert_eq!(
+            credit.in_flight.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "drawn output is still counted as undrawn"
+        );
     }
 
     /// Bytes of output the channel has carried, decoded.
