@@ -56,6 +56,16 @@ pub struct AgentModel {
 /// Per-agent model overrides, keyed by agent name.
 pub type ModelOverrides = HashMap<String, AgentModel>;
 
+/// Turns the `model` a delegation names into something to run it on.
+///
+/// The host's, because it knows the configured providers and the core doesn't.
+/// What's accepted is the host's to decide; Taurus's own takes
+/// `provider/model`, or a model on the conversation's provider.
+#[async_trait]
+pub trait ModelResolver: Send + Sync {
+    async fn resolve(&self, name: &str) -> Result<AgentModel, String>;
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct SpawnInput {
     /// Which kind of sub-agent to run. Must be one of the types this tool's
@@ -75,6 +85,11 @@ pub struct SpawnInput {
     /// workspace.
     #[serde(default)]
     pub isolate: bool,
+    /// Run it on this model instead of the one it would use:
+    /// `provider/model`, or a model on your own provider. For comparing how
+    /// different models do the same task; leave it out otherwise.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// The one tool an isolated delegate's copy can't hold it to among the
@@ -145,6 +160,8 @@ pub struct SpawnSubagent {
     /// because it asked for a copy it then couldn't have, is the one this
     /// catches: it falls back to the workspace, and waits its turn there.
     alone: Arc<tokio::sync::Mutex<()>>,
+    /// What a delegation's `model` is resolved by. `None` refuses one.
+    models: Option<Arc<dyn ModelResolver>>,
 }
 
 impl SpawnSubagent {
@@ -170,7 +187,14 @@ impl SpawnSubagent {
             defaults: AgentConfig::default(),
             isolation: None,
             alone: Arc::default(),
+            models: None,
         }
+    }
+
+    /// Lets a delegation name the model it runs on. See [`ModelResolver`].
+    pub fn with_models(mut self, models: Arc<dyn ModelResolver>) -> Self {
+        self.models = Some(models);
+        self
     }
 
     /// Lets a delegate that writes have a copy of the workspace, so it can run
@@ -344,8 +368,28 @@ impl Tool for SpawnSubagent {
             ));
         }
 
+        // Before any copy is made, so a model that can't be had costs nothing.
+        let chosen = match input.model.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(name) => {
+                let Some(models) = &self.models else {
+                    return Err(ToolError::Rejected(
+                        "this session can't choose a model per delegation; leave out `model`"
+                            .into(),
+                    ));
+                };
+                let resolved = models.resolve(name).await.map_err(ToolError::Rejected)?;
+                Some((name.to_string(), resolved))
+            }
+        };
+
         let writes = !self.reads_only(definition).await;
         let mut notes = Vec::new();
+        if let Some((name, _)) = &chosen {
+            // On the report, so whatever compares several runs can say which
+            // one was which.
+            notes.push(format!("Ran on {name}."));
+        }
         let opened = if writes && (input.isolate || input.background) {
             let tried = match &self.isolation {
                 Some(isolation) => {
@@ -392,7 +436,10 @@ impl Tool for SpawnSubagent {
         let made = opened
             .as_ref()
             .map(|(isolation, opened)| (isolation.clone(), opened.run.clone()));
-        let mut launch = match self.prepare(definition, ctx, opened).await {
+        let mut launch = match self
+            .prepare(definition, ctx, opened, chosen.map(|(_, m)| m))
+            .await
+        {
             Ok(launch) => launch,
             Err(e) => {
                 if let Some((isolation, run)) = made {
@@ -501,6 +548,7 @@ impl SpawnSubagent {
         definition: &AgentDefinition,
         ctx: &ToolContext,
         isolated: Option<(Arc<dyn Isolation>, Opened)>,
+        chosen: Option<AgentModel>,
     ) -> Result<Launch, ToolError> {
         // Depth cap, enforced structurally: the child's registry has no spawn
         // tool, so it cannot delegate no matter what it decides to do.
@@ -565,7 +613,9 @@ impl SpawnSubagent {
             }
         };
 
-        let (provider, model) = match self.overrides.get(definition.name()) {
+        // The delegation's own choice first, then the agent's route, then the
+        // conversation's model.
+        let (provider, model) = match chosen.as_ref().or(self.overrides.get(definition.name())) {
             Some(over) => (
                 over.provider
                     .clone()
@@ -1782,6 +1832,111 @@ mod tests {
         let spent = spent.lock().unwrap().clone();
         let models: Vec<&str> = spent.0.iter().map(|s| s.model.as_str()).collect();
         assert_eq!(models, ["qwen3:32b"], "{spent:?}");
+    }
+
+    /// Resolves any name to itself, on the session's provider, and refuses
+    /// one called `missing`.
+    struct Echo;
+
+    #[async_trait]
+    impl ModelResolver for Echo {
+        async fn resolve(&self, name: &str) -> Result<AgentModel, String> {
+            if name == "missing" {
+                return Err("no provider configured with id 'missing'".into());
+            }
+            Ok(AgentModel {
+                provider: None,
+                model: name.to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delegation_that_names_a_model_runs_on_it_over_the_agent_s_route() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![ScriptedTurn::text("Done.")],
+            Some(vec![custom(
+                "big-thinker",
+                "Think hard.",
+                Some(vec!["read_file"]),
+            )]),
+        );
+        let overrides: ModelOverrides = [(
+            "big-thinker".to_string(),
+            AgentModel {
+                provider: None,
+                model: "qwen3:32b".to_string(),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let tool = tool
+            .with_roster(
+                Arc::new(vec![custom(
+                    "big-thinker",
+                    "Think hard.",
+                    Some(vec!["read_file"]),
+                )]),
+                overrides,
+            )
+            .with_models(Arc::new(Echo));
+
+        let report = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "big-thinker",
+                    "prompt": "Think about this problem and report your conclusion.",
+                    "model": "gemma3:27b"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider.last_request().await.unwrap().model, "gemma3:27b");
+        assert!(
+            report.to_text().contains("Ran on gemma3:27b."),
+            "{}",
+            report.to_text()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_that_cannot_be_had_is_refused_before_anything_runs() {
+        let (tool, provider, ctx, _dir) = fixture_with(
+            vec![ScriptedTurn::text("Done.")],
+            Some(vec![custom("reader", "Read.", Some(vec!["read_file"]))]),
+        );
+        let prompt = "Read the readme and summarize what it says.";
+        let with_resolver = tool.with_models(Arc::new(Echo));
+        let err = with_resolver
+            .execute(
+                serde_json::json!({"agent_type": "reader", "prompt": prompt, "model": "missing"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no provider configured"), "{err}");
+        assert!(provider.last_request().await.is_none(), "nothing was sent");
+    }
+
+    #[tokio::test]
+    async fn without_a_resolver_naming_a_model_is_refused() {
+        let (tool, _provider, ctx, _dir) = fixture_with(
+            vec![ScriptedTurn::text("Done.")],
+            Some(vec![custom("reader", "Read.", Some(vec!["read_file"]))]),
+        );
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "agent_type": "reader",
+                    "prompt": "Read the readme and summarize what it says.",
+                    "model": "gemma3:27b"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("leave out `model`"), "{err}");
     }
 
     #[test]

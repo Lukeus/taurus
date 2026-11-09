@@ -102,6 +102,7 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
     taurus_tools::builtin::terminal::READ_TERMINAL_TOOL,
     taurus_core::APPLY_TOOL,
+    taurus_core::COMPARE_TOOL,
     crate::memory::REMEMBER_TOOL,
     crate::notebook::OPEN_NOTE_TOOL,
 ];

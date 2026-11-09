@@ -787,6 +787,25 @@ the backlog, and they're the minority.
   call a child makes goes through the same permission engine as the parent's,
   so `tools:` is a scope, not a sandbox. A per-agent permission policy would
   be a second thing to keep in step with the first, and there isn't one.
+- **`/best-of` compares what was kept, not how it was got.** The diffs are
+  read, and each report says whether its delegate built and tested. Nothing
+  runs the tests again in each copy before the comparison, because the copies
+  are gone by then: each is a commit once its delegate stops. A run worth
+  trusting more than its report says can be applied and tested, and rewound.
+- **The models in a `/best-of` share the machine.** On one local GPU, two
+  local models run one after the other at best, and a run's time says more
+  about the queue than the model. Mixing one local model with hosted ones is
+  where it pays.
+- **A `/best-of` run's model isn't checked until it starts.** A typo in a
+  model name on an existing provider fails that one delegate, with the
+  backend's own error on its card. A provider id that doesn't exist is read as
+  a model name on the conversation's provider, for the reason
+  [One task on several models](capabilities.md#one-task-on-several-models)
+  gives, and fails the same way.
+- **The comparison is the conversation's model's judgment.** The table and the
+  recommendation are written by whichever model the conversation is on,
+  reading diffs that may come from models stronger than it. The diffs are
+  there to check it against, and the choice is still a button you press.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
   is caught, but the calls have to match argument for argument. Say a model
   asks the same unanswerable question three slightly different ways, like

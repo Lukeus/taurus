@@ -74,6 +74,9 @@ impl Host {
         let concurrent = self.settings.read().await.max_concurrent_agents as usize;
         let models = self.agent_models.read().await.clone();
         let logs = SubagentLogs::new(self.workspace().await, turn.session_id);
+        let book = Arc::new(ProviderBook {
+            configs: self.providers.read().await.clone(),
+        });
         registry.register(Arc::new(
             SpawnSubagent::new(provider.clone(), self.registry.clone(), model, concurrent)
                 .with_defaults(base.clone())
@@ -85,7 +88,10 @@ impl Host {
                 .with_recorder(Arc::new(logs))
                 // A delegate that writes can have a copy of the workspace, so
                 // it can run beside others and in the background.
-                .with_isolation(self.worktrees.clone()),
+                .with_isolation(self.worktrees.clone())
+                // A delegation can name its model, which is how one task is
+                // tried on several: see `/best-of`.
+                .with_models(book),
         ));
 
         // Registered per turn, alongside the spawn tool and for the same
@@ -98,6 +104,11 @@ impl Host {
         // conversation's own delegates' work, and a delegate has none of its
         // own to apply.
         registry.register(Arc::new(taurus_core::ApplyDelegate::new(
+            self.worktrees.clone(),
+        )));
+        // Beside it, for the same reason: the runs it reads are this
+        // conversation's delegates'.
+        registry.register(Arc::new(taurus_core::CompareDelegates::new(
             self.worktrees.clone(),
         )));
         registry.register(Arc::new(ShowTable));
@@ -704,6 +715,50 @@ fn accepted_calls(messages: &[Message]) -> std::collections::HashSet<(usize, usi
         })
         .map(|(_, call)| call)
         .collect()
+}
+
+/// The configured providers as a turn found them, for a delegation that names
+/// its own model. See [`taurus_core::ModelResolver`].
+///
+/// A snapshot rather than the host, so a turn resolves against the providers
+/// it started with, like every other thing it reads at the start.
+struct ProviderBook {
+    configs: Vec<ProviderConfig>,
+}
+
+#[async_trait::async_trait]
+impl taurus_core::ModelResolver for ProviderBook {
+    /// `provider/model` when the part before the first slash is a configured
+    /// provider's id, and otherwise the whole name as a model on the
+    /// conversation's provider: `meta-llama/Llama-3.3-70B` is a model, on an
+    /// OpenAI-compatible server, not a provider called `meta-llama`.
+    async fn resolve(&self, name: &str) -> Result<AgentModel, String> {
+        let split = name
+            .split_once('/')
+            .and_then(|(id, model)| {
+                let config = self.configs.iter().find(|c| c.id == id)?;
+                Some((config.clone(), model.trim()))
+            })
+            .filter(|(_, model)| !model.is_empty());
+        let Some((config, model)) = split else {
+            return Ok(AgentModel {
+                provider: None,
+                model: name.to_string(),
+            });
+        };
+        // Built per delegation and not kept, as a delegate's route is: the
+        // key is read off the runtime, because a locked keychain answers with
+        // a dialog.
+        let id = config.id.clone();
+        let lookup = config.clone();
+        let key = tokio::task::spawn_blocking(move || lookup.api_key())
+            .await
+            .map_err(|e| format!("reading the API key for '{id}' failed: {e}"))?;
+        Ok(AgentModel {
+            provider: Some(Host::build_provider(config, key)),
+            model: model.to_string(),
+        })
+    }
 }
 
 #[cfg(test)]
