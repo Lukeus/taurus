@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -64,14 +64,41 @@ pub struct Outbox {
     tx: mpsc::UnboundedSender<Value>,
     pending: Mutex<HashMap<i64, oneshot::Sender<Value>>>,
     next: AtomicI64,
+    /// Set once the editor has gone: a request made after that would wait
+    /// for an answer nobody will send.
+    closed: AtomicBool,
+    /// The host's workspace, kept here for the permission prompt, which
+    /// resolves a tool's relative path against it and has no host to ask.
+    workspace: Mutex<PathBuf>,
 }
 
 impl Outbox {
-    fn new(tx: mpsc::UnboundedSender<Value>) -> Self {
+    fn new(tx: mpsc::UnboundedSender<Value>, workspace: PathBuf) -> Self {
         Self {
             tx,
             pending: Mutex::default(),
             next: AtomicI64::new(1),
+            closed: AtomicBool::new(false),
+            workspace: Mutex::new(workspace),
+        }
+    }
+
+    /// The editor has gone. Every request waiting for it is answered with
+    /// nothing, which a permission prompt reads as a deny, and none is made
+    /// again.
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.pending.lock().unwrap().clear();
+    }
+
+    /// `path` as the tools would resolve it: absolute as given, and otherwise
+    /// under the workspace.
+    fn resolve(&self, path: &str) -> PathBuf {
+        let path = Path::new(path);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.workspace.lock().unwrap().join(path)
         }
     }
 
@@ -106,7 +133,15 @@ impl Outbox {
     async fn request(&self, method: &str, params: Value) -> Option<Value> {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        {
+            // Checked under the lock `close` clears, so a request can't slip
+            // in between the two and wait forever.
+            let mut pending = self.pending.lock().unwrap();
+            if self.closed.load(Ordering::SeqCst) {
+                return None;
+            }
+            pending.insert(id, tx);
+        }
         self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
         let answer = rx.await.ok()?;
         answer.get("result").cloned()
@@ -141,7 +176,19 @@ impl PermissionPrompt for EditorPrompt {
         let Some(session) = request.session.clone() else {
             return PermissionDecision::Deny;
         };
-        let params = permission_params(&session, &request);
+        let path = request
+            .input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|p| self.0.resolve(p));
+        // What the file holds now, for a write's diff: off the runtime, and
+        // at the path the tool will write, not one relative to wherever the
+        // editor started this process.
+        let before = match (&path, request.tool.as_str()) {
+            (Some(path), "write_file") => tokio::fs::read_to_string(path).await.ok(),
+            _ => None,
+        };
+        let params = permission_params(&session, &request, path.as_deref(), before);
         let Some(result) = self.0.request("session/request_permission", params).await else {
             return PermissionDecision::Deny;
         };
@@ -150,7 +197,16 @@ impl PermissionPrompt for EditorPrompt {
 }
 
 /// What `session/request_permission` is sent for `request`.
-fn permission_params(session: &str, request: &PermissionRequest) -> Value {
+///
+/// `path` is the call's path resolved to an absolute one, which is what ACP
+/// wants in a diff and a location, and `before` is what a `write_file` would
+/// replace.
+fn permission_params(
+    session: &str,
+    request: &PermissionRequest,
+    path: Option<&Path>,
+    before: Option<String>,
+) -> Value {
     let mut options = vec![json!({
         "optionId": "allow-once", "name": "Allow once", "kind": "allow_once"
     })];
@@ -171,10 +227,10 @@ fn permission_params(session: &str, request: &PermissionRequest) -> Value {
         "status": "pending",
         "rawInput": request.input,
     });
-    if let Some(content) = edit_content(&request.tool, &request.input) {
-        tool_call["content"] = json!([content]);
-    }
-    if let Some(path) = request.input.get("path").and_then(Value::as_str) {
+    if let Some(path) = path {
+        if let Some(content) = edit_content(&request.tool, &request.input, path, before) {
+            tool_call["content"] = json!([content]);
+        }
         tool_call["locations"] = json!([{ "path": path }]);
     }
     json!({ "sessionId": session, "toolCall": tool_call, "options": options })
@@ -197,8 +253,7 @@ fn decision(result: &Value) -> PermissionDecision {
 /// An edit as ACP's diff content, so the editor can show it as one. The
 /// replacement itself, for `edit_file`: what the model sent is the part that
 /// changes, and the editor places it.
-fn edit_content(tool: &str, input: &Value) -> Option<Value> {
-    let path = input.get("path")?.as_str()?;
+fn edit_content(tool: &str, input: &Value, path: &Path, before: Option<String>) -> Option<Value> {
     match tool {
         "edit_file" => Some(json!({
             "type": "diff",
@@ -209,7 +264,7 @@ fn edit_content(tool: &str, input: &Value) -> Option<Value> {
         "write_file" => Some(json!({
             "type": "diff",
             "path": path,
-            "oldText": std::fs::read_to_string(path).ok(),
+            "oldText": before,
             "newText": input.get("content")?.as_str()?,
         })),
         _ => None,
@@ -334,8 +389,14 @@ fn stop_reason(
     }
 }
 
+/// How long turns have, once the editor has gone, to stop on their own
+/// before they're dropped where they are.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// One conversation the editor has open.
 struct Conversation {
+    /// The folder it was opened in, which its turns run in.
+    cwd: PathBuf,
     state: tokio::sync::Mutex<(Session, SessionLog)>,
     provider: String,
     model: String,
@@ -348,15 +409,36 @@ struct Server {
     out: Arc<Outbox>,
     args: SessionArgs,
     sessions: Mutex<HashMap<String, Arc<Conversation>>>,
+    /// Held shared by every turn for as long as it runs, and exclusively to
+    /// change the host's workspace. One host has one workspace, so a turn in
+    /// another folder waits for the turns in this one to end, and no turn
+    /// ever has its folder changed under it.
+    folder: tokio::sync::RwLock<()>,
 }
 
 /// Runs the agent until the editor closes stdin.
 pub async fn serve(args: SessionArgs) -> Result<std::process::ExitCode, String> {
+    let workspace = match &args.workspace {
+        Some(path) => path
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", path.display()))?,
+        None => Host::default_workspace(),
+    };
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
-    let out = Arc::new(Outbox::new(tx));
+    let out = Arc::new(Outbox::new(tx, workspace.clone()));
+    // Ended on purpose rather than when every sender is gone: the host holds
+    // one, through its permission prompts, for as long as anything holds the
+    // host.
+    let stop_writing = CancellationToken::new();
+    let stopped = stop_writing.clone();
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
-        while let Some(message) = rx.recv().await {
+        loop {
+            let message = tokio::select! {
+                message = rx.recv() => message,
+                () = stopped.cancelled() => rx.try_recv().ok(),
+            };
+            let Some(message) = message else { break };
             // `to_string` never writes a raw newline, which is what ACP's
             // framing needs: one message per line.
             let mut line = message.to_string();
@@ -368,12 +450,6 @@ pub async fn serve(args: SessionArgs) -> Result<std::process::ExitCode, String> 
         }
     });
 
-    let workspace = match &args.workspace {
-        Some(path) => path
-            .canonicalize()
-            .map_err(|e| format!("{}: {e}", path.display()))?,
-        None => Host::default_workspace(),
-    };
     let host = Arc::new(Host::new(
         workspace,
         Arc::new(EditorPrompts(out.clone())),
@@ -388,7 +464,9 @@ pub async fn serve(args: SessionArgs) -> Result<std::process::ExitCode, String> 
         out: out.clone(),
         args,
         sessions: Mutex::default(),
+        folder: tokio::sync::RwLock::new(()),
     });
+    let mut handling = tokio::task::JoinSet::new();
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
@@ -401,11 +479,29 @@ pub async fn serve(args: SessionArgs) -> Result<std::process::ExitCode, String> 
         let server = server.clone();
         // Each message on its own task: a prompt runs for minutes, and the
         // cancel and permission answers for it arrive while it does.
-        tokio::spawn(async move { server.handle(message).await });
+        handling.spawn(async move { server.handle(message).await });
+        // Finished ones, so the set doesn't grow with every message.
+        while handling.try_join_next().is_some() {}
+    }
+
+    // The editor has gone. Nothing it started should go on without it: every
+    // turn is stopped, every question to it answered with a no, and what
+    // doesn't stop within the grace is dropped where it is.
+    server.out.close();
+    for conversation in server.sessions.lock().unwrap().values() {
+        if let Some(token) = conversation.running.lock().unwrap().as_ref() {
+            token.cancel();
+        }
+    }
+    let drained = tokio::time::timeout(STOP_GRACE, async {
+        while handling.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        handling.abort_all();
     }
     server.host.stop_background();
-    drop(server);
-    drop(out);
+    stop_writing.cancel();
     let _ = writer.await;
     Ok(std::process::ExitCode::SUCCESS)
 }
@@ -461,17 +557,22 @@ impl Server {
             .as_str()
             .map(PathBuf::from)
             .ok_or((INVALID_PARAMS, "session/new needs a cwd".to_string()))?;
-        self.enter(&cwd).await?;
+        let cwd = cwd
+            .canonicalize()
+            .map_err(|e| (INVALID_PARAMS, format!("{}: {e}", cwd.display())))?;
+        // In the folder it's for, so the model is resolved against that
+        // folder's config.
+        let _here = self.enter(&cwd).await?;
         let (provider, model) = self
             .host
             .resolve_model(self.args.provider.as_deref(), self.args.model.as_deref())
             .await
             .map_err(|e| (INTERNAL_ERROR, e))?;
         let session = Session::new(&model);
-        let workspace = self.host.workspace().await;
-        let log = SessionLog::create(&session, &workspace, self.host.branch().await);
+        let log = SessionLog::create(&session, &cwd, self.host.branch().await);
         let id = session.id.clone();
         let conversation = Arc::new(Conversation {
+            cwd,
             state: tokio::sync::Mutex::new((session, log)),
             provider,
             model,
@@ -484,33 +585,29 @@ impl Server {
         Ok(json!({ "sessionId": id }))
     }
 
-    /// Makes `cwd` the host's workspace. One host has one workspace, so a
-    /// second folder while a turn runs in the first is refused rather than
-    /// switched under it.
-    async fn enter(&self, cwd: &Path) -> Result<(), (i64, String)> {
-        let canonical = cwd
-            .canonicalize()
-            .map_err(|e| (INVALID_PARAMS, format!("{}: {e}", cwd.display())))?;
-        if self.host.workspace().await == canonical {
-            return Ok(());
+    /// Makes `cwd` the host's workspace, and holds it there until the guard
+    /// goes. Shared with every other turn in the same folder; a different
+    /// folder waits until no turn holds this one.
+    async fn enter(
+        &self,
+        cwd: &Path,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, (i64, String)> {
+        let shared = self.folder.read().await;
+        if self.host.workspace().await == cwd {
+            return Ok(shared);
         }
-        let busy = self
-            .sessions
-            .lock()
-            .unwrap()
-            .values()
-            .any(|c| c.running.lock().unwrap().is_some());
-        if busy {
-            return Err((
-                INVALID_PARAMS,
-                "a turn is running in another folder; open this one once it ends".into(),
-            ));
+        drop(shared);
+        let only = self.folder.write().await;
+        // Checked again: another prompt for this folder may have switched
+        // to it while this one waited.
+        if self.host.workspace().await != cwd {
+            self.host
+                .set_workspace(cwd)
+                .await
+                .map_err(|e| (INVALID_PARAMS, e))?;
+            *self.out.workspace.lock().unwrap() = self.host.workspace().await;
         }
-        self.host
-            .set_workspace(&canonical)
-            .await
-            .map_err(|e| (INVALID_PARAMS, e))?;
-        Ok(())
+        Ok(only.downgrade())
     }
 
     fn conversation(&self, params: &Value) -> Result<(String, Arc<Conversation>), (i64, String)> {
@@ -541,6 +638,8 @@ impl Server {
 
         // One turn at a time in a conversation: the second waits here.
         let mut state = conversation.state.lock().await;
+        // And in its own folder, which stays put until the turn is over.
+        let _here = self.enter(&conversation.cwd).await?;
         let cancel = CancellationToken::new();
         *conversation.running.lock().unwrap() = Some(cancel.clone());
         let outcome = self
@@ -649,7 +748,7 @@ mod tests {
             json!({"path": "/w/src/a.rs", "old_string": "a", "new_string": "b"}),
             true,
         );
-        let params = permission_params("s1", &req);
+        let params = permission_params("s1", &req, Some(Path::new("/w/src/a.rs")), None);
         assert_eq!(params["sessionId"], "s1");
         let call = &params["toolCall"];
         assert_eq!(call["toolCallId"], "call_1");
@@ -671,7 +770,7 @@ mod tests {
     #[test]
     fn always_is_offered_only_where_taurus_offers_it() {
         let req = request("run_command", json!({"command": "ls"}), false);
-        let params = permission_params("s1", &req);
+        let params = permission_params("s1", &req, None, None);
         assert_eq!(params["options"].as_array().unwrap().len(), 2);
         assert_eq!(params["toolCall"]["kind"], "execute");
     }

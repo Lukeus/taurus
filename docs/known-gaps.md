@@ -799,10 +799,16 @@ the backlog, and they're the minority.
   structured question is an optional capability few editors have, so a
   question the model asks there is answered "decide for yourself", as it is in
   a piped `taurus run`.
-- **One folder at a time per `taurus acp`.** One host has one workspace, so a
-  session in a second folder is refused while a turn runs in the first, and
-  switches the workspace once nothing is running. Editors start one agent
-  process per window, which is usually one folder anyway.
+- **One folder at a time per `taurus acp`.** One host has one workspace.
+  Sessions in different folders each run in their own, but not at the same
+  time: a turn in a second folder waits until the turns in the first have
+  ended, and the workspace is switched only then, so no running turn has its
+  folder changed under it. Editors start one agent process per window, which
+  is usually one folder anyway.
+- **An editor that quits stops what it started.** Running turns are canceled,
+  a permission question still waiting is answered no, and anything that
+  hasn't stopped ten seconds later is dropped where it is. A command a turn
+  left running in the background is stopped with it.
 - **Pictures and plans don't reach the editor.** An image pasted in the
   editor's prompt is left out (`promptCapabilities.image` is false), and
   Taurus's pinned plan isn't sent as an ACP `plan` update. Both are mappings

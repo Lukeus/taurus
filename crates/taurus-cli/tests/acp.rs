@@ -46,6 +46,9 @@ impl Editor {
         .unwrap();
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_taurus"))
             .arg("acp")
+            // Somewhere that isn't the workspace, as an editor's is: a path
+            // resolved against the process's own folder would land here.
+            .current_dir(home.path())
             .env("TAURUS_HOME", home.path())
             .env("RUST_LOG", "off")
             .stdin(Stdio::piped())
@@ -98,6 +101,21 @@ impl Editor {
         let answer = self.next().await;
         assert_eq!(answer["id"], id, "{answer}");
         answer
+    }
+
+    /// A session in `cwd`, after `initialize` has been done.
+    async fn open_in(&mut self, id: i64, cwd: &std::path::Path) -> String {
+        let created = self
+            .call(
+                id,
+                "session/new",
+                json!({"cwd": cwd.display().to_string(), "mcpServers": []}),
+            )
+            .await;
+        created["result"]["sessionId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{created}"))
+            .to_string()
     }
 
     async fn open(&mut self) -> String {
@@ -185,19 +203,26 @@ async fn a_write_is_asked_about_in_the_editor_and_runs_when_allowed() {
         .await;
     let mut editor = Editor::start(&server).await;
     let session = editor.open().await;
+    std::fs::write(editor.workspace.join("note.txt"), "what was there").unwrap();
 
     editor
         .send(json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
             "params": {"sessionId": session, "prompt": [{"type": "text", "text": "write a note"}]}}))
         .await;
 
-    // The agent asks before writing, with the edit as a diff.
+    // The agent asks before writing, with the edit as a diff against the
+    // file in the workspace, named by its whole path, whatever folder the
+    // editor started the agent in.
     let asked = editor.next().await;
     assert_eq!(asked["method"], "session/request_permission", "{asked}");
     let tool_call = &asked["params"]["toolCall"];
+    let full = editor.workspace.join("note.txt").display().to_string();
     assert_eq!(tool_call["kind"], "edit");
     assert_eq!(tool_call["content"][0]["type"], "diff");
+    assert_eq!(tool_call["content"][0]["path"], full);
+    assert_eq!(tool_call["content"][0]["oldText"], "what was there");
     assert_eq!(tool_call["content"][0]["newText"], "from the editor");
+    assert_eq!(tool_call["locations"][0]["path"], full);
     editor
         .send(json!({"jsonrpc": "2.0", "id": asked["id"],
             "result": {"outcome": {"outcome": "selected", "optionId": "allow-once"}}}))
@@ -272,4 +297,98 @@ async fn an_unknown_method_and_an_unknown_session_are_errors_not_silence() {
         )
         .await;
     assert_eq!(missing["error"]["code"], -32602, "{missing}");
+}
+
+#[tokio::test]
+async fn a_session_s_turn_runs_in_its_own_folder_after_another_was_opened() {
+    let server = MockServer::start().await;
+    let call = json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+        "index": 0, "id": "call_1", "type": "function",
+        "function": {"name": "write_file", "arguments": "{\"path\":\"note.txt\",\"content\":\"A\"}"}
+    }]}}]});
+    let stop = json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]});
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(sse(&[call, stop]))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(says("Done."))
+        .mount(&server)
+        .await;
+    let mut editor = Editor::start(&server).await;
+    let a = editor.open().await;
+    // A second window's folder, opened after the first: the host now has
+    // this one open.
+    let other = tempfile::tempdir().unwrap();
+    let other_path = other.path().canonicalize().unwrap();
+    editor.open_in(5, &other_path).await;
+
+    editor
+        .send(
+            json!({"jsonrpc": "2.0", "id": 6, "method": "session/prompt",
+            "params": {"sessionId": a, "prompt": [{"type": "text", "text": "write a note"}]}}),
+        )
+        .await;
+    let asked = editor.next().await;
+    assert_eq!(asked["method"], "session/request_permission", "{asked}");
+    editor
+        .send(json!({"jsonrpc": "2.0", "id": asked["id"],
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow-once"}}}))
+        .await;
+    let done = editor.next().await;
+    assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+    assert_eq!(
+        std::fs::read_to_string(editor.workspace.join("note.txt")).unwrap(),
+        "A",
+        "written in session A's folder"
+    );
+    assert!(
+        !other_path.join("note.txt").exists(),
+        "not in the folder opened last"
+    );
+}
+
+#[tokio::test]
+async fn the_agent_exits_when_the_editor_goes_even_mid_question() {
+    let server = MockServer::start().await;
+    let call = json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+        "index": 0, "id": "call_1", "type": "function",
+        "function": {"name": "write_file", "arguments": "{\"path\":\"note.txt\",\"content\":\"x\"}"}
+    }]}}]});
+    let stop = json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]});
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(sse(&[call, stop]))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(says("Stopped."))
+        .mount(&server)
+        .await;
+    let mut editor = Editor::start(&server).await;
+    let session = editor.open().await;
+    editor
+        .send(json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+            "params": {"sessionId": session, "prompt": [{"type": "text", "text": "write a note"}]}}))
+        .await;
+    let asked = editor.next().await;
+    assert_eq!(asked["method"], "session/request_permission", "{asked}");
+
+    // The editor quits with the question unanswered.
+    let Editor {
+        mut _child, stdin, ..
+    } = editor;
+    drop(stdin);
+    let exited = tokio::time::timeout(Duration::from_secs(15), _child.wait()).await;
+    assert!(
+        exited.is_ok(),
+        "taurus acp was still running after its editor went"
+    );
 }
