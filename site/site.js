@@ -20,6 +20,51 @@
     dialog.showModal();
   });
 
+  // ---- The drive: scroll position becomes the buggy's trip into the garage. ----
+  // p is how far down the page you are, 0 to 1. The car covers the road by
+  // p = 0.9, the door goes up ahead of it (0.55 to 0.72) and comes down behind it
+  // (0.93 to 1). Nothing runs with reduced motion; the CSS hides the strip too.
+  document.addEventListener("DOMContentLoaded", () => {
+    const drive = document.querySelector(".drive");
+    const motion = matchMedia("(prefers-reduced-motion: reduce)");
+    if (!drive || motion.matches) return;
+
+    const root = document.documentElement;
+    const car = drive.querySelector(".drive-car");
+    const garage = drive.querySelector(".drive-garage");
+    const span = (p, from, to) => Math.min(1, Math.max(0, (p - from) / (to - from)));
+    let queued = false;
+
+    const draw = () => {
+      queued = false;
+      const max = root.scrollHeight - innerHeight;
+      const p = max > 0 ? Math.min(1, Math.max(0, scrollY / max)) : 0;
+      const carW = car.getBoundingClientRect().width;
+      const g = garage.getBoundingClientRect();
+      // From just off the left edge to centred in the garage's doorway.
+      const start = -carW - 8;
+      const end = g.left + g.width / 2 - carW / 2;
+      const t = span(p, 0.02, 0.9);
+      const x = start + (end - start) * t;
+      const wheel = (Math.PI * carW * 26) / 120; // wheel circumference in px
+      const door = span(p, 0.55, 0.72) - span(p, 0.93, 1);
+
+      root.style.setProperty("--p", p.toFixed(4));
+      drive.style.setProperty("--car-x", `${x.toFixed(1)}px`);
+      drive.style.setProperty("--spin", `${(((x - start) / wheel) * 360).toFixed(1)}deg`);
+      drive.style.setProperty("--door", door.toFixed(3));
+      drive.classList.toggle("on", scrollY > 120);
+      drive.classList.toggle("home", p > 0.98);
+    };
+    const queue = () => {
+      if (!queued) requestAnimationFrame(draw);
+      queued = true;
+    };
+    addEventListener("scroll", queue, { passive: true });
+    addEventListener("resize", queue);
+    draw();
+  });
+
   // ---- Tabs (WAI-ARIA tabs pattern, arrow keys move between them). ----
   document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll(".tabs").forEach((tabs) => {

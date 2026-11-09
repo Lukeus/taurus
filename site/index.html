@@ -468,6 +468,59 @@ src/                    <span class="c">React UI</span></pre>
       </section>
     </main>
 
+    <!-- Scroll-linked decoration: the buggy drives into the garage as the page
+         scrolls, and the door shuts at the bottom. site.js moves it; without
+         the script, or with reduced motion, it never shows. -->
+    <div class="drive" aria-hidden="true">
+      <div class="drive-road"></div>
+      <div class="drive-garage">
+        <div class="garage-inside"></div>
+      </div>
+      <svg class="drive-car" viewBox="0 0 120 64" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <defs>
+          <linearGradient id="beam" x1="0" x2="1">
+            <stop offset="0" stop-color="var(--cyan)" stop-opacity="0.55" />
+            <stop offset="1" stop-color="var(--cyan)" stop-opacity="0" />
+          </linearGradient>
+        </defs>
+        <path class="beam" d="M111 34 L170 22 L170 50 Z" fill="url(#beam)" stroke="none" />
+        <path d="M44 28 L50 6 H72 L80 20" stroke="var(--text-dim)" stroke-width="3" />
+        <path
+          d="M6 42 L10 30 L42 27 L54 18 H80 L90 28 L110 31 L113 42 L106 46 H14 Z"
+          fill="var(--surface-2)"
+          stroke="var(--cyan)"
+          stroke-width="2.5"
+        />
+        <path d="M18 36 H52 L60 30 H100" stroke="var(--peach)" stroke-width="2" />
+        <circle cx="110" cy="35" r="2.6" fill="var(--cyan)" stroke="none" />
+        <rect x="5" y="32" width="4" height="6" rx="1" fill="var(--peach)" stroke="none" />
+        <g class="wheel">
+          <circle cx="28" cy="48" r="13" fill="var(--ink)" stroke="var(--cyan)" stroke-width="3" />
+          <circle cx="28" cy="48" r="5" stroke="var(--peach)" stroke-width="2" />
+          <path d="M28 37 V43 M28 53 V59 M17 48 H23 M33 48 H39" stroke="var(--cyan)" stroke-width="2" />
+        </g>
+        <g class="wheel">
+          <circle cx="92" cy="48" r="13" fill="var(--ink)" stroke="var(--cyan)" stroke-width="3" />
+          <circle cx="92" cy="48" r="5" stroke="var(--peach)" stroke-width="2" />
+          <path d="M92 37 V43 M92 53 V59 M81 48 H87 M97 48 H103" stroke="var(--cyan)" stroke-width="2" />
+        </g>
+      </svg>
+      <div class="drive-garage front">
+        <svg viewBox="0 0 100 80" fill="none" stroke-linejoin="round">
+          <path
+            d="M4 79 V34 L50 5 L96 34 V79 Z M22 79 V44 H78 V79 Z"
+            fill="var(--surface-1)"
+            fill-rule="evenodd"
+            stroke="var(--cyan)"
+            stroke-width="2"
+          />
+          <path d="M12 32 L50 9 L88 32" stroke="var(--peach)" stroke-width="1.5" />
+          <text x="50" y="35" text-anchor="middle" fill="var(--cyan)" font-family="var(--mono)" font-size="10">{ &gt;_ }</text>
+        </svg>
+        <div class="garage-door"></div>
+      </div>
+    </div>
+
     <footer class="site-footer">
       <div class="wrap">
         <span>Taurus AI Shell · MIT licensed</span>
