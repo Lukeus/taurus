@@ -978,8 +978,132 @@ dialog.lightbox p {
   }
 }
 
+/* ---------- The drive (landing page only) ----------
+   A buggy that drives into the garage as you scroll. site.js sets --car-x,
+   --spin and --door on .drive, and --p (0 to 1, how far down the page) on the
+   root. Layers, back to front: the dark inside of the garage, the car, the
+   garage front with a hole where the door is, and the door itself. The car is
+   only seen through that hole once it's in, so it really goes inside. */
+
+.drive {
+  --g: 124px; /* garage width; the SVG is drawn at 100 units, so 1 unit = g/100 */
+  --car-w: 74px;
+  position: fixed;
+  inset: auto 0 0 0;
+  height: calc(var(--g) * 0.8 + 18px);
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.5s var(--ease), transform 0.5s var(--ease);
+  background: linear-gradient(to top, var(--ink) 30%, transparent);
+}
+.drive.on {
+  opacity: 1;
+  transform: none;
+}
+.drive-road {
+  position: absolute;
+  inset: auto 0 10px 0;
+  height: 2px;
+  background: repeating-linear-gradient(90deg, var(--line) 0 18px, transparent 18px 30px);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 15%);
+  mask-image: linear-gradient(90deg, transparent, #000 15%);
+}
+.drive-garage {
+  position: absolute;
+  right: 24px;
+  bottom: 11px;
+  width: var(--g);
+  aspect-ratio: 100 / 80;
+}
+.drive-garage svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.drive-garage.front {
+  z-index: 2;
+}
+/* The hole in the garage front: x 22–78, y 44–79 of the 100×80 drawing. */
+.garage-inside,
+.garage-door {
+  position: absolute;
+  left: 22%;
+  width: 56%;
+  top: 55%;
+  bottom: 1.25%;
+}
+.garage-inside {
+  background: #05080b;
+  transition: box-shadow 0.4s;
+}
+.drive.home .garage-inside {
+  box-shadow: inset 0 6px 14px -4px color-mix(in srgb, var(--peach) 70%, transparent);
+}
+.garage-door {
+  transform-origin: top;
+  transform: scaleY(calc(1 - var(--door, 0)));
+  background: repeating-linear-gradient(
+      to bottom,
+      var(--surface-2) 0 5px,
+      var(--line) 5px 6px
+    );
+  border-bottom: 2px solid var(--cyan);
+}
+.drive-car {
+  position: absolute;
+  left: 0;
+  bottom: 12px;
+  width: var(--car-w);
+  overflow: visible;
+  z-index: 1;
+  transform: translateX(var(--car-x, -100px));
+  will-change: transform;
+}
+.drive-car .wheel {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: rotate(var(--spin, 0deg));
+}
+.drive-car .beam {
+  opacity: 0.7;
+}
+.drive.home .drive-car .beam {
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+/* Room under the footer, so the parked car doesn't sit on its links. */
+body:has(.drive) .site-footer {
+  padding-bottom: 130px;
+}
+
+/* The watermark leans in toward its own garage as you go down the page. */
+body:has(.drive)::before {
+  transform-origin: 72% 40%;
+  transform: scale(calc(1 + var(--p, 0) * 0.14));
+}
+
+@media (max-width: 640px) {
+  .drive {
+    --g: 84px;
+    --car-w: 52px;
+  }
+  .drive-garage {
+    right: 12px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+  .drive {
+    display: none;
+  }
+  body:has(.drive)::before {
+    transform: none;
   }
 }
