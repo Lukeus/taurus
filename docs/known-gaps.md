@@ -216,8 +216,8 @@ the backlog, and they're the minority.
   `old_str`, `new_str`, `file_text`) follow Copilot's documentation. Claude
   Code's format, which Copilot also reads, has run against real Claude Code
   and Codex plugins.
-- **Parts of a Claude Code plugin have nothing here to run them.** LSP
-  servers, output styles, workflows, themes, monitors, `bin/` on `PATH`, a
+- **Parts of a Claude Code plugin have nothing here to run them.** Its LSP
+  servers (Taurus runs its own, from `lsp` in settings), output styles, workflows, themes, monitors, `bin/` on `PATH`, a
   plugin's own settings, `userConfig` and dependencies. Each is listed on the
   plugin by name, with why. A plugin's `commands/` aren't on that list: each
   file in them runs as a one-file skill named `plugin:file`, the way Claude
@@ -807,6 +807,34 @@ the backlog, and they're the minority.
   comma removed runs as if it had been written correctly, and only the log
   says otherwise. Nothing is added by a repair, so what runs is what the model
   wrote, minus the characters JSON doesn't allow.
+- **Only the file tools' writes are checked.** A `sed -i`, a formatter or a
+  script the model ran changes files no language server is asked about, and
+  so does a canvas edit. The model hears about those when it builds.
+- **A check is of one file, after one write.** What the server says about the
+  file just written is reported. An edit that breaks a *different* file, by
+  renaming a function its callers still use, is only caught when one of those
+  callers is written or the build runs. The server knows about the callers
+  that are open, and may have published about them, but only the file just
+  written is reported, so one edit's result doesn't list another file's
+  older problems.
+- **A server that publishes in stages may be caught partway.** After the
+  first answer about a file, a check waits 400 ms for a later one, because
+  several servers report syntax first and types second. rust-analyzer's
+  `cargo check` pass usually takes longer than that, so what's reported is
+  rust-analyzer's own analysis, which misses some errors only the compiler
+  finds, borrow checking among them.
+- **A delegate in its own copy of the workspace isn't checked.** Its writes
+  land outside the folder the servers were started in, and checking them
+  against the original project would report the original's state. They're
+  left unchecked rather than checked wrongly.
+- **One check at a time per server.** Two writes to Rust files at once wait
+  for each other, because two checks would each wait out the other's answers.
+  The wait counts against the same `timeout_ms`, so a write queued behind
+  others gets whatever time is left, and no answer if none is.
+- **A server that exits stays gone until the next reload.** Its first failure
+  is reported to the model, once. It isn't restarted on its own, so a server
+  that crashes on startup doesn't crash again on every edit. Switching folders,
+  changing a setting, or trusting the workspace starts it over.
 - **Stall detection needs an exact repeat.** Alternating between two dead ends
   is caught, but the calls have to match argument for argument. Say a model
   asks the same unanswerable question three slightly different ways, like

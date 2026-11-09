@@ -258,6 +258,7 @@ What it asks before acting, and how you put things back afterwards.
 | Feature | What it is |
 |---|---|
 | [Permissions](docs/safety.md#permissions) | Every write shows up as a diff before you approve it. Remember a decision for this project or for everywhere. |
+| [Checked as it's written](docs/working-with-it.md#checked-as-its-written) | After each edit, the language server you already have installed says what broke, in the result the model reads next. Only in a trusted workspace. |
 | [Hooks](docs/configuration.md#hooks) | Your own programs, run at fixed points in a turn. A hook can refuse a call but never approve one. |
 | [Trusting a workspace](docs/safety.md#trusting-a-workspace) | A cloned repo's config does nothing until you say so. The prompt names what's *in* those files, including what you can't see by looking: a byte that renders as nothing, a hidden comment, base64 in a file that should hold prose. |
 | [Running commands](docs/safety.md#running-commands) | A real PTY on each platform, so a program that checks `isatty` behaves the way it does in your terminal. |
@@ -393,6 +394,7 @@ crates/
   taurus-index/             Local semantic search: chunking, embedding, ranking
   taurus-embed/             Embedding models run in-process with candle, and their pinned downloads
   taurus-watch/             Workspace file watching that says what changed or admits it can't
+  taurus-lsp/               Language-server diagnostics for what the file tools just wrote
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-voice/             Dictation: microphone capture, whisper.cpp transcription
   taurus-speech/            Reading aloud: the speakable-text filter, voices, playback

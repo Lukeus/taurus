@@ -40,7 +40,7 @@
 //! read as a one-file skill named `plugin:file`, the way Claude Code folded
 //! its commands into skills. See [`taurus_skills::command_file`].
 //!
-//! Some parts of Claude's format have nothing to run them here: LSP servers, output styles, workflows, themes, monitors, `bin/`, a
+//! Some parts of Claude's format have nothing to run them here: LSP servers (Taurus runs its own, from settings), output styles, workflows, themes, monitors, `bin/`, a
 //! plugin's own `settings.json`, `userConfig` and dependencies. They're
 //! listed by name as unsupported, with why, rather than skipped in silence,
 //! and so is any hook event or hook type a translated hooks file has that
@@ -475,7 +475,10 @@ const DESCRIPTIVE: &[&str] = &[
 
 /// Manifest keys Claude Code documents that name a part Taurus can't run.
 const UNSUPPORTED_KEYS: &[(&str, &str)] = &[
-    ("lspServers", "Taurus doesn't run language servers"),
+    (
+        "lspServers",
+        "a plugin's language servers aren't started: name them under lsp.servers in settings.json",
+    ),
     ("outputStyles", "Taurus has no output styles"),
     ("workflows", "Taurus has no workflow scripts"),
     (
@@ -500,7 +503,7 @@ const UNSUPPORTED_KEYS: &[(&str, &str)] = &[
 
 /// Folders and files at a plugin's root that name a part Taurus can't run.
 const UNSUPPORTED_PATHS: &[(&str, &str)] = &[
-    (".lsp.json", "Taurus doesn't run language servers"),
+    (".lsp.json", "a plugin's language servers aren't started: name them under lsp.servers in settings.json"),
     ("output-styles", "Taurus has no output styles"),
     ("workflows", "Taurus has no workflow scripts"),
     ("themes", "Taurus has no themes from plugins"),
@@ -514,7 +517,7 @@ const UNSUPPORTED_PATHS: &[(&str, &str)] = &[
         "com.github.copilot/rules",
         "Taurus has no rule files from plugins; put them in a skill",
     ),
-    ("com.github.copilot/lsp.json", "Taurus doesn't run language servers"),
+    ("com.github.copilot/lsp.json", "a plugin's language servers aren't started: name them under lsp.servers in settings.json"),
     (
         "SKILL.md",
         "a skill at the plugin's root isn't read; put it in skills/<name>/SKILL.md",

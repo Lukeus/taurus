@@ -159,6 +159,22 @@ impl ToolError {
 /// still writes `Ok("...".into())` and never thinks about blocks.
 pub type ToolResult = Result<taurus_provider::ToolOutput, ToolError>;
 
+/// Something that checks a file the file tools just wrote: in practice the
+/// workspace's language servers (`taurus-lsp`), wired in by the host.
+///
+/// A trait here rather than a dependency on that crate, for the reason
+/// [`ToolProgress`] is one: the tools need to ask, not to know who answers.
+#[async_trait]
+pub trait Diagnostics: Send + Sync {
+    /// Starts whatever checks `path`, without waiting for it.
+    fn warm(&self, path: &Path);
+
+    /// What there is to say about `path` now that it holds `text`, written for
+    /// the model and named by `display`. `None` when there's nothing to say,
+    /// or nothing could say it in time.
+    async fn after_write(&self, path: &Path, display: &str, text: &str) -> Option<String>;
+}
+
 /// Where a tool reports what it is doing before it has a result.
 ///
 /// Only worth implementing for calls long enough that silence is ambiguous. A
@@ -272,6 +288,16 @@ pub struct ToolContext {
     /// a sub-agent's calls go through the same hooks the parent's do: a guard
     /// that a delegate could route around is not a guard.
     pub hooks: Option<Arc<taurus_hooks::HookRunner>>,
+    /// What checks a file after the file tools write it: the workspace's
+    /// language servers, in the app and the CLI.
+    ///
+    /// `None` wherever none were started — an untrusted workspace, a test, a
+    /// tool run directly — and there a write says only that it wrote. Shared
+    /// by a clone, so a delegate's edits are checked too; one working in its
+    /// own copy of the workspace writes outside the folder the servers were
+    /// started in, and those are left unchecked rather than checked against
+    /// the wrong project.
+    pub diagnostics: Option<Arc<dyn Diagnostics>>,
     /// The conversation these calls belong to, passed to hooks so one can tell
     /// two sessions apart, and carried onto every permission request so a
     /// window can say which conversation is asking. `None` wherever there is no
@@ -358,6 +384,7 @@ impl ToolContext {
             command_output: None,
             progress: None,
             hooks: None,
+            diagnostics: None,
             session_id: None,
             unattended: Arc::new(AtomicBool::new(false)),
             call_id: None,
@@ -504,6 +531,30 @@ impl ToolContext {
             session: self.session_id.clone(),
             unattended: self.unattended(),
             root: Some(self.workspace.clone()),
+        }
+    }
+
+    /// Checks what the file tools write. See [`Self::diagnostics`].
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: Arc<dyn Diagnostics>) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// What [`Self::diagnostics`] has to say about `path` now that it holds
+    /// `text`, as a paragraph to append to the tool's result.
+    pub async fn diagnose(&self, path: &Path, text: &str) -> Option<String> {
+        let diagnostics = self.diagnostics.as_ref()?;
+        diagnostics
+            .after_write(path, &self.display(path), text)
+            .await
+    }
+
+    /// Starts whatever will check `path`, without waiting for it, so it's
+    /// ready by the time the file is edited.
+    pub fn warm_diagnostics(&self, path: &Path) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.warm(path);
         }
     }
 
