@@ -787,6 +787,26 @@ the backlog, and they're the minority.
   call a child makes goes through the same permission engine as the parent's,
   so `tools:` is a scope, not a sandbox. A per-agent permission policy would
   be a second thing to keep in step with the first, and there isn't one.
+- **Prose followed by a fenced call is still prose.** A reply that is only a
+  call, in JSON, a fence or a template prefix, is read as one. So is a
+  `<tool_call>` block anywhere. "I'll read it now" followed by a fenced call
+  isn't: catching that would mean holding back every code block in every
+  answer until the reply ends, to see whether anything followed it. See
+  [Calls written as text](working-with-it.md#calls-written-as-text).
+- **A reply that opens like a call doesn't stream.** It's held until it ends,
+  so it can be read as calls or let through as text. An answer that is JSON
+  appears all at once. The hold gives up at 64 KB and streams the rest as
+  text, so a leaked `write_file` with a larger file in it stays text.
+- **A hosted model's JSON answer can become a call.** The guard runs whenever
+  a request offers tools, not only on local models. A reply that is exactly
+  `{"name": <an offered tool>, "arguments": {...}}` runs as that call, through
+  the same permission gate as any other. Restricting it to local backends
+  would leave out the OpenAI-compatible servers most local models are reached
+  through.
+- **Repaired arguments aren't marked.** A call whose JSON needed a trailing
+  comma removed runs as if it had been written correctly, and only the log
+  says otherwise. Nothing is added by a repair, so what runs is what the model
+  wrote, minus the characters JSON doesn't allow.
 - **Only the file tools' writes are checked.** A `sed -i`, a formatter or a
   script the model ran changes files no language server is asked about, and
   so does a canvas edit. The model hears about those when it builds.

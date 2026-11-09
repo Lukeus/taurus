@@ -9,13 +9,16 @@ pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod image;
+pub mod leaked;
 pub mod message;
 pub mod prompted;
 pub mod provider;
+pub mod repair;
 pub mod request;
 pub mod stream;
 
 pub use error::{brief, ProviderError, Result};
+pub use leaked::LeakGuard;
 pub use message::{
     anthropic_redacted, anthropic_signature, gemini_signature, is_openai_reasoning,
     pair_tool_results, relocated_note, replay_input, with_unique_tool_ids, ContentBlock, Message,
@@ -24,6 +27,7 @@ pub use message::{
 };
 pub use prompted::PromptedTools;
 pub use provider::{Capabilities, ModelInfo, Provider, RerankScore};
+pub use repair::repair_json;
 pub use request::{ChatRequest, ToolDef};
 pub use stream::{
     ModelSpend, Spend, StopReason, StreamAccumulator, StreamEvent, TokenUsage, ToolIds,

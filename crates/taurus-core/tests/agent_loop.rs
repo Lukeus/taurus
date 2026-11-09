@@ -239,6 +239,46 @@ async fn a_stream_that_dies_mid_answer_still_shows_what_it_said() {
 }
 
 #[tokio::test]
+async fn a_call_written_as_text_runs_as_a_call() {
+    // The local-model failure: tools offered through the API, and the call
+    // written into the reply instead. Without the guard this ends the turn
+    // on a reply that is JSON, with nothing written.
+    let h = harness(vec![
+        ScriptedTurn::tokens(&[
+            "{\"name\": \"write_file\", ",
+            "\"arguments\": {\"path\": \"note.txt\", \"content\": \"from text\"}}",
+        ]),
+        ScriptedTurn::text("Done."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "write a note").await;
+
+    assert_eq!(outcome.unwrap().iterations, 2);
+    assert_eq!(
+        std::fs::read_to_string(h.workspace.join("note.txt")).unwrap(),
+        "from text"
+    );
+    // Held, then read as a call: none of the JSON reached the screen.
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, UiEvent::TextDelta { text } if text.contains("write_file"))));
+}
+
+#[tokio::test]
+async fn json_naming_no_offered_tool_stays_the_answer() {
+    let reply = "{\"name\": \"taurus\", \"version\": \"1.0\"}";
+    let h = harness(vec![ScriptedTurn::text(reply)]);
+    let mut session = Session::new("fake");
+    let (outcome, events) = run(&h, &mut session, "show the manifest").await;
+
+    assert_eq!(outcome.unwrap().iterations, 1);
+    assert_eq!(session.messages.last().unwrap().text(), reply);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::TextDelta { text } if text == reply)));
+}
+
+#[tokio::test]
 async fn a_tool_call_runs_and_the_result_feeds_the_next_iteration() {
     let h = harness(vec![
         ScriptedTurn::tool_call(
