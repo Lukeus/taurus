@@ -118,11 +118,11 @@
               <a class="more" href="docs.html?p=working-with-it#the-context-window">The context window →</a>
             </article>
             <article class="card">
-              <h3>One core, two frontends</h3>
+              <h3>One core, three frontends</h3>
               <p>
-                The desktop app and the <code>taurus</code> CLI are the same agent, sharing <code>~/.taurus</code>.
-                A tool you approve in the app is approved for your scripts too. You can start a conversation in one
-                and pick it up in the other.
+                The desktop app, the <code>taurus</code> CLI and <code>taurus acp</code> inside Zed or a JetBrains
+                IDE are the same agent, sharing <code>~/.taurus</code>. A tool you approve in the app is approved
+                for your scripts and your editor too. You can start a conversation in one and pick it up in another.
               </p>
               <p class="limit"><b>The limit:</b> they aren't identical. Diff review, commits and the terminal dock are only in the app.</p>
               <a class="more" href="docs.html?p=overview#how-it-is-put-together">How it's put together →</a>
@@ -273,6 +273,61 @@
               ><img data-zoom src="docs/screenshots/notes-diagram.png" alt="A note with its Mermaid fence drawn as a diagram" loading="lazy"
             /></a>
           </div>
+
+          <div class="feature">
+            <div class="feature-text">
+              <span class="tag">Best of</span>
+              <h3>One task, several models, then compare</h3>
+              <p>
+                <code>/best-of</code> runs the same task on two to six models at once, each in its own copy of the
+                workspace. Taurus then compares what each one actually changed, as diffs, not what each one says it
+                did. Nothing is applied until you press <b>Apply to workspace</b> on the one you want.
+              </p>
+              <a href="docs.html?p=capabilities#one-task-on-several-models">One task on several models →</a>
+            </div>
+            <a class="shot" href="docs/screenshots/best-of.png"
+              ><img data-zoom src="docs/screenshots/best-of.png" alt="Three runs kept in their own copies of the workspace, each with Apply to workspace, and a table comparing what each model changed" loading="lazy"
+            /></a>
+          </div>
+
+          <div class="feature flip">
+            <div class="feature-text">
+              <span class="tag">Checks</span>
+              <h3>The language server reads every edit</h3>
+              <p>
+                After each write, the language server you already have installed checks the file. What it finds
+                goes in the result of the edit that caused it, so the model fixes a type error on the next step,
+                not three edits later when the build fails.
+              </p>
+              <a href="docs.html?p=working-with-it#checked-as-its-written">Checked as it's written →</a>
+            </div>
+            <a class="shot" href="docs/screenshots/diagnostics.png"
+              ><img data-zoom src="docs/screenshots/diagnostics.png" alt="An edit whose result carries rust-analyzer's error, and the next edit fixing it" loading="lazy"
+            /></a>
+          </div>
+
+          <div class="feature">
+            <div class="feature-text">
+              <span class="tag">Editors</span>
+              <h3>Inside Zed or a JetBrains IDE</h3>
+              <p>
+                <code>taurus acp</code> speaks the Agent Client Protocol, so Taurus runs in your editor's agent panel
+                with your providers, skills, allowlist and undo history. A write shows up in the editor's own
+                permission prompt as a diff, and <code>taurus rewind</code> undoes it afterwards.
+              </p>
+              <a href="docs.html?p=working-with-it#in-your-editor">In your editor →</a>
+            </div>
+<pre class="term"><span class="c">// Zed: settings.json</span>
+{
+  "agent_servers": {
+    "Taurus": {
+      "type": "custom",
+      "command": "taurus",
+      "args": ["acp"]
+    }
+  }
+}</pre>
+          </div>
         </div>
       </section>
 
@@ -292,6 +347,7 @@
                 <li><a href="docs.html?p=capabilities#skills">Skills</a></li>
                 <li><a href="docs.html?p=capabilities#memory">Memory</a></li>
                 <li><a href="docs.html?p=capabilities#sub-agents">Sub-agents</a></li>
+                <li><a href="docs.html?p=capabilities#one-task-on-several-models">One task on several models</a></li>
                 <li><a href="docs.html?p=capabilities#slash-commands">Slash commands</a></li>
                 <li><a href="docs.html?p=capabilities#the-canvas">The canvas</a></li>
                 <li><a href="docs.html?p=capabilities#terminal">The terminal</a></li>
@@ -313,6 +369,8 @@
               <h3><a href="docs.html?p=working-with-it">Working with it</a></h3>
               <ul>
                 <li><a href="docs.html?p=working-with-it#sessions">Sessions</a></li>
+                <li><a href="docs.html?p=working-with-it#in-your-editor">In your editor</a></li>
+                <li><a href="docs.html?p=working-with-it#checked-as-its-written">Checked as it's written</a></li>
                 <li><a href="docs.html?p=working-with-it#planning-a-long-task">Planning a long task</a></li>
                 <li><a href="docs.html?p=working-with-it#talking-instead-of-typing">Talking instead of typing</a></li>
                 <li><a href="docs.html?p=working-with-it#finding-code-by-what-it-does">Finding code by what it does</a></li>
@@ -385,6 +443,7 @@
 <span class="p">$ </span>taurus run --json "count the rust files" | jq   <span class="c"># for scripts</span>
 <span class="p">$ </span>taurus rewind --to last                         <span class="c"># undo what the last turn wrote</span>
 <span class="p">$ </span>taurus fork --at last                           <span class="c"># try it again, keeping the first try</span>
+<span class="p">$ </span>taurus acp                                      <span class="c"># inside Zed or a JetBrains IDE</span>
 <span class="p">$ </span>taurus plugin add &lt;folder or git URL&gt;           <span class="c"># a Claude Code plugin, as it is</span>
 <span class="p">$ </span>taurus memory add "staging has the migration"   <span class="c"># tell the next conversation something</span></pre>
             </div>
@@ -444,6 +503,7 @@
             <p style="color: var(--text-dim)">
               The provider types use Anthropic-style content blocks. No provider adapter after the first one needed a
               change to the core, and models without native tool calling still call tools through prompted parsing.
+              A model that writes its call into the reply instead of making it still gets the call run.
             </p>
             <a href="docs.html?p=overview#provider-agnostic-concretely">What provider-agnostic means here →</a>
           </div>
@@ -456,6 +516,7 @@
   taurus-mcp/           <span class="c">MCP client</span>
   taurus-web/           <span class="c">search + page fetching</span>
   taurus-index/         <span class="c">local semantic search</span>
+  taurus-lsp/           <span class="c">language-server checks on each edit</span>
   taurus-data/          <span class="c">tabular files, SQL</span>
   taurus-voice/         <span class="c">dictation (whisper.cpp)</span>
   taurus-speech/        <span class="c">reading aloud</span>
