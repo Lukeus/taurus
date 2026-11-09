@@ -64,6 +64,7 @@ cargo install --path crates/taurus-cli
 taurus repl                                     # interactive
 taurus run "summarize the modules in src/"      # one-shot
 taurus run --json "count the rust files" | jq   # for scripts
+taurus acp                                      # inside Zed or a JetBrains IDE, over ACP
 taurus rewind --to last                         # undo what the last turn wrote
 taurus fork --at last                           # try it again, keeping the first try
 taurus plugin add <folder or git URL>           # a Claude Code plugin, as it is
@@ -271,6 +272,7 @@ What a turn looks like in use.
 | Feature | What it is |
 |---|---|
 | [Sessions](docs/working-with-it.md#sessions) | Transcripts on disk, per workspace, replayable. |
+| [In your editor](docs/working-with-it.md#in-your-editor) | `taurus acp` runs Taurus inside Zed, JetBrains IDEs or any other Agent Client Protocol editor, with your providers, skills, allowlist and undo history. |
 | [Finding a conversation](docs/working-with-it.md#finding-a-conversation) | ⌘K finds every panel and action by name, conversations by title, and transcripts by what was said, and opens a conversation *at* the hit. |
 | [Planning a long task](docs/working-with-it.md#planning-a-long-task) | A plan it pins and keeps current, not one it announces once and forgets. |
 | [Showing it a picture](docs/working-with-it.md#showing-it-a-picture) | Paste a screenshot in. |

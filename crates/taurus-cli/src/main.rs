@@ -4,6 +4,7 @@
 //! permission allowlist. Everything shared lives in `taurus-host`; this crate
 //! only decides how to talk to a terminal.
 
+mod acp;
 mod agents_cmd;
 mod ask;
 mod data_cmd;
@@ -56,6 +57,13 @@ enum Command {
     Run(RunArgs),
     /// Start an interactive session.
     Repl(ReplArgs),
+    /// Run as an agent an editor hosts, over the Agent Client Protocol on
+    /// stdin and stdout. For Zed, JetBrains IDEs and other ACP clients:
+    /// configure `taurus acp` as the agent's command.
+    Acp {
+        #[command(flatten)]
+        session: SessionArgs,
+    },
     /// List saved sessions.
     Sessions {
         #[command(flatten)]
@@ -421,6 +429,8 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             .await
         }
 
+        Command::Acp { session } => acp::serve(session).await,
+
         Command::Repl(args) => {
             // A REPL always has a person at it, so it prompts rather than
             // taking a policy up front.
@@ -732,7 +742,7 @@ impl Servers {
     fn for_command(command: &Command) -> Self {
         match command {
             // A turn may call a server's tools.
-            Command::Run(_) | Command::Repl(_) => Self::Start,
+            Command::Run(_) | Command::Repl(_) | Command::Acp { .. } => Self::Start,
             // What the servers offer: their status, the tools they add, and
             // what those tools' schemas cost the context window.
             Command::Mcp { .. } | Command::Tools { .. } | Command::Usage { .. } => Self::Start,
