@@ -442,7 +442,8 @@ Three things show the abstraction works, instead of just claiming it does:
   reply instead, sometimes in a fence, under a template's `<|python_tag|>`,
   or in the `<tool_call>` tags its fine-tune learned. A guard on the stream
   reads those back into calls, but only when the whole reply is calls to
-  tools the request offered, with nothing but a name and arguments in each.
+  tools the request offered, with nothing but a name and arguments in each,
+  or when a `<tool_call>` tag is followed by one.
   Arguments that are almost JSON are repaired the same way: a fence, a
   trailing comma or a brace too many is removed, and a truncated object is
   never closed up. See

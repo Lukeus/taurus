@@ -16,9 +16,9 @@
 //!   prefixes Llama and Mistral templates use. Each call has to name a tool the
 //!   request offered, and carry nothing but a name and arguments, so a reply
 //!   that is a `package.json` stays a reply.
-//! - **A `<tool_call>` block anywhere,** with prose around it. That tag means
-//!   one thing, so it goes through [`PromptedScanner`] the way a prompted
-//!   model's output does.
+//! - **A `<tool_call>` block anywhere,** with prose around it, when a JSON
+//!   object comes straight after the tag and names an offered tool. A model
+//!   explaining the format writes the tag too, so the tag alone isn't enough.
 //!
 //! Prose followed by a fenced call is *not* recognized. Catching it would mean
 //! holding back every code block in every answer until the reply ends, to see
@@ -34,7 +34,6 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::prompted::PromptedScanner;
 use crate::repair::{repair_json, strip_fence};
 use crate::stream::StreamEvent;
 
@@ -61,7 +60,14 @@ enum Mode {
     Holding,
     /// The reply is prose. `<tool_call>` blocks are still caught.
     Passing,
+    /// Inside a `<tool_call>` tag that may be a call: `buf` is what followed
+    /// the tag.
+    InTag,
 }
+
+/// The tag a fine-tune writes a call in. See [`LeakGuard`] for when it counts.
+const OPEN: &str = "<tool_call>";
+const CLOSE: &str = "</tool_call>";
 
 /// See the module docs.
 #[derive(Debug)]
@@ -69,7 +75,6 @@ pub struct LeakGuard {
     names: HashSet<String>,
     mode: Mode,
     buf: String,
-    scanner: PromptedScanner,
     recovered: usize,
 }
 
@@ -80,31 +85,34 @@ impl LeakGuard {
             names: names.into_iter().collect(),
             mode: Mode::Undecided,
             buf: String::new(),
-            scanner: PromptedScanner::new(),
             recovered: 0,
         }
     }
 
     /// How many calls this guard turned from text back into calls.
     pub fn recovered(&self) -> usize {
-        self.recovered + usize::from(self.scanner.saw_tool_call())
+        self.recovered
     }
 
     /// Passes one event through, returning what to forward in its place.
     pub fn push(&mut self, event: StreamEvent) -> Vec<StreamEvent> {
         match event {
             StreamEvent::TextDelta { text } => self.feed(&text),
-            // Says nothing about which block is open, so it can overtake held
-            // text without changing the message.
-            StreamEvent::Usage { .. } => vec![event],
-            // Anything else opens or signs a block of its own, and the held
-            // text came first. A real call arriving also settles the question:
-            // the model can call tools, and what it wrote first was prose.
-            // The scanner's own held tail, kept in case it was the start of a
-            // tag, has to go out ahead of it as well.
+            // Neither says anything about the reply's text, so neither
+            // settles whether it's a call. A reasoning model thinks first and
+            // then writes the call, and releasing on its first thought would
+            // be releasing on every reply it gives. Reasoning that overtakes
+            // held text lands before it in the message, which is where a
+            // reasoning block goes anyway.
+            StreamEvent::Usage { .. }
+            | StreamEvent::ThinkingDelta { .. }
+            | StreamEvent::ThinkingSignature { .. } => vec![event],
+            // A real call opens a block of its own, and the held text came
+            // first. It also settles the question: the model can call tools,
+            // and what it wrote first was prose.
             other => {
                 let mut out = self.release();
-                out.extend(self.scanner.finish());
+                out.extend(self.flush());
                 out.push(other);
                 out
             }
@@ -116,21 +124,20 @@ impl LeakGuard {
         match self.mode {
             Mode::Undecided | Mode::Holding => {
                 let held = std::mem::take(&mut self.buf);
+                self.mode = Mode::Passing;
                 match parse_whole(&held, &self.names) {
                     Some(calls) => {
                         self.recovered += calls.len();
-                        self.mode = Mode::Passing;
                         calls.into_iter().flat_map(call_events).collect()
                     }
                     None => {
-                        self.mode = Mode::Passing;
-                        let mut out = self.scanner.feed(&held);
-                        out.extend(self.scanner.finish());
+                        let mut out = self.scan(&held);
+                        out.extend(self.flush());
                         out
                     }
                 }
             }
-            Mode::Passing => self.scanner.finish(),
+            Mode::Passing | Mode::InTag => self.flush(),
         }
     }
 
@@ -139,44 +146,138 @@ impl LeakGuard {
     /// that can still be retried look like one that already said something.
     pub fn abandon(&mut self) -> Vec<StreamEvent> {
         match self.mode {
-            Mode::Undecided | Mode::Holding => {
+            Mode::Undecided | Mode::Holding | Mode::InTag => {
                 self.buf.clear();
+                self.mode = Mode::Passing;
                 Vec::new()
             }
-            Mode::Passing => self
-                .scanner
-                .finish()
-                .into_iter()
-                .filter(|e| matches!(e, StreamEvent::TextDelta { .. }))
-                .collect(),
+            Mode::Passing => text(std::mem::take(&mut self.buf)),
         }
     }
 
-    fn feed(&mut self, text: &str) -> Vec<StreamEvent> {
+    fn feed(&mut self, chunk: &str) -> Vec<StreamEvent> {
         match self.mode {
-            Mode::Passing => self.scanner.feed(text),
+            Mode::Passing | Mode::InTag => self.scan(chunk),
             Mode::Undecided | Mode::Holding => {
-                self.buf.push_str(text);
-                self.mode = classify(&self.buf);
-                if self.mode == Mode::Passing || self.buf.len() > HOLD_LIMIT {
-                    self.release()
-                } else {
-                    Vec::new()
+                self.buf.push_str(chunk);
+                let next = classify(&self.buf);
+                if next == Mode::Passing || self.buf.len() > HOLD_LIMIT {
+                    // Still holding as far as `release` is concerned, which
+                    // is what hands it the held text.
+                    return self.release();
                 }
+                self.mode = next;
+                Vec::new()
             }
         }
     }
 
     /// Stops holding: what was held goes on as prose, and so does what follows.
     fn release(&mut self) -> Vec<StreamEvent> {
+        if !matches!(self.mode, Mode::Undecided | Mode::Holding) {
+            return Vec::new();
+        }
         self.mode = Mode::Passing;
         let held = std::mem::take(&mut self.buf);
-        if held.is_empty() {
-            Vec::new()
-        } else {
-            self.scanner.feed(&held)
+        self.scan(&held)
+    }
+
+    /// Prose, watched for a `<tool_call>` block.
+    ///
+    /// Stricter than [`crate::prompted::PromptedScanner`], which reads output
+    /// from a model that was *told* to use the tag. Here any model's prose
+    /// passes through, and a model explaining this harness writes the tag
+    /// too. So a tag is a call only when a JSON object comes straight after
+    /// it, and only when that object names an offered tool. A tag followed by
+    /// anything else is prose at once, not held to the end of the reply.
+    fn scan(&mut self, chunk: &str) -> Vec<StreamEvent> {
+        self.buf.push_str(chunk);
+        let mut out = Vec::new();
+        loop {
+            match self.mode {
+                Mode::InTag => {
+                    let body = self.buf.trim_start();
+                    if body.is_empty() {
+                        break;
+                    }
+                    if !body.starts_with('{') || self.buf.len() > HOLD_LIMIT {
+                        out.extend(text(format!("{OPEN}{}", std::mem::take(&mut self.buf))));
+                        self.mode = Mode::Passing;
+                        continue;
+                    }
+                    let Some(end) = self.buf.find(CLOSE) else {
+                        break;
+                    };
+                    let payload: String = self.buf.drain(..end).collect();
+                    self.buf.drain(..CLOSE.len());
+                    out.extend(self.tag(&payload, true));
+                    self.mode = Mode::Passing;
+                }
+                _ => match self.buf.find(OPEN) {
+                    Some(at) => {
+                        let before: String = self.buf.drain(..at).collect();
+                        self.buf.drain(..OPEN.len());
+                        out.extend(text(before));
+                        self.mode = Mode::InTag;
+                    }
+                    None => {
+                        // Everything that can't still be the start of a tag.
+                        let keep = safe_tail(&self.buf, OPEN.len() - 1);
+                        let split = self.buf.len() - keep;
+                        out.extend(text(self.buf.drain(..split).collect()));
+                        break;
+                    }
+                },
+            }
+        }
+        out
+    }
+
+    /// What's left at the end of the reply. An unclosed tag still counts if
+    /// it holds a whole call: models routinely stop before the closing tag.
+    fn flush(&mut self) -> Vec<StreamEvent> {
+        let rest = std::mem::take(&mut self.buf);
+        match std::mem::replace(&mut self.mode, Mode::Passing) {
+            Mode::InTag => self.tag(&rest, false),
+            _ => text(rest),
         }
     }
+
+    /// One `<tool_call>` block: a call if it is one, and otherwise the text
+    /// it was, tags and all.
+    fn tag(&mut self, payload: &str, closed: bool) -> Vec<StreamEvent> {
+        let call = serde_json::from_str::<Value>(payload.trim())
+            .ok()
+            .and_then(|v| as_call(v, &self.names));
+        match call {
+            Some(call) => {
+                self.recovered += 1;
+                call_events(call)
+            }
+            None => text(format!(
+                "{OPEN}{payload}{}",
+                if closed { CLOSE } else { "" }
+            )),
+        }
+    }
+}
+
+fn text(text: String) -> Vec<StreamEvent> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![StreamEvent::TextDelta { text }]
+    }
+}
+
+/// Length in bytes of the tail to keep, at most `max`, snapped down to a char
+/// boundary so the buffer is never split mid-codepoint.
+fn safe_tail(s: &str, max: usize) -> usize {
+    let mut n = max.min(s.len());
+    while n > 0 && !s.is_char_boundary(s.len() - n) {
+        n -= 1;
+    }
+    n
 }
 
 /// Whether a reply that begins with `text` could still be nothing but calls.
@@ -469,6 +570,87 @@ mod tests {
         let (msg, ..) = run(&[text]);
         assert!(!msg.has_tool_use());
         assert_eq!(msg.text(), text);
+    }
+
+    /// Streams `events` through a guard, as `run` does for text alone.
+    fn run_events(events: Vec<StreamEvent>) -> (Message, usize, usize) {
+        let mut g = guard();
+        let mut acc = StreamAccumulator::new();
+        let mut early = 0;
+        for event in events {
+            for e in g.push(event) {
+                if matches!(e, StreamEvent::TextDelta { .. }) {
+                    early += 1;
+                }
+                acc.push(e);
+            }
+        }
+        for e in g.finish() {
+            acc.push(e);
+        }
+        (acc.finish().0, early, g.recovered())
+    }
+
+    fn thinks(text: &str) -> StreamEvent {
+        StreamEvent::ThinkingDelta { text: text.into() }
+    }
+
+    fn says(text: &str) -> StreamEvent {
+        StreamEvent::TextDelta { text: text.into() }
+    }
+
+    #[test]
+    fn a_model_that_thinks_first_still_has_its_call_read() {
+        // The reasoning models are the local models most likely to leak a
+        // call, and every one of them thinks before it writes anything.
+        let (msg, early, recovered) = run_events(vec![
+            thinks("I should read the file."),
+            says("{\"name\": \"read_file\", "),
+            thinks(" (still thinking)"),
+            says("\"arguments\": {\"path\": \"a.rs\"}}"),
+        ]);
+        assert_eq!(
+            only_call(&msg),
+            ("read_file".into(), json!({"path": "a.rs"}))
+        );
+        assert_eq!(early, 0, "nothing of the call reached the screen");
+        assert_eq!(recovered, 1);
+    }
+
+    #[test]
+    fn a_tag_mentioned_in_prose_streams_and_is_not_a_call() {
+        // A hosted model explaining this harness. Held until a closing tag
+        // that never comes, the rest of the answer would never be shown.
+        let (msg, early, recovered) = run_events(vec![
+            says("Prompted models write <tool_"),
+            says("call> and then JSON. "),
+            says("That is all there is to it."),
+        ]);
+        assert!(!msg.has_tool_use());
+        assert_eq!(
+            msg.text(),
+            "Prompted models write <tool_call> and then JSON. That is all there is to it."
+        );
+        assert!(early >= 2, "streamed as it came, not held to the end");
+        assert_eq!(recovered, 0);
+    }
+
+    #[test]
+    fn a_tag_naming_no_offered_tool_stays_text_tags_and_all() {
+        let text = "See: <tool_call>{\"name\": \"rm_rf\", \"input\": {}}</tool_call> done";
+        let (msg, _, recovered) = run(&[text]);
+        assert!(!msg.has_tool_use());
+        assert_eq!(msg.text(), text);
+        assert_eq!(recovered, 0);
+    }
+
+    #[test]
+    fn an_unclosed_tag_at_the_end_is_still_a_call() {
+        let (msg, _, recovered) =
+            run(&["Reading.\n<tool_call>{\"name\":\"list_dir\",\"arguments\":{}}"]);
+        assert_eq!(only_call(&msg).0, "list_dir");
+        assert_eq!(msg.text().trim(), "Reading.");
+        assert_eq!(recovered, 1);
     }
 
     #[test]

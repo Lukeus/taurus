@@ -1012,8 +1012,14 @@ count:
   `id`, which some models copy from OpenAI's format). A reply that's a
   `package.json` has other keys, so it stays a reply, and so does one naming
   a tool that doesn't exist.
-- **A `<tool_call>` block anywhere,** prose or not around it. That tag means
-  nothing else.
+- **A `<tool_call>` block anywhere,** prose or not around it, when a JSON
+  object comes straight after the tag and names a tool this request offered.
+  A model explaining the format writes the tag too, so the tag alone isn't
+  enough: one followed by anything else streams as the prose it is, and a
+  block naming a tool that doesn't exist stays text, tags and all.
+
+A reasoning model's thinking doesn't settle anything either way. It streams as
+it always did, and the reply after it is read as above.
 
 To know which it is, a reply that *opens* like a call is held until it ends,
 instead of streaming. That's the visible cost: an answer that starts with
