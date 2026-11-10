@@ -342,6 +342,16 @@ h4 {
   display: block;
   width: 100%;
 }
+/* Two cropped dialogs in one tour row, the second nudged in so they read as
+   a pair rather than a column of equal screenshots. */
+.shot-stack {
+  display: grid;
+  gap: 20px;
+}
+.shot-stack .shot:last-child {
+  width: 88%;
+  justify-self: end;
+}
 
 section.band {
   padding: 88px 0;
