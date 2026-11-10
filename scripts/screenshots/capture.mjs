@@ -252,6 +252,10 @@ const SHOTS = [
   { name: "speech", shot: "speech", theme: "dark" },
   // A reply being read: Stop beside the mic, and on the turn being read.
   { name: "reading", shot: "reading", theme: "dark" },
+  // The two overlays on their own, cropped to the box, for the project site:
+  // the same scenes as `finder` and `palette`, so they can't drift apart.
+  { name: "finder-box", shot: "finder", theme: "dark", clip: ".palette" },
+  { name: "palette-box", shot: "palette", theme: "dark", clip: ".palette" },
 ];
 
 const CHROME = [
@@ -405,9 +409,9 @@ let cdp;
 // running with nothing to end it.
 try {
   cdp = await connect(await devtoolsUrl(browser));
-  for (const { name, shot, theme, width = WIDTH } of shots) {
+  for (const { name, shot, theme, width = WIDTH, clip } of shots) {
     taking = name;
-    const result = await take(`http://localhost:${PORT}/?shot=${shot}&theme=${theme}`, width);
+    const result = await take(`http://localhost:${PORT}/?shot=${shot}&theme=${theme}`, width, clip);
     if (result.ready) {
       writeFileSync(join(out, `${name}.png`), Buffer.from(result.png, "base64"));
       console.log(`wrote docs/screenshots/${name}.png`);
@@ -443,7 +447,7 @@ if (spoiled.length > 0 || unfinished.length > 0) process.exit(1);
  * storage), the window at its size, and the screenshot once the page has said
  * its scene is finished.
  */
-async function take(url, width) {
+async function take(url, width, clip) {
   const { browserContextId } = await cdp.send("Target.createBrowserContext");
   const { targetId } = await cdp.send("Target.createTarget", {
     url: "about:blank",
@@ -483,7 +487,20 @@ async function take(url, width) {
     }
     if (!ready) return { ready, errors };
 
-    const { data } = await page("Page.captureScreenshot", { format: "png" });
+    // `clip` crops to that one element, edge to edge: whatever shows it (the
+    // site's frame) draws its own border.
+    let region;
+    if (clip) {
+      const { result } = await page("Runtime.evaluate", {
+        expression: `(() => { const r = document.querySelector(${JSON.stringify(clip)})?.getBoundingClientRect(); return r && [r.x, r.y, r.width, r.height]; })()`,
+        returnByValue: true,
+      });
+      if (!result.value) return { ready: false, errors: [...errors, `nothing matches ${clip}`] };
+      const [x, y, w, h] = result.value;
+      const pad = 0;
+      region = { x: Math.max(0, x - pad), y: Math.max(0, y - pad), width: w + pad * 2, height: h + pad * 2, scale: 1 };
+    }
+    const { data } = await page("Page.captureScreenshot", { format: "png", ...(region ? { clip: region } : {}) });
     return { ready, png: data, errors };
   } finally {
     unlisten();
