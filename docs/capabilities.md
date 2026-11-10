@@ -227,6 +227,14 @@ another client. The procedure itself loads on demand through the `load_skill`
 tool. That's what makes a fifty-skill library affordable on a model with an 8k
 context window.
 
+A long skill loads a section at a time. Past about 12,000 characters, about
+3,000 tokens, `load_skill` answers with the skill's opening and a list of its
+headings with their sizes. The model then asks for the section it needs by
+heading, or for `all`. The header, the scripts and the skill's directory come
+with every section, so its relative paths still resolve. Headings inside fenced
+code blocks don't count. A skill below that length loads whole, as before, and
+running a skill as a slash command always sends all of it.
+
 `when_to_use` is an optional Taurus field, read from the top level or from
 under `metadata`. It's worth writing for skills you keep here. The specification's `description` does two jobs at once: what the
 skill does, and when to use it. When the whole context is 8k, 200 characters
@@ -874,10 +882,12 @@ One `/` namespace covers both libraries, in the app and in `taurus run` alike:
 /speckit-specify add a dark mode toggle    # runs that skill's procedure
 /reviewer check the auth module            # hands the job to that sub-agent
 /ops:deploy staging                        # a plugin's skill, named under it
+/github:review-pr 123                      # an MCP server's prompt
 ```
 
-The composer completes as you type `/` and tags each row **skill** or
-**agent**, because the two do different things with the rest of the line:
+The composer completes as you type `/` and tags each row **skill**,
+**agent** or **prompt**, because they do different things with the rest of the
+line:
 
 - A skill's procedure replaces your message.
 - An agent's name becomes an instruction to delegate. The turn calls
@@ -892,6 +902,18 @@ scoping, the same permission gate, and the same depth cap.
 has already established. That's what "now do that part with the explorer"
 means. Both built-ins are reachable this way on a machine with no agents
 directory.
+
+A connected MCP server's prompts are commands too, named
+`/server:prompt` in lowercase with hyphens, so a server's `review_pr` is
+`/github:review-pr`. Running one asks the server for the prompt and sends what
+it returns as your message. Arguments go after the name. Either give them as
+`name=value` pairs (quote a value with spaces), or as plain words, which fill
+the arguments in the order the server lists them, with the last one taking the
+rest of the line. A prompt missing a required argument tells you its usage
+instead of being sent. Only the text of what a prompt returns is sent. An image
+or embedded resource in it is named in place, not attached. Prompts come after
+everything else in the namespace, so a skill, agent or plugin command with the
+same name runs instead.
 
 One command is Taurus's own: `/best-of`, tagged **builtin**, which runs a task
 on several models at once. See

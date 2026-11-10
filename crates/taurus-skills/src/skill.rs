@@ -359,6 +359,15 @@ impl Skill {
         if let Some(file) = &self.command_file {
             return crate::command_file::render(self, file, args);
         }
+        self.render_procedure(&substitute_arguments(&self.body, args))
+    }
+
+    /// [`Self::render`] for a skill folder, around `procedure` in place of the
+    /// skill's own body: what `load_skill` sends when it sends one section of
+    /// a long skill. The header, the scripts and the directory still go with
+    /// it, since a section's relative paths and script names mean nothing
+    /// without them.
+    pub fn render_procedure(&self, procedure: &str) -> String {
         let mut out = format!(
             "# Skill: {}\n\n{}\n\n",
             self.frontmatter.name, self.frontmatter.description
@@ -383,7 +392,7 @@ impl Skill {
         }
 
         out.push_str("## Procedure\n\n");
-        out.push_str(&substitute_arguments(&self.body, args));
+        out.push_str(procedure);
 
         // Named, never read. A skill's reference files are the third tier of
         // progressive disclosure: listing them costs a line each and lets the

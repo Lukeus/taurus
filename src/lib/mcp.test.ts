@@ -98,6 +98,7 @@ describe("what a row says about a server", () => {
           error: null,
           disabled: true,
           tools: [],
+          prompts: [],
         },
       }),
     );
@@ -120,6 +121,7 @@ describe("what a row says about a server", () => {
             error: "`npx` is not on this application's PATH",
             disabled: false,
             tools: [],
+            prompts: [],
           },
         }),
       ),
@@ -141,6 +143,7 @@ describe("what a row says about a server", () => {
             error: null,
             disabled: false,
             tools: ["read_file"],
+            prompts: [],
           },
         }),
       ),

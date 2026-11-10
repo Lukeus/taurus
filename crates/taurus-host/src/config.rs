@@ -1333,6 +1333,17 @@ pub struct Settings {
     /// written until the user approves the card.
     #[serde(default = "default_true")]
     pub agent_synthesis_enabled: bool,
+    /// Whether MCP servers' tools are advertised with compacted schemas:
+    /// every name and type kept, each argument's description cut to one
+    /// sentence, and the prose below that dropped. See
+    /// `taurus_tools::schema::compact`.
+    ///
+    /// Off by default, because it changes what the model is told about
+    /// somebody else's tools, and a server whose nested fields need their
+    /// explanation is one that gets called wrong without it. The MCP panel
+    /// shows what each server costs, which is what deciding needs.
+    #[serde(default)]
+    pub compact_mcp_schemas: bool,
     /// Whether the terminal dock starts its shell with Taurus's integration:
     /// a few hooks that mark where each command starts and ends, which is
     /// what turns the scrollback into commands. Read when a shell starts, so
@@ -1962,6 +1973,7 @@ impl Default for Settings {
             last_model: None,
             skill_synthesis_enabled: true,
             agent_synthesis_enabled: true,
+            compact_mcp_schemas: false,
             shell_integration: true,
             disabled_tools: Vec::new(),
             theme: Theme::System,
@@ -2013,6 +2025,8 @@ pub struct StoredSettings {
     pub skill_synthesis_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_synthesis_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_mcp_schemas: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_integration: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2118,6 +2132,7 @@ impl StoredSettings {
         self.agent_synthesis_enabled = other
             .agent_synthesis_enabled
             .or(self.agent_synthesis_enabled);
+        self.compact_mcp_schemas = other.compact_mcp_schemas.or(self.compact_mcp_schemas);
         self.shell_integration = other.shell_integration.or(self.shell_integration);
         // Replaced rather than merged, like every other field: a workspace that
         // sets this is stating the list it wants, and a merge would make a
@@ -2177,6 +2192,9 @@ impl StoredSettings {
             agent_synthesis_enabled: self
                 .agent_synthesis_enabled
                 .unwrap_or(defaults.agent_synthesis_enabled),
+            compact_mcp_schemas: self
+                .compact_mcp_schemas
+                .unwrap_or(defaults.compact_mcp_schemas),
             shell_integration: self.shell_integration.unwrap_or(defaults.shell_integration),
             disabled_tools: self.disabled_tools.unwrap_or(defaults.disabled_tools),
             theme: self.theme.unwrap_or(defaults.theme),
@@ -2692,6 +2710,7 @@ mod tests {
             last_model: Some("gpt-x".into()),
             skill_synthesis_enabled: Some(false),
             agent_synthesis_enabled: Some(false),
+            compact_mcp_schemas: Some(true),
             shell_integration: Some(false),
             disabled_tools: Some(vec!["fetch_url".into()]),
             theme: Some(Theme::Light),

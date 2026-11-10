@@ -9,10 +9,12 @@ pub mod catalog;
 pub mod config;
 pub mod draft;
 pub mod oauth;
+pub mod prompts;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +40,7 @@ use taurus_tools::{
 pub use catalog::{catalog, Catalog};
 pub use config::{load, parse, McpConfig, ServerConfig};
 pub use draft::{DraftMcpServer, DRAFT_MCP_TOOL};
+pub use prompts::{McpPrompt, McpPromptArgument};
 
 /// Prefix that keeps MCP tools from colliding with built-ins or each other.
 pub const NAMESPACE: &str = "mcp__";
@@ -104,9 +107,20 @@ struct Connection {
     /// time, which never matches, so the server is restarted rather than
     /// trusted.
     resolved: Option<Resolved>,
-    /// What it offered when it connected. Kept so a reload that leaves the
-    /// server running can hand the same tools back without asking it again.
-    tools: Vec<Arc<dyn Tool>>,
+    /// What it offered when it connected, as it said it. Kept so a reload
+    /// that leaves the server running can hand its tools back without asking
+    /// it again, and kept raw rather than wrapped so they can be wrapped
+    /// differently: switching compact schemas on rebuilds them from this. See
+    /// [`McpManager::set_compact`].
+    listed: Vec<rmcp::model::Tool>,
+    /// What its tools and prompts are called through.
+    peer: Peer<RoleClient>,
+    /// `listed`, wrapped, and whether compactly. Handed back as they are while
+    /// the setting stays the same, so a kept server's tools are the very ones
+    /// already in the registry, and rebuilt when it changes.
+    wrapped: std::sync::Mutex<(bool, Vec<Arc<dyn Tool>>)>,
+    /// Its prompts, when it offers any. See [`prompts`].
+    prompts: Vec<McpPrompt>,
 }
 
 /// One server entry as it would actually be started: every `${VAR}` replaced.
@@ -318,6 +332,10 @@ pub struct ServerStatus {
     /// The remote names of what it offers, unprefixed. What the panel lists
     /// under a connected server, and what a test reports back.
     pub tools: Vec<String>,
+    /// The names of its prompts, as it gives them. Empty for a server that
+    /// offers none, which is most of them. See [`prompts`].
+    #[serde(default)]
+    pub prompts: Vec<String>,
 }
 
 impl ServerStatus {
@@ -330,6 +348,7 @@ impl ServerStatus {
             error: Some(error),
             disabled: server.disabled(),
             tools: Vec::new(),
+            prompts: Vec::new(),
         }
     }
 
@@ -342,6 +361,7 @@ impl ServerStatus {
             error: None,
             disabled: true,
             tools: Vec::new(),
+            prompts: Vec::new(),
         }
     }
 }
@@ -366,6 +386,9 @@ pub struct McpManager {
     /// go. Injected for the reason the vault is. `None` refuses every one,
     /// saying to use a variable instead.
     credentials: Option<Arc<dyn Credentials>>,
+    /// Whether tools are advertised with their schemas cut down to the shape
+    /// of a call. See [`Self::set_compact`].
+    compact: AtomicBool,
 }
 
 impl McpManager {
@@ -385,6 +408,143 @@ impl McpManager {
     pub fn with_credentials(mut self, credentials: Arc<dyn Credentials>) -> Self {
         self.credentials = Some(credentials);
         self
+    }
+
+    /// Advertises every server's tools with compacted schemas, or with the
+    /// schemas as the server wrote them.
+    ///
+    /// Read whenever tools are handed out, which is every [`Self::plan`] and
+    /// [`Self::reconnect`], so the next reload applies it, to a server left
+    /// running as well: its tools are rebuilt from what it listed rather than
+    /// asked for again. See [`taurus_tools::schema::compact`] for what goes.
+    pub fn set_compact(&self, on: bool) {
+        self.compact.store(on, Ordering::Relaxed);
+    }
+
+    /// Every prompt a connected server offers, in the order of `mcp.json` and
+    /// then the server's own.
+    pub async fn prompts(&self) -> Vec<McpPrompt> {
+        let up: Vec<String> = self
+            .status
+            .read()
+            .await
+            .values()
+            .filter(|status| status.connected)
+            .map(|status| status.name.clone())
+            .collect();
+        self.connections
+            .read()
+            .await
+            .iter()
+            .filter(|(name, _)| up.contains(name))
+            .flat_map(|(_, connection)| connection.prompts.iter().cloned())
+            .collect()
+    }
+
+    /// What each connected server offers, as it wrote it: names namespaced,
+    /// schemas neither slimmed nor compacted.
+    ///
+    /// For pricing a server again later without starting it. See
+    /// `taurus_host::mcp_seen`.
+    pub async fn catalogs(&self) -> BTreeMap<String, Vec<taurus_provider::ToolDef>> {
+        let up: Vec<String> = self
+            .status
+            .read()
+            .await
+            .values()
+            .filter(|status| status.connected)
+            .map(|status| status.name.clone())
+            .collect();
+        self.connections
+            .read()
+            .await
+            .iter()
+            .filter(|(name, _)| up.contains(name))
+            .map(|(name, connection)| {
+                let defs = connection
+                    .listed
+                    .iter()
+                    .map(|tool| taurus_provider::ToolDef {
+                        name: namespaced(name, &tool.name),
+                        description: description_of(name, tool),
+                        input_schema: serde_json::Value::Object((*tool.input_schema).clone()),
+                    })
+                    .collect();
+                (name.clone(), defs)
+            })
+            .collect()
+    }
+
+    /// Renders one prompt with these arguments, as the text of a message.
+    pub async fn get_prompt(
+        &self,
+        server: &str,
+        name: &str,
+        arguments: BTreeMap<String, String>,
+    ) -> Result<String, String> {
+        // Cloned out so no lock is held across the call, which can take as
+        // long as a tool call can.
+        let peer = self
+            .connections
+            .read()
+            .await
+            .get(server)
+            .map(|connection| connection.peer.clone())
+            .ok_or_else(|| format!("the '{server}' server isn't running"))?;
+        prompts::get(&peer, server, name, arguments).await
+    }
+
+    /// A running server's tools, wrapped for the setting as it is now.
+    fn tools_of(&self, server: &str, connection: &Connection) -> Vec<Arc<dyn Tool>> {
+        let compact = self.compact.load(Ordering::Relaxed);
+        let mut wrapped = connection
+            .wrapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if wrapped.0 != compact {
+            *wrapped = (
+                compact,
+                self.wrap(server, &connection.listed, &connection.peer, compact),
+            );
+        }
+        wrapped.1.clone()
+    }
+
+    /// Wraps what a server listed as tools the registry can hold.
+    ///
+    /// `compact` is passed in rather than read here, so the caller records
+    /// the very value the tools were built with. Read twice, a toggle landing
+    /// in between would leave tools tagged with a setting they weren't built
+    /// for, and never rebuilt.
+    fn wrap(
+        &self,
+        server: &str,
+        listed: &[rmcp::model::Tool],
+        peer: &Peer<RoleClient>,
+        compact: bool,
+    ) -> Vec<Arc<dyn Tool>> {
+        listed
+            .iter()
+            .map(|tool| {
+                let schema = serde_json::Value::Object((*tool.input_schema).clone());
+                Arc::new(McpTool {
+                    name: namespaced(server, &tool.name),
+                    remote_name: tool.name.to_string(),
+                    server: server.to_string(),
+                    description: description_of(server, tool),
+                    // Only what the model is shown. A compacted schema keeps
+                    // every type, so checking a call against it is the same
+                    // check.
+                    schema: if compact {
+                        taurus_tools::schema::compact(&schema)
+                    } else {
+                        schema
+                    },
+                    peer: peer.clone(),
+                    status: self.status.clone(),
+                }) as Arc<dyn Tool>
+            })
+            .collect()
     }
 
     /// Whether this server has OAuth credentials stored.
@@ -456,7 +616,7 @@ impl McpManager {
                 let connection = connections.get(name)?;
                 let now = resolve(name, server, Fill::Compare).ok()?;
                 (connection.resolved.as_ref() == Some(&now))
-                    .then(|| (name.clone(), connection.tools.clone()))
+                    .then(|| (name.clone(), self.tools_of(name, connection)))
             })
             .collect();
         Plan { keep }
@@ -556,25 +716,9 @@ impl McpManager {
         )
         .await?;
         let peer = service.peer().clone();
-
-        let tools: Vec<Arc<dyn Tool>> = listed
-            .iter()
-            .map(|tool| {
-                Arc::new(McpTool {
-                    name: namespaced(name, &tool.name),
-                    remote_name: tool.name.to_string(),
-                    server: name.to_string(),
-                    description: tool
-                        .description
-                        .as_ref()
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| format!("Tool `{}` from the {name} server", tool.name)),
-                    schema: serde_json::Value::Object((*tool.input_schema).clone()),
-                    peer: peer.clone(),
-                    status: self.status.clone(),
-                }) as Arc<dyn Tool>
-            })
-            .collect();
+        let compact = self.compact.load(Ordering::Relaxed);
+        let tools = self.wrap(name, &listed, &peer, compact);
+        let prompts = list_prompts(name, &peer).await;
 
         self.status.write().await.insert(
             name.to_string(),
@@ -586,6 +730,7 @@ impl McpManager {
                 error: None,
                 disabled: false,
                 tools: listed.iter().map(|t| t.name.to_string()).collect(),
+                prompts: prompts.iter().map(|p| p.name.clone()).collect(),
             },
         );
         self.connections.write().await.insert(
@@ -597,7 +742,10 @@ impl McpManager {
                 // would have failed already if this could. Nothing it reads
                 // changes in between.
                 resolved: resolve(name, server, Fill::Compare).ok(),
-                tools: tools.clone(),
+                listed,
+                peer,
+                prompts,
+                wrapped: std::sync::Mutex::new((compact, tools.clone())),
             }),
         );
 
@@ -612,6 +760,43 @@ impl McpManager {
     pub async fn shutdown(&self) {
         self.connections.write().await.clear();
         self.status.write().await.clear();
+    }
+}
+
+/// What a tool is described to the model as: its own description, or a line
+/// naming it and its server for one that came without.
+fn description_of(server: &str, tool: &rmcp::model::Tool) -> String {
+    tool.description
+        .as_ref()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| format!("Tool `{}` from the {server} server", tool.name))
+}
+
+/// A server's prompts, or none.
+///
+/// Asked only of a server that says it has some, and never fatal: a server
+/// whose prompts can't be listed still has its tools, and those are what it
+/// was connected for. Bounded by its own deadline for the same reason.
+async fn list_prompts(server: &str, peer: &Peer<RoleClient>) -> Vec<McpPrompt> {
+    let offers = peer
+        .peer_info()
+        .is_some_and(|info| info.capabilities.prompts.is_some());
+    if !offers {
+        return Vec::new();
+    }
+    match tokio::time::timeout(CONNECT_TIMEOUT, peer.list_all_prompts()).await {
+        Ok(Ok(listed)) => listed
+            .iter()
+            .map(|prompt| McpPrompt::from_listed(server, prompt))
+            .collect(),
+        Ok(Err(e)) => {
+            warn!(server = %server, error = %e, "mcp server's prompts could not be listed");
+            Vec::new()
+        }
+        Err(_) => {
+            warn!(server = %server, "mcp server did not list its prompts in time");
+            Vec::new()
+        }
     }
 }
 
@@ -1612,6 +1797,7 @@ mod tests {
             error: None,
             disabled: false,
             tools: vec!["one".into(), "two".into(), "three".into()],
+            prompts: Vec::new(),
         }
     }
 
@@ -2104,6 +2290,89 @@ mod tests {
 
     fn kept(plan: &Plan) -> Vec<&str> {
         plan.kept().collect()
+    }
+
+    #[tokio::test]
+    async fn a_servers_prompts_are_listed_and_rendered() {
+        let manager = McpManager::new();
+        let config = config_of([("hi", stand_in(&["search", "prompt:greet"]))]);
+        manager.connect_all(&config).await;
+
+        let prompts = manager.prompts().await;
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].server, "hi");
+        assert_eq!(prompts[0].name, "greet");
+        assert!(prompts[0].arguments[0].required);
+        assert_eq!(manager.statuses().await[0].prompts, ["greet"]);
+
+        let text = manager
+            .get_prompt(
+                "hi",
+                "greet",
+                BTreeMap::from([("who".to_string(), "Ada".to_string())]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "Hello, Ada");
+    }
+
+    #[tokio::test]
+    async fn a_server_without_prompts_is_not_asked_for_them() {
+        // The stand-in answers an unknown method with an error, so asking
+        // would be a warning in the log for every server that has none.
+        let manager = McpManager::new();
+        manager
+            .connect_all(&config_of([("plain", stand_in(&["search"]))]))
+            .await;
+        assert!(manager.prompts().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compacting_rewraps_a_kept_server_without_restarting_it() {
+        let manager = McpManager::new();
+        let config = config_of([("notes", stand_in(&["search"]))]);
+        let tools = manager.connect_all(&config).await;
+        let tool = namespaced("notes", "search");
+        let before = pid_behind(&tools, &tool).await.unwrap();
+        assert_eq!(
+            tools[0].input_schema()["properties"]["q"]["description"],
+            "What to ask. Any text."
+        );
+
+        manager.set_compact(true);
+        let plan = manager.plan(&config, Restart::Changed).await;
+        assert_eq!(kept(&plan), ["notes"]);
+        let after = manager.reconnect(&config, &plan).await;
+
+        assert_eq!(pid_behind(&after, &tool).await.unwrap(), before);
+        assert!(
+            !Arc::ptr_eq(&tools[0], &after[0]),
+            "rebuilt for the new setting"
+        );
+        assert_eq!(
+            after[0].input_schema()["properties"]["q"]["description"],
+            "What to ask."
+        );
+
+        // And left alone on the next reload, the setting unchanged.
+        let plan = manager.plan(&config, Restart::Changed).await;
+        let again = manager.reconnect(&config, &plan).await;
+        assert!(Arc::ptr_eq(&after[0], &again[0]));
+    }
+
+    #[tokio::test]
+    async fn catalogs_report_raw_schemas_whatever_the_setting() {
+        let manager = McpManager::new();
+        manager.set_compact(true);
+        manager
+            .connect_all(&config_of([("notes", stand_in(&["search"]))]))
+            .await;
+        let catalogs = manager.catalogs().await;
+        assert_eq!(
+            catalogs["notes"][0].input_schema["properties"]["q"]["description"],
+            "What to ask. Any text."
+        );
+        assert_eq!(catalogs["notes"][0].name, namespaced("notes", "search"));
     }
 
     #[tokio::test]

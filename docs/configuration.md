@@ -529,11 +529,34 @@ owing. On an 8k window, that's the difference between a harness that works and
 one with no room left to think in. It's the Context panel's fixed-half figure
 narrowed to one server, from the same arithmetic, so the two can't disagree.
 
-A server that never connected shows no figure, not a zero: its tools aren't
-registered, so there's nothing to measure. The figure is what enabling a
-server cost you, not what it would cost. A connected server that offers
-nothing shows a real `~0`, which is worth saying out loud: it's a child
-process running for no benefit.
+A server that isn't running is priced from the last time it was: **~3.4k
+tokens of every request when on · seen 2h ago**. Every reload writes down what
+each connected server listed, in `~/.taurus/cache/mcp-seen.json`, so the
+figure before you flip a switch is what flipping it brings back. It's only
+shown for the entry it was recorded from. Point the server at a different
+command or URL and it shows nothing until it has run again. The time is always
+shown with it, because a server's tools can change without its entry changing,
+such as an `npx` package updating. A server that has never run here shows no
+figure, not a zero. A connected server that offers nothing shows a real `~0`,
+which is worth saying out loud: it's a child process running for no benefit.
+
+**Compact schemas** cuts what every server costs. It's the box under the
+total, or `compact_mcp_schemas` in `settings.json`. Each tool keeps every
+argument, type, enum, default and `required` list. Each top-level argument
+keeps the first sentence of its description, and everything below that keeps
+none. A call that was valid before is still valid. What the model loses is the
+prose, which is usually most of a schema. It's off by default because it
+changes what the model is told about somebody else's tools. A server whose
+nested fields need explaining gets called wrong without it. Switching it
+re-wraps the running servers' tools without restarting them, and the figures
+are repriced on the spot.
+
+The figures are estimates at four characters a token. To see what a backend
+actually bills for a server, run `taurus mcp cost <server>`. It sends the same
+tiny request with and without that server's tools, a few times, and reports
+the median difference in the input tokens the backend reports beside the
+estimate. That spends real tokens: two small requests per repetition (three
+repetitions by default) on the session's model, which `-p` and `-m` change.
 
 A stored value that isn't a reference is treated as a secret. A reference is
 `${VAR}` or `${secret:name}`, optionally after `Bearer`, `Token` or `Basic`.

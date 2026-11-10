@@ -27,6 +27,9 @@ pub const STAND_IN_ENV: &str = "TAURUS_MCP_STAND_IN";
 
 /// An entry that starts the stand-in, offering `tools`.
 ///
+/// A name written `prompt:greet` is a prompt rather than a tool: it takes one
+/// required argument, `who`, and renders to `Hello, <who>`.
+///
 /// `test` is the full path of the ignored test in the calling binary whose body
 /// is [`serve`], as `cargo test -- --list` prints it.
 pub fn stand_in(test: &str, tools: &[&str]) -> ServerConfig {
@@ -49,11 +52,32 @@ pub fn serve() {
     let Ok(tools) = std::env::var(STAND_IN_ENV) else {
         return;
     };
-    let listed: Vec<Value> = tools
-        .split(',')
-        .filter(|tool| !tool.is_empty())
-        .map(|tool| json!({"name": tool, "inputSchema": {"type": "object"}}))
+    let names: Vec<&str> = tools.split(',').filter(|tool| !tool.is_empty()).collect();
+    // Every tool has one argument with two sentences of description, so a
+    // test can see what compacting kept.
+    let listed: Vec<Value> = names
+        .iter()
+        .filter(|name| !name.starts_with("prompt:"))
+        .map(|tool| {
+            json!({"name": tool, "inputSchema": {
+                "type": "object",
+                "properties": {"q": {"type": "string", "description": "What to ask. Any text."}},
+            }})
+        })
         .collect();
+    let prompts: Vec<Value> = names
+        .iter()
+        .filter_map(|name| name.strip_prefix("prompt:"))
+        .map(|name| {
+            json!({"name": name, "description": "Says hello",
+                   "arguments": [{"name": "who", "required": true}]})
+        })
+        .collect();
+    let capabilities = if prompts.is_empty() {
+        json!({"tools": {}})
+    } else {
+        json!({"tools": {}, "prompts": {}})
+    };
 
     // Written to the handle rather than through `println!`, which the test
     // harness captures.
@@ -70,13 +94,22 @@ pub fn serve() {
         let answer = match message["method"].as_str().unwrap_or_default() {
             "initialize" => json!({"jsonrpc": "2.0", "id": id, "result": {
                 "protocolVersion": message["params"]["protocolVersion"],
-                "capabilities": {"tools": {}},
+                "capabilities": capabilities,
                 "serverInfo": {"name": "stand-in", "version": "0"},
             }}),
             "tools/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"tools": listed}}),
             "tools/call" => json!({"jsonrpc": "2.0", "id": id, "result": {
                 "content": [{"type": "text", "text": std::process::id().to_string()}],
             }}),
+            "prompts/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"prompts": prompts}}),
+            "prompts/get" => {
+                let who = message["params"]["arguments"]["who"]
+                    .as_str()
+                    .unwrap_or("nobody");
+                json!({"jsonrpc": "2.0", "id": id, "result": {"messages": [
+                    {"role": "user", "content": {"type": "text", "text": format!("Hello, {who}")}},
+                ]}})
+            }
             "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
             other => json!({"jsonrpc": "2.0", "id": id, "error": {
                 "code": -32601,

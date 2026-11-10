@@ -435,6 +435,7 @@ pub fn run() {
             commands::save_mcp_server,
             commands::delete_mcp_server,
             commands::set_mcp_server_disabled,
+            commands::set_compact_mcp_schemas,
             commands::test_mcp_server,
             commands::reload_mcp,
             commands::list_checkpoints,

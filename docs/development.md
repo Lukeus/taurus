@@ -891,6 +891,7 @@ then act on the answer."
 The CLI doubles as a live check on the whole stack:
 
 ```bash
+taurus doctor                   # every check below at once: config, providers, MCP, language servers
 taurus tools                    # what the agent can reach
 taurus skills check             # non-zero exit if a skill is broken or degraded
 taurus agents check             # non-zero exit if an agent will not load or run as written
@@ -900,6 +901,15 @@ taurus key status               # where each provider's API key comes from
 
 `skills check`, `agents check`, and `mcp` are meant for CI on a repository that
 ships its own `.taurus` directory.
+
+`taurus doctor` exits non-zero when something a run needs is broken: a config
+file that won't read, the provider a run would use, or an enabled MCP server
+that won't start. A provider that's configured but not the one in use being
+unreachable is a warning, not a failure. It changes nothing, but it does start
+every enabled MCP server and ask each provider for its models. Building a
+provider reads its key, and on macOS a build the keychain hasn't been told to
+trust (a debug build, say) asks first. That wait counts against the
+provider's 15 seconds, and running out says so.
 
 Dictation has a live check of its own, which needs no model server. It
 downloads the speech model first if it's missing, into the same folder the app
