@@ -977,6 +977,13 @@ export const testMcpServer = (
 export const reloadMcp = () => invoke<McpServerView[]>("reload_mcp");
 
 /**
+ * Advertises every MCP server's tools with compacted schemas, or as the
+ * servers wrote them. Answers with the listing priced the new way.
+ */
+export const setCompactMcpSchemas = (enabled: boolean) =>
+  invoke<McpServerView[]>("set_compact_mcp_schemas", { enabled });
+
+/**
  * Re-reads every config layer, rescans skills and agents, and reconnects MCP
  * servers. Named for what it does: as `reloadSkills` it promised less, so
  * nobody who had edited an agent would think to press it.

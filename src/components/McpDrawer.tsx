@@ -8,7 +8,7 @@ import type {
   McpServerView,
   Scope,
 } from "../lib/api";
-import { plural, short } from "../lib/format";
+import { plural, short, when } from "../lib/format";
 import { stateOf } from "../lib/mcp";
 import { McpCatalog } from "./McpCatalog";
 import { DrawerHead } from "./Drawer";
@@ -17,6 +17,7 @@ import { McpSetup } from "./McpSetup";
 import { useStore } from "../state/store";
 import { Modal } from "./Modal";
 import { Problem, Problems } from "./Problem";
+import { FromProject } from "./settings/Field";
 import { useArmed } from "../lib/armed";
 
 /**
@@ -199,6 +200,36 @@ export function McpDrawer({ onClose }: { onClose: () => void }) {
               </>
             )}
           </p>
+        )}
+
+        {/* Beside the figure it changes. Off by default: it changes what the
+            model is told about somebody else's tools. See
+            `Settings::compact_mcp_schemas`. */}
+        {servers !== null && servers.length > 0 && (
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              disabled={busy}
+              checked={status?.settings.compact_mcp_schemas ?? false}
+              onChange={(e) => {
+                const on = e.target.checked;
+                void apply(() => api.setCompactMcpSchemas(on));
+              }}
+            />
+            <span>
+              Compact schemas
+              <span className="hint">
+                Keep every argument and type, but only the first sentence of
+                each argument's description. Cuts what servers cost on every
+                request.
+              </span>
+            </span>
+          </label>
+        )}
+        {/* A project's own value wins over the global one this writes, and
+            the box would otherwise untick itself with no reason given. */}
+        {servers !== null && servers.length > 0 && (
+          <FromProject field="compact_mcp_schemas" />
         )}
 
         {error && <Problem>{error}</Problem>}
@@ -434,6 +465,22 @@ function ServerCard({
             ~{short(server.schema_tokens)} tokens of every request
           </span>
         )}
+        {/* For a server that isn't running: what it cost the last time it
+            did, which is what switching it on would bring back. Always with
+            when, since a server's tools can change without its entry
+            changing. See `crate::mcp_seen`. */}
+        {server.schema_tokens === undefined &&
+          server.last_seen_tokens !== undefined &&
+          server.last_seen_at !== undefined && (
+            <span
+              className="card-files"
+              tabIndex={0}
+              data-tip="What its tools cost the last time it connected"
+            >
+              ~{short(server.last_seen_tokens)} tokens of every request when
+              on · seen {when(server.last_seen_at)}
+            </span>
+          )}
 
         {server.status?.connected && server.status.tools.length > 0 && (
           <>

@@ -27,6 +27,10 @@ pub type SharedCatalog = Arc<RwLock<SkillCatalog>>;
 pub struct LoadSkillInput {
     /// The skill's name, exactly as listed in the Skills section.
     pub name: String,
+    /// For a long skill: the heading of the one section to read, or "all".
+    /// Leave it out at first; a long skill answers with its sections.
+    #[serde(default)]
+    pub section: Option<String>,
 }
 
 pub struct LoadSkill {
@@ -47,7 +51,9 @@ impl Tool for LoadSkill {
 
     fn description(&self) -> &str {
         "Read the full procedure for one of the skills listed in the Skills section. Call this \
-         before acting on a skill: the one-line index entry is not the instructions."
+         before acting on a skill: the one-line index entry is not the instructions. A long \
+         skill answers with its opening and a list of its sections; call again with `section` \
+         to read the one you need."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -59,10 +65,11 @@ impl Tool for LoadSkill {
     }
 
     fn preview(&self, input: &serde_json::Value) -> String {
-        format!(
-            "Load skill {}",
-            input.get("name").and_then(|n| n.as_str()).unwrap_or("?")
-        )
+        let name = input.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        match input.get("section").and_then(|s| s.as_str()) {
+            Some(section) => format!("Load skill {name} › {section}"),
+            None => format!("Load skill {name}"),
+        }
     }
 
     async fn execute(&self, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
@@ -99,7 +106,22 @@ impl Tool for LoadSkill {
         // already, unlike a slash command where the user's line is the input.
         // Bounded like any other answer: a skill is a file somebody wrote, and
         // whatever it comes to is re-sent on every later step.
-        Ok(taurus_tools::overflow::bound(skill.render(""), "load_skill", ctx).into())
+        // A long skill is offered by section. See `crate::sections`. A
+        // folder's sections are its procedure's, so whichever is sent comes
+        // with the skill's header and directory; a command file has no such
+        // frame, and is split as it renders.
+        let section = input.section.as_deref();
+        let text = if skill.command_file.is_some() {
+            crate::sections::answer(skill.name(), &skill.render(""), section)
+        } else {
+            // With its placeholders filled as `render` fills them, so a
+            // section reads the same as the whole skill would.
+            let body = crate::skill::substitute_arguments(&skill.body, "");
+            crate::sections::answer(skill.name(), &body, section)
+                .map(|procedure| skill.render_procedure(&procedure))
+        }
+        .map_err(ToolError::Rejected)?;
+        Ok(taurus_tools::overflow::bound(text, "load_skill", ctx).into())
     }
 }
 
@@ -792,6 +814,80 @@ mod tests {
             .unwrap();
         assert!(out.to_text().contains("Procedure for alpha."));
         assert!(out.to_text().contains("# Skill: alpha"));
+    }
+
+    #[tokio::test]
+    async fn load_skill_still_fills_the_arguments_placeholder() {
+        let f = fixture(&[("tester", "")]);
+        std::fs::write(
+            f.skills.path().join("tester").join(SKILL_FILE),
+            "---\nname: tester\ndescription: does tester\n---\n\nRun the tests for $ARGUMENTS.\n",
+        )
+        .unwrap();
+        reload(&f).await;
+        let out = LoadSkill::new(f.catalog.clone())
+            .execute(serde_json::json!({"name": "tester"}), &f.ctx)
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert!(!out.contains("$ARGUMENTS"), "{out}");
+        assert!(out.contains("Run the tests for ."), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_long_skill_is_loaded_a_section_at_a_time() {
+        let f = fixture(&[("manual", "")]);
+        let body = format!(
+            "Read this first.\n\n## Setup\n\nInstall it.\n\n## Reference\n\n{}\n",
+            "detail ".repeat(3_000)
+        );
+        std::fs::write(
+            f.skills.path().join("manual").join(SKILL_FILE),
+            format!("---\nname: manual\ndescription: does manual\n---\n\n{body}"),
+        )
+        .unwrap();
+        reload(&f).await;
+        let tool = LoadSkill::new(f.catalog.clone());
+
+        let outline = tool
+            .execute(serde_json::json!({"name": "manual"}), &f.ctx)
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert!(outline.contains("Read this first."), "{outline}");
+        assert!(!outline.contains("Install it."));
+        assert!(outline.contains("- Setup (~"));
+
+        let setup = tool
+            .execute(
+                serde_json::json!({"name": "manual", "section": "setup"}),
+                &f.ctx,
+            )
+            .await
+            .unwrap()
+            .to_text()
+            .into_owned();
+        assert!(
+            setup.starts_with("# Skill: manual"),
+            "comes with its header"
+        );
+        assert!(setup.contains("## Setup\n\nInstall it."));
+        assert!(
+            setup.contains("Skill directory:"),
+            "and where its paths start"
+        );
+        assert!(!setup.contains("Read this first."));
+        assert!(!setup.contains("detail"));
+
+        let missing = tool
+            .execute(
+                serde_json::json!({"name": "manual", "section": "Testing"}),
+                &f.ctx,
+            )
+            .await;
+        assert!(matches!(missing, Err(ToolError::Rejected(_))));
     }
 
     #[tokio::test]

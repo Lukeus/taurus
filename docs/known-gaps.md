@@ -135,9 +135,11 @@ the backlog, and they're the minority.
   aren't in any total. A delegate still running when its turn is stopped
   counts only what it spent before the turn stops waiting for it.
 - **Every enabled tool goes out with every request.** Nothing filters tools by
-  relevance or loads them on demand, and an MCP server's tools are sent whole.
-  The Context panel names the heaviest schemas, and Settings › Tools is where
-  you drop one. The tool list also changes when an MCP server connects or
+  relevance or loads them on demand, and an MCP server's tools are sent whole
+  unless **Compact schemas** is on in the MCP panel, which keeps their shape
+  and drops most of their prose. That is a smaller tool list, not a shorter
+  one. The Context panel names the heaviest schemas, and Settings › Tools is
+  where you drop one. The tool list also changes when an MCP server connects or
   drops. Tools come first in a request, so the next request after that misses
   a hosted backend's prompt cache entirely.
 - **A cache entry on Anthropic lasts five minutes.** Taurus asks for the
@@ -693,28 +695,29 @@ the backlog, and they're the minority.
   from a destructor and the Windows path checked on Windows. That isn't built
   yet. Until it is, a server that outlives a quit shows up in your process
   list under its own name.
-- **A disabled server's cost is unknown, not zero.** The MCP panel prices each
-  connected server's tool schemas: what it adds to every request, called or
-  not. It shows nothing for a server that never connected. That's the honest
-  answer, not a rendering gap: a disabled server registers no tools, so
-  there's nothing on the live registry to measure. The panel answers "what
-  did enabling this cost me", but before flipping a switch you want "what
-  would enabling it cost". Answering that means starting the program and
-  asking it, which is what the switch is off to avoid. The figures are also
-  estimates at four characters a token, like every other token count outside
-  the **Billed** row. See
+- **A switched-off server's cost is only as fresh as the last time it ran.**
+  The panel prices it from what it listed when it last connected, and says
+  when that was. A server that has never run here, or whose command or URL has
+  changed since, shows nothing, because the only other way to know is to start
+  it. A server whose tool list changed without its entry changing, such as an
+  `npx` package that updated, is priced from the old list until it runs again.
+  The panel's figures are estimates at four characters a token, like every
+  other token count outside the **Billed** row. `taurus mcp cost` measures the
+  real figure for one running server by asking the backend, and spends a few
+  small requests doing it. See
   [The MCP panel](configuration.md#the-mcp-panel).
-- **Taurus speaks the tools half of MCP and none of the rest.** A server's
-  tools are found, namespaced and offered to the model. Its *resources*,
-  *prompts* and *roots* aren't asked for. Nothing listens for
-  `notifications/tools/list_changed`, so a server that gains a tool
-  mid-session isn't noticed until the next Reconnect. And the two requests a
-  server can make of the client, *sampling* and *elicitation*, go
-  unanswered. Tools are what almost every server leads with, which is why
-  they're here. It isn't why the rest is missing. Prompts and roots are the
-  two worth having next. Prompts, because a server's own prompts belong in a
-  shell's command line. Roots, because a filesystem server told once where it
-  may look beats one told again on every call.
+- **Taurus speaks the tools and prompts halves of MCP and none of the rest.**
+  A server's tools are found, namespaced and offered to the model, and its
+  prompts are slash commands. Its *resources* and *roots* aren't asked for.
+  Nothing listens for `notifications/tools/list_changed` or
+  `notifications/prompts/list_changed`, so a server that gains a tool or a
+  prompt mid-session isn't noticed until the next Reconnect. The two requests
+  a server can make of the client, *sampling* and *elicitation*, go
+  unanswered. So does a prompt that asks for more input before it answers,
+  which fails and says why. Only the text of a prompt is sent: an image or
+  resource in it is named, not attached. Roots are the one worth having next,
+  because a filesystem server told once where it may look beats one told
+  again on every call.
 - **A dead server's tools stay callable until you reconnect.** The panel
   updates the moment a call finds the server gone. But the tools were handed
   to the tool registry, and nothing revokes them there. So the model can

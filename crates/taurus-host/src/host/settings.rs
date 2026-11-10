@@ -291,6 +291,22 @@ impl Host {
         Ok(())
     }
 
+    /// Switches compact MCP schemas on or off for every workspace, and
+    /// returns the MCP panel's listing as it is afterwards.
+    ///
+    /// Applied by a reload, which rewraps a running server's tools rather than
+    /// restarting it: the server's answer doesn't change, only how much of it
+    /// the model is shown. See `taurus_mcp::McpManager::set_compact`.
+    pub async fn set_compact_mcp_schemas(
+        &self,
+        enabled: bool,
+    ) -> Result<Vec<crate::mcp_view::McpServerView>, String> {
+        self.edit_global_setting(|s| s.compact_mcp_schemas = Some(enabled))
+            .await?;
+        self.reload_mcp().await;
+        Ok(self.mcp_servers().await)
+    }
+
     /// Toggles skill synthesis for every workspace.
     ///
     /// A project that wants it off regardless can say so in its own

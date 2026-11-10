@@ -36,6 +36,14 @@ impl Host {
         let names: Vec<String> = config.servers.keys().cloned().collect();
         let costs = mcp_schema_tokens(&names, &self.tool_definitions().await);
         let plugins = plugin_servers(Some(&workspace));
+        let seen = off_runtime_or_default(crate::mcp_seen::load).await;
+        let (compact, disabled_tools) = {
+            let settings = self.settings.read().await;
+            (
+                settings.compact_mcp_schemas,
+                settings.disabled_tools.clone(),
+            )
+        };
 
         config
             .servers
@@ -52,9 +60,19 @@ impl Host {
                     .as_ref()
                     .filter(|s| s.connected)
                     .map(|_| costs.get(&name).copied().unwrap_or(0));
+                // What it cost the last time it ran, for one that isn't
+                // running now: the figure the switch is deciding about. See
+                // `crate::mcp_seen`.
+                let last_seen = schema_tokens
+                    .is_none()
+                    .then(|| crate::mcp_seen::for_entry(&seen, &name, &server.describe()))
+                    .flatten();
                 McpServerView {
                     signed_in,
                     schema_tokens,
+                    last_seen_tokens: last_seen
+                        .map(|record| record.tokens(compact, &disabled_tools)),
+                    last_seen_at: last_seen.map(|record| record.at),
                     plugin: plugins.get(&name).cloned(),
                     ..McpServerView::new(name, server, &defined_in, status)
                 }
@@ -194,6 +212,10 @@ impl Host {
         // layer that won't parse is skipped rather than fatal.
         let (config, _, problems) = Self::mcp_layers(&workspace);
 
+        // Before the plan, which is where a kept server's tools are wrapped
+        // again if this changed since they were.
+        let compact = self.settings.read().await.compact_mcp_schemas;
+        self.mcp.set_compact(compact);
         let plan = self.mcp.plan(&config, restart).await;
 
         // Out of the registry before the servers go down, rather than after
@@ -237,13 +259,33 @@ impl Host {
                 registry.remove(&name);
                 continue;
             }
-            if registry.get(&name).is_none() {
+            // A kept server's tools are the ones already registered, unless
+            // switching compact schemas on or off rebuilt them, and then the
+            // new ones replace the old.
+            let current = registry.get(&name);
+            if !current.is_some_and(|current| Arc::ptr_eq(&current, &tool)) {
+                registry.remove(&name);
                 registry.register(tool);
             }
             after.insert(name);
         }
         let available: Vec<String> = registry.names().map(str::to_string).collect();
         drop(registry);
+
+        // What each running server offers, for pricing it later while it's
+        // switched off. Best effort: this is a cache, and failing to write it
+        // costs a figure in the panel, not the reload.
+        let catalogs = self.mcp.catalogs().await;
+        let entries: BTreeMap<String, String> = config
+            .servers
+            .iter()
+            .map(|(name, server)| (name.clone(), server.describe()))
+            .collect();
+        let _ = off_runtime("remembering what the MCP servers offer", move || {
+            crate::mcp_seen::record(catalogs, &entries).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| tracing::warn!(error = %e, "could not record what the MCP servers offer"));
 
         // Only this source. A malformed `providers.json` reported at the last
         // full reload is still malformed, and clearing it here would make it

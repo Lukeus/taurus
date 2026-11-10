@@ -91,6 +91,7 @@ describe("opening the panel", () => {
           error: null,
           disabled: false,
           tools: ["read_file", "write_file"],
+          prompts: [],
         },
       }),
     ]);
@@ -121,6 +122,7 @@ describe("opening the panel", () => {
           error: "`npx` is not on this application's PATH",
           disabled: false,
           tools: [],
+          prompts: [],
         },
       }),
     ]);
@@ -235,6 +237,7 @@ describe("what a server costs", () => {
         error: null,
         disabled: false,
         tools: ["read_file", "write_file"],
+        prompts: [],
       },
       ...patch,
     });
@@ -271,10 +274,49 @@ describe("what a server costs", () => {
           error: null,
           disabled: false,
           tools: [],
+          prompts: [],
         },
       }),
     ]);
     expect(host.textContent).toContain("~0 tokens of every request");
+  });
+
+  it("prices a switched-off server from the last time it ran, and says when", async () => {
+    const twoHoursAgo = Math.floor(Date.now() / 1000) - 2 * 3600;
+    const { host } = await mount([
+      server({ disabled: true, last_seen_tokens: 3400, last_seen_at: twoHoursAgo }),
+    ]);
+    expect(host.textContent).toContain("~3.4k tokens of every request when on");
+    expect(host.textContent).toContain("seen 2h ago");
+  });
+
+  it("says so when the project's own settings decide compact schemas", async () => {
+    useStore.setState({
+      status: {
+        settings: { compact_mcp_schemas: false, from_project: ["compact_mcp_schemas"] },
+        problems: [],
+      } as never,
+    });
+    const { host } = await mount([connected({ schema_tokens: 1240 })]);
+    expect(host.textContent).toContain(".taurus/settings.json sets this");
+  });
+
+  it("switching compact schemas on reprices the list it gets back", async () => {
+    const { host } = await mount([connected({ schema_tokens: 1240 })]);
+    invoke.mockImplementation((command: string) => {
+      if (command === "set_compact_mcp_schemas")
+        return Promise.resolve([connected({ schema_tokens: 400 })]);
+      return Promise.resolve(null);
+    });
+    const box = [...host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Compact schemas"))
+      ?.querySelector("input");
+    expect(box).toBeTruthy();
+    await act(async () => {
+      box!.click();
+    });
+    expect(invoke).toHaveBeenCalledWith("set_compact_mcp_schemas", { enabled: true });
+    expect(host.textContent).toContain("~400 tokens of every request");
   });
 });
 

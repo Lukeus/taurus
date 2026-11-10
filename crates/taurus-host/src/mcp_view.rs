@@ -171,6 +171,19 @@ pub struct McpServerView {
     /// view is built from config, and this needs the live registry.
     #[ts(optional)]
     pub schema_tokens: Option<u32>,
+    /// What its tool schemas added to every request the last time it ran, for
+    /// a server that isn't running now. Priced as the tools would be
+    /// advertised today, compact schemas included.
+    ///
+    /// `None` for a running server, which has `schema_tokens`, and for one
+    /// never seen running with the entry it has now. See `crate::mcp_seen`.
+    #[ts(optional)]
+    pub last_seen_tokens: Option<u32>,
+    /// When that was, in seconds since the Unix epoch. The tools a server
+    /// offers can change without its entry changing, so the figure is never
+    /// shown without it.
+    #[ts(optional, type = "number")]
+    pub last_seen_at: Option<u64>,
     /// The plugin this server came with, when it did. The panel can switch
     /// it off, which writes a toggle to your own file, but doesn't edit or
     /// remove it: its definition is the plugin's. See `crate::plugins`.
@@ -215,6 +228,8 @@ impl McpServerView {
                 disabled,
                 status,
                 schema_tokens: None,
+                last_seen_tokens: None,
+                last_seen_at: None,
                 plugin: None,
             },
             ServerConfig::Http {
@@ -237,6 +252,8 @@ impl McpServerView {
                 program: None,
                 status,
                 schema_tokens: None,
+                last_seen_tokens: None,
+                last_seen_at: None,
                 plugin: None,
             },
             // Merging resolves a toggle against the server it names, so one that
@@ -257,6 +274,8 @@ impl McpServerView {
                 program: None,
                 status,
                 schema_tokens: None,
+                last_seen_tokens: None,
+                last_seen_at: None,
                 plugin: None,
             },
         }

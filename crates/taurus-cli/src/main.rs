@@ -9,10 +9,12 @@ mod agents_cmd;
 mod ask;
 mod data_cmd;
 mod delegates_cmd;
+mod doctor_cmd;
 mod fork_cmd;
 mod hooks_cmd;
 mod key_cmd;
 mod markdown;
+mod mcp_cmd;
 mod notes_cmd;
 mod permission;
 mod plugin_cmd;
@@ -249,8 +251,16 @@ enum Command {
         #[command(flatten)]
         session: SessionArgs,
     },
-    /// Show MCP server connection status.
+    /// Show MCP server connection status, or measure what a server costs.
     Mcp {
+        #[command(subcommand)]
+        command: Option<mcp_cmd::McpCommand>,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    /// Check everything a run depends on: config files, providers, MCP
+    /// servers and language servers. Changes nothing.
+    Doctor {
         #[command(flatten)]
         session: SessionArgs,
     },
@@ -625,7 +635,31 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             key_cmd::run(&host, command).await
         }
 
-        Command::Mcp { session } => {
+        Command::Mcp {
+            command: Some(command),
+            session,
+        } => {
+            let host = build_host(&session, Policy::default(), servers).await?.host;
+            mcp_cmd::run(
+                &host,
+                command,
+                session.provider.as_deref(),
+                session.model.as_deref(),
+            )
+            .await
+        }
+
+        Command::Doctor { session } => {
+            let host = build_host_quietly(&session, Policy::default(), servers)
+                .await?
+                .host;
+            doctor_cmd::run(&host, session.provider.as_deref()).await
+        }
+
+        Command::Mcp {
+            command: None,
+            session,
+        } => {
             let host = build_host(&session, Policy::default(), servers).await?.host;
             let statuses = host.mcp_statuses().await;
             // An entry that will not parse has no server to hang a status off,
@@ -746,6 +780,8 @@ impl Servers {
             // What the servers offer: their status, the tools they add, and
             // what those tools' schemas cost the context window.
             Command::Mcp { .. } | Command::Tools { .. } | Command::Usage { .. } => Self::Start,
+            // Whether each server starts is one of the things it checks.
+            Command::Doctor { .. } => Self::Start,
             // Only when the forked turn is asked again, which is a turn.
             Command::Fork { resend: true, .. } | Command::Fork { ask: Some(_), .. } => Self::Start,
             Command::Fork { .. } => Self::Leave,
@@ -877,6 +913,11 @@ mod tests {
             Servers::Start
         );
         assert_eq!(servers(&["taurus", "tools"]), Servers::Start);
+        assert_eq!(servers(&["taurus", "doctor"]), Servers::Start);
+        assert_eq!(
+            servers(&["taurus", "mcp", "cost", "github"]),
+            Servers::Start
+        );
         assert_eq!(servers(&["taurus", "mcp"]), Servers::Start);
     }
 }

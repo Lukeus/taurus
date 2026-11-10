@@ -14,6 +14,7 @@ path = "src/main.rs"
 taurus-core.workspace = true
 taurus-data.workspace = true
 taurus-host.workspace = true
+taurus-mcp.workspace = true
 taurus-telemetry.workspace = true
 taurus-provider.workspace = true
 taurus-agents.workspace = true
@@ -22,6 +23,7 @@ taurus-tools.workspace = true
 
 async-trait.workspace = true
 clap = { version = "4", features = ["derive"] }
+futures.workspace = true
 # Terminal echo suppression for `taurus key set`. Doing this by hand means
 # termios on unix and console APIs on Windows, for a prompt.
 rpassword = "7"
