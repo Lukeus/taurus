@@ -7451,7 +7451,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-agents"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -7471,7 +7471,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7508,7 +7508,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -7531,7 +7531,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -7555,7 +7555,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-data"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "datafusion",
@@ -7576,7 +7576,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-embed"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "candle-core",
@@ -7597,7 +7597,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-hooks"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "globset",
  "regex",
@@ -7613,7 +7613,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-host"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7656,7 +7656,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-index"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7678,7 +7678,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-lsp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dunce",
  "serde_json",
@@ -7690,7 +7690,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-mcp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7712,7 +7712,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-process"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "process-wrap",
  "tempfile",
@@ -7722,7 +7722,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-provider"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7741,7 +7741,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-provider-anthropic"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7757,7 +7757,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-provider-gemini"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -7772,7 +7772,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-provider-ollama"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -7787,7 +7787,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-provider-openai"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7803,7 +7803,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-skills"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "schemars 1.2.2",
@@ -7826,7 +7826,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-speech"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cpal",
  "futures",
@@ -7844,7 +7844,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-telemetry"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -7859,7 +7859,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-tools"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "dunce",
@@ -7889,7 +7889,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-voice"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cpal",
  "futures",
@@ -7905,7 +7905,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-watch"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "notify",
  "rustix",
@@ -7915,7 +7915,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-web"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "htmd",
