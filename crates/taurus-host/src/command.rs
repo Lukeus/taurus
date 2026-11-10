@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use taurus_agents::{AgentCatalog, AgentDefinition};
+use taurus_mcp::prompts::command_name;
+use taurus_mcp::McpPrompt;
 use taurus_skills::SkillCatalog;
 
 /// Which catalog a `/name` came from.
@@ -31,6 +33,10 @@ pub enum CommandKind {
     /// One of Taurus's own, like `/best-of`. Named after every skill and
     /// agent, so one of yours with the same name runs instead.
     Builtin,
+    /// A connected MCP server's prompt, typed as `/server:prompt`. Last of
+    /// all, so a skill, agent or plugin command of the same name runs
+    /// instead. See [`taurus_mcp::prompts`].
+    Prompt,
 }
 
 /// `/best-of`: one task, run on several models at once, then compared.
@@ -72,8 +78,22 @@ pub struct Invocation {
     /// What matched, by its own name rather than what was typed.
     pub name: String,
     pub kind: CommandKind,
-    /// What the model receives in place of the user's line.
+    /// What the model receives in place of the user's line. Empty until
+    /// `fetch` is done, for a prompt.
     pub prompt: String,
+    /// For an MCP prompt, what to ask its server for. Resolving a name is
+    /// done holding the catalogs, and asking a server is a round trip that
+    /// must not be, so the asking is left to `Host::expand_command`.
+    pub fetch: Option<PromptFetch>,
+}
+
+/// One MCP prompt to ask a server for.
+#[derive(Clone, Debug)]
+pub struct PromptFetch {
+    pub server: String,
+    /// The prompt's own name, which may differ from the `/name` typed.
+    pub name: String,
+    pub arguments: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -111,6 +131,8 @@ pub struct Rosters<'a> {
     /// so a session that disabled it would otherwise get a prompt naming a tool
     /// the model does not have, and spend a turn discovering that.
     pub can_delegate: bool,
+    /// The prompts connected MCP servers offer.
+    pub prompts: &'a [McpPrompt],
 }
 
 impl Rosters<'_> {
@@ -133,6 +155,7 @@ impl Rosters<'_> {
                 name: skill.name().to_string(),
                 kind: CommandKind::of(skill),
                 prompt: skill.render(args),
+                fetch: None,
             });
         }
 
@@ -150,6 +173,7 @@ impl Rosters<'_> {
                 name: agent.name().to_string(),
                 kind: CommandKind::Agent,
                 prompt: delegate(agent, args),
+                fetch: None,
             });
         }
 
@@ -166,12 +190,32 @@ impl Rosters<'_> {
                 name: BEST_OF.into(),
                 kind: CommandKind::Builtin,
                 prompt: best_of(args)?,
+                fetch: None,
             });
         }
 
         if skill.is_some() {
             return Err(CommandError::NotUserInvocable {
                 name: name.to_string(),
+            });
+        }
+
+        if let Some(prompt) = self.prompt(name) {
+            let arguments = prompt
+                .arguments_from(args)
+                .map_err(|usage| CommandError::Usage {
+                    name: name.to_string(),
+                    usage,
+                })?;
+            return Ok(Invocation {
+                name: name.to_string(),
+                kind: CommandKind::Prompt,
+                prompt: String::new(),
+                fetch: Some(PromptFetch {
+                    server: prompt.server.clone(),
+                    name: prompt.name.clone(),
+                    arguments,
+                }),
             });
         }
 
@@ -189,6 +233,15 @@ impl Rosters<'_> {
             name: name.to_string(),
             suggestions,
         })
+    }
+
+    /// The prompt `/name` stands for, when it is one. Two prompts folding to
+    /// the same name is the server's doing; the first it listed wins, as the
+    /// first skill directory does.
+    fn prompt(&self, name: &str) -> Option<&McpPrompt> {
+        self.prompts
+            .iter()
+            .find(|prompt| command_name(&prompt.server, &prompt.name) == name)
     }
 
     /// Everything runnable as `/name`, for completion as the user types.
@@ -232,6 +285,21 @@ impl Rosters<'_> {
                     argument_hint: Some("<model> <model> … -- <task>".into()),
                 });
             }
+        }
+
+        // Last, and only under a name nothing above took, matching which one
+        // `expand` would run.
+        for prompt in self.prompts {
+            let name = command_name(&prompt.server, &prompt.name);
+            if out.iter().any(|c| c.name == name) {
+                continue;
+            }
+            out.push(CommandSummary {
+                name,
+                kind: CommandKind::Prompt,
+                when_to_use: prompt.description.clone(),
+                argument_hint: prompt.argument_hint(),
+            });
         }
         out
     }
@@ -435,8 +503,63 @@ mod tests {
                 skills: &self.skills,
                 agents: &self.agents,
                 can_delegate: true,
+                prompts: &[],
             }
         }
+    }
+
+    fn review_prompt() -> McpPrompt {
+        McpPrompt {
+            server: "github".into(),
+            name: "review_pr".into(),
+            description: "Review a pull request".into(),
+            arguments: vec![taurus_mcp::McpPromptArgument {
+                name: "pr".into(),
+                description: "Its number".into(),
+                required: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn an_mcp_prompt_is_offered_and_resolved_by_its_folded_name() {
+        let fixture = Fixture::new(|_, _| {});
+        let prompts = [review_prompt()];
+        let rosters = Rosters {
+            prompts: &prompts,
+            ..fixture.rosters()
+        };
+        let row = rosters
+            .summaries()
+            .into_iter()
+            .find(|c| c.name == "github:review-pr")
+            .expect("the prompt is in the menu");
+        assert_eq!(row.kind, CommandKind::Prompt);
+        assert_eq!(row.argument_hint.as_deref(), Some("<pr>"));
+
+        let invocation = rosters.expand("/github:review-pr 42").unwrap().unwrap();
+        assert_eq!(invocation.kind, CommandKind::Prompt);
+        let fetch = invocation
+            .fetch
+            .expect("a prompt is fetched from its server");
+        assert_eq!(fetch.server, "github");
+        assert_eq!(fetch.name, "review_pr");
+        assert_eq!(fetch.arguments["pr"], "42");
+    }
+
+    #[test]
+    fn an_mcp_prompt_missing_an_argument_says_how_to_call_it() {
+        let fixture = Fixture::new(|_, _| {});
+        let prompts = [review_prompt()];
+        let rosters = Rosters {
+            prompts: &prompts,
+            ..fixture.rosters()
+        };
+        let err = rosters.expand("/github:review-pr").unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("Usage: /github:review-pr <pr>"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -526,6 +649,7 @@ mod tests {
             skills: &skills,
             agents: &agents,
             can_delegate: true,
+            prompts: &[],
         };
 
         let invoked = rosters.expand("/ops:deploy staging").unwrap().unwrap();

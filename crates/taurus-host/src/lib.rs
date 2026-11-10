@@ -17,6 +17,7 @@ pub mod host;
 pub mod inspect;
 pub mod instructions;
 pub mod library;
+pub mod mcp_seen;
 pub mod mcp_view;
 pub mod memory;
 pub mod notebook;

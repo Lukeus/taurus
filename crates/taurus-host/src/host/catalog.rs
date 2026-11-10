@@ -82,7 +82,29 @@ impl Host {
         // one answers a keystroke, and taking config write locks on the
         // completion path is how a reload comes to deadlock against typing.
         self.refresh_for_turn().await;
-        self.rosters(|rosters| rosters.expand(text)).await
+        let resolved = self.rosters(|rosters| rosters.expand(text)).await?;
+        let mut invocation = match resolved {
+            Ok(invocation) => invocation,
+            Err(e) => return Some(Err(e)),
+        };
+        // An MCP prompt is resolved by name with the catalogs held, and only
+        // asked for now that they aren't. See `command::Invocation::fetch`.
+        if let Some(fetch) = invocation.fetch.take() {
+            match self
+                .mcp
+                .get_prompt(&fetch.server, &fetch.name, fetch.arguments)
+                .await
+            {
+                Ok(prompt) => invocation.prompt = prompt,
+                Err(usage) => {
+                    return Some(Err(command::CommandError::Usage {
+                        name: invocation.name,
+                        usage,
+                    }))
+                }
+            }
+        }
+        Some(Ok(invocation))
     }
 
     /// Skills and sub-agents a person can run as `/name`, for completion as
@@ -120,12 +142,14 @@ impl Host {
             .disabled_tools
             .iter()
             .any(|tool| tool == taurus_core::SPAWN_TOOL);
+        let prompts = self.mcp.prompts().await;
         let skills = self.catalog.read().await;
         let agents = self.agents.read().await;
         f(command::Rosters {
             skills: &skills,
             agents: &agents,
             can_delegate,
+            prompts: &prompts,
         })
     }
 

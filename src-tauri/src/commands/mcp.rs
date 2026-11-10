@@ -192,6 +192,18 @@ pub async fn set_mcp_server_disabled(
     after_mcp_change(&state, Restart::Changed).await
 }
 
+/// Switches compact MCP schemas on or off, and hands back the listing priced
+/// the new way. See `Host::set_compact_mcp_schemas`.
+#[tauri::command]
+pub async fn set_compact_mcp_schemas(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> CmdResult<Vec<McpServerView>> {
+    let servers = state.host.set_compact_mcp_schemas(enabled).await?;
+    emit_status(&state).await;
+    Ok(servers)
+}
+
 /// Connects to one entry, reports what it offers, and disconnects.
 ///
 /// Takes the draft rather than a saved name, so an edit can be checked before it

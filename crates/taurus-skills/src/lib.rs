@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod command_file;
 pub mod interpreter;
 pub mod proposal;
+pub mod sections;
 pub mod skill;
 pub mod tools;
 
