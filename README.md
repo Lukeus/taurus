@@ -50,9 +50,14 @@ Each tagged release attaches installers for all three platforms to
 | Linux | `.AppImage`, `.deb`, or `.rpm` |
 | Windows | `.msi`, or the `-setup.exe` installer |
 
-An installed copy updates itself from the same releases.
+An installed copy updates itself from the same releases. The app includes the
+`taurus` CLI: Settings › About › Install the taurus command puts it on your
+PATH, and app updates keep it at the app's version.
 
 ### 2. Install only the CLI
+
+If you've installed the app, you already have the CLI (see above). To build
+the CLI alone from a clone:
 
 The CLI needs Rust 1.89 or newer and a C compiler, and nothing else. It does
 not need Node, pnpm, the Tauri prerequisites, or the speech engine's CMake:

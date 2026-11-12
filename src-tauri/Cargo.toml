@@ -65,6 +65,10 @@ ts-rs.workspace = true
 uuid.workspace = true
 tauri-plugin-notification = "~2.4"
 
+# The user's PATH, for putting the bundled CLI on it. See `cli_install`.
+[target.'cfg(windows)'.dependencies]
+windows-registry.workspace = true
+
 [lints]
 workspace = true
 
