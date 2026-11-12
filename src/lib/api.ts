@@ -189,11 +189,13 @@ import type { VoiceInfo } from "../bindings/VoiceInfo";
 import type { AvailableUpdate } from "../bindings/AvailableUpdate";
 import type { UpdateCheck } from "../bindings/UpdateCheck";
 import type { UpdateDownload } from "../bindings/UpdateDownload";
+import type { CliStatus } from "../bindings/CliStatus";
 
 export type { VoiceDownload, VoiceModel, VoiceStatus };
 export type { EmbeddingDownload, EmbeddingModel, EmbeddingModels };
 export type { SpeechEngine, SpeechSettings, SpeechState, SpeechStatus, VoiceInfo };
 export type { AvailableUpdate, UpdateCheck, UpdateDownload };
+export type { CliStatus };
 
 export type {
   ModelLatency,
@@ -1690,6 +1692,21 @@ export const installUpdate = (onProgress: (p: UpdateDownload) => void) => {
   channel.onmessage = onProgress;
   return invoke<void>("install_update", { onProgress: channel });
 };
+
+/* ------------------------------------------------------------ the command */
+
+/**
+ * Whether the `taurus` command the app ships is on the PATH, and where it
+ * would go. Reads the filesystem; changes nothing.
+ */
+export const cliStatus = () => invoke<CliStatus>("cli_status");
+
+/**
+ * Puts the bundled `taurus` command on the PATH, and resolves with what
+ * Settings should show next. On macOS this may show the system's password
+ * prompt, and resolves only when it's answered.
+ */
+export const installCli = () => invoke<CliStatus>("install_cli");
 
 /* ----------------------------------------------------------------- speech */
 

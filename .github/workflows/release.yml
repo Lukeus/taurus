@@ -120,16 +120,24 @@ jobs:
           # arm64-only, so an Intel Mac gets nothing out of the release at all —
           # the universal target is what puts both architectures in one .dmg,
           # and it needs both Rust targets installed to build.
+          #
+          # `cli_universal` is the same fact said to `scripts/cli-sidecar.mjs`,
+          # which builds the CLI the bundle ships. `tauri build` tells that
+          # hook the host's triple even for a universal build, so it has to be
+          # told separately, or the .dmg carries an arm64-only CLI.
           - os: macos-26
             args: --target universal-apple-darwin
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            cli_universal: '1'
           # Matching the CI profile exactly, down to the runner image.
           - os: ubuntu-22.04
             args: ''
             rust_targets: ''
+            cli_universal: ''
           - os: windows-latest
             args: ''
             rust_targets: ''
+            cli_universal: ''
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -283,7 +291,11 @@ jobs:
           echo "args=--config windows-signing.json" >> "$GITHUB_OUTPUT"
 
       # Builds the bundles named by `tauri.conf.json` (`bundle.targets: all`),
-      # then uploads them to the draft `prepare` opened. On a dry run
+      # then uploads them to the draft `prepare` opened. With
+      # `tauri.bundle-cli.conf.json` merged in, each bundle carries the
+      # `taurus` CLI beside the app, so an update brings the CLI along. That
+      # file isn't the default because `tauri-build` would then need the CLI
+      # built before every plain `cargo build`; see `scripts/cli-sidecar.mjs`. On a dry run
       # `releaseId` and `tagName` are both empty, which is how this action is
       # told to build and upload nothing; the two steps below keep the bundles.
       #
@@ -300,10 +312,11 @@ jobs:
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
-          args: ${{ matrix.args }} ${{ steps.winsign.outputs.args }}
+          args: ${{ matrix.args }} --config src-tauri/tauri.bundle-cli.conf.json ${{ steps.winsign.outputs.args }}
           includeDebug: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURUS_CLI_UNIVERSAL: ${{ matrix.cli_universal }}
           # The updater's signing key. `bundle.createUpdaterArtifacts` makes
           # every bundle come with a `.sig`, and `tauri build` fails outright
           # without this key, so a release can't ship unsigned updates by

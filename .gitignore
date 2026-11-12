@@ -32,3 +32,7 @@ src-tauri/conpty/
 .ui-samples/
 # The project site, assembled by `node scripts/site.mjs`.
 _site/
+
+# The CLI the bundle ships beside the app, built by `scripts/cli-sidecar.mjs`
+# for a release. Build output, like `target/`.
+src-tauri/binaries/
