@@ -28,6 +28,7 @@ import { SearchTab, useIndexBuild, CodeSearch } from "./settings/SearchTab";
 import { Field, FromProject, same } from "./settings/Field";
 import { PermissionsTab } from "./settings/PermissionsTab";
 import { VoiceTab } from "./settings/VoiceTab";
+import { CliSection } from "./settings/CliSection";
 import { UpdatesSection } from "./settings/UpdatesSection";
 import { DelegateRunsSection } from "./settings/DelegateRunsSection";
 import { ToolsTab } from "./settings/ToolsTab";
@@ -615,6 +616,7 @@ export function Settings({
           {tab === "about" && (
             <>
               <UpdatesSection />
+              <CliSection />
 
               <section className="section">
                 <span className="micro">Files</span>

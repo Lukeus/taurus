@@ -341,6 +341,7 @@ pub async fn emit_session(state: &AppState, session_id: &str) {
 }
 
 mod changes;
+mod cli;
 mod data;
 mod embeddings;
 mod library;
@@ -358,6 +359,7 @@ mod web_search;
 mod workspace;
 
 pub use changes::*;
+pub use cli::*;
 pub use data::*;
 pub use embeddings::*;
 pub use library::*;

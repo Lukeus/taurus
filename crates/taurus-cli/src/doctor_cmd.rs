@@ -127,6 +127,14 @@ pub async fn run(host: &Host, provider: Option<&str>) -> Result<ExitCode, String
 
     let mut report = Report::default();
     report.section("Workspace", workspace_checks(&workspace));
+    report.section(
+        "This command",
+        desktop_checks(
+            env!("CARGO_PKG_VERSION"),
+            std::env::current_exe().ok().as_deref(),
+            taurus_host::desktop::load().as_ref(),
+        ),
+    );
     report.section("Config files", config_checks(host).await);
     report.section("Providers", provider_checks(host, provider).await);
     report.section("MCP servers", mcp_checks(host).await);
@@ -310,6 +318,63 @@ async fn lsp_checks(host: &Host) -> Vec<Check> {
         .collect()
 }
 
+/// Whether this CLI is the desktop app's version.
+///
+/// They share `~/.taurus`, so a CLI behind the app may misread what the app
+/// wrote, and nothing else would say why. A warning rather than a failure:
+/// most runs never touch what changed between the two.
+fn desktop_checks(
+    this_version: &str,
+    this_exe: Option<&std::path::Path>,
+    record: Option<&taurus_host::desktop::Record>,
+) -> Vec<Check> {
+    let Some(record) = record else {
+        return vec![Check::new(
+            Level::Off,
+            format!("taurus {this_version}"),
+            "no installed desktop app has run on this machine",
+        )];
+    };
+    if record.version == this_version {
+        return vec![Check::new(
+            Level::Ok,
+            format!("taurus {this_version}"),
+            "the same version as the desktop app",
+        )];
+    }
+    // Resolved, because the command on the PATH is usually a link into the
+    // bundle, and the bundle's own copy is what the record names.
+    let canonical =
+        |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let is_bundled = match (this_exe, &record.bundled_cli) {
+        (Some(exe), Some(bundled)) => canonical(exe) == canonical(bundled),
+        _ => false,
+    };
+    let fix = if is_bundled {
+        // The bundle's own CLI disagreeing with the bundle: the record is from
+        // before an update the app hasn't started since.
+        "start the app once and it will catch up".to_string()
+    } else if record.bundled_cli.is_some() {
+        format!(
+            "this isn't the copy the app ships. Settings › About › Install the taurus command \
+             puts that one on the PATH{}",
+            this_exe
+                .map(|exe| format!(", ahead of this one at {}", exe.display()))
+                .unwrap_or_default()
+        )
+    } else {
+        "update it with `cargo install --path crates/taurus-cli --locked` from a clone".to_string()
+    };
+    vec![Check::new(
+        Level::Warn,
+        format!("taurus {this_version}"),
+        format!(
+            "the desktop app is {}, and they share ~/.taurus: {fix}",
+            record.version
+        ),
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +409,50 @@ mod tests {
         let mut report = Report::default();
         report.section("MCP servers", Vec::new());
         assert!(report.render().contains("nothing configured"));
+    }
+
+    #[test]
+    fn a_cli_behind_the_app_is_a_warning_that_says_where_the_right_one_is() {
+        use taurus_host::desktop::Record;
+
+        assert_eq!(desktop_checks("0.4.1", None, None)[0].level, Level::Off);
+
+        let record = Record {
+            version: "0.4.1".into(),
+            bundled_cli: Some("/nowhere/Taurus.app/Contents/MacOS/taurus-cli".into()),
+            installed: None,
+        };
+        assert_eq!(
+            desktop_checks("0.4.1", None, Some(&record))[0].level,
+            Level::Ok
+        );
+
+        let behind = desktop_checks(
+            "0.3.0",
+            Some(std::path::Path::new("/nowhere/.cargo/bin/taurus")),
+            Some(&record),
+        );
+        assert_eq!(behind[0].level, Level::Warn);
+        assert!(
+            behind[0].detail.contains("the desktop app is 0.4.1"),
+            "{}",
+            behind[0].detail
+        );
+        assert!(
+            behind[0].detail.contains("Install the taurus command"),
+            "{}",
+            behind[0].detail
+        );
+
+        let unbundled = Record {
+            bundled_cli: None,
+            ..record
+        };
+        let behind = desktop_checks("0.3.0", None, Some(&unbundled));
+        assert!(
+            behind[0].detail.contains("cargo install"),
+            "{}",
+            behind[0].detail
+        );
     }
 }

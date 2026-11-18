@@ -4,6 +4,7 @@
 //! and wires them to `taurus-core`, which is where the harness actually lives.
 
 mod bridge;
+mod cli_install;
 mod commands;
 mod live;
 mod state;
@@ -239,6 +240,12 @@ pub fn run() {
             paint_window(app);
             zoom_window(app);
 
+            // Tells the CLI which app it sits beside, and refreshes a copy of
+            // it that an update left behind. Off the setup path: it can copy
+            // a binary. See `cli_install`.
+            let version = app.package_info().version.to_string();
+            tauri::async_runtime::spawn_blocking(move || cli_install::on_launch(&version));
+
             let state = Arc::new(state::AppState::new(app.handle().clone(), traces, export));
             app.manage(state.clone());
             // The dock's shells, for `read_terminal`. Handed over once: the
@@ -400,6 +407,8 @@ pub fn run() {
             commands::stop_voice_download,
             commands::check_for_update,
             commands::install_update,
+            commands::cli_status,
+            commands::install_cli,
             commands::delete_voice_model,
             commands::voice_start,
             commands::voice_stop,

@@ -7504,6 +7504,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "uuid",
+ "windows-registry",
 ]
 
 [[package]]

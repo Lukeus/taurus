@@ -1121,7 +1121,40 @@ Installing is Settings › About, and nothing checks on its own. 0.3.0 and
 earlier have no updater, so moving from those to the first release with one is
 a manual download.
 
-Something a release does **not** do yet:
+### The CLI in the bundle
 
-- **The `taurus` CLI.** No release carries it. The only way to get it is
-  `cargo install --path crates/taurus-cli` from a clone.
+Every bundle carries the `taurus` CLI beside the app, so an update brings the
+CLI along. `release.yml` merges `src-tauri/tauri.bundle-cli.conf.json`, which
+adds `scripts/cli-sidecar.mjs` to the `beforeBuildCommand` and declares the
+sidecar as an `externalBin`. The script builds `taurus-cli` and writes it to
+`src-tauri/binaries/taurus-cli-<target triple>`. For the universal macOS job
+it builds both architectures and joins them with `lipo`. That job sets
+`TAURUS_CLI_UNIVERSAL=1`, because `tauri build` gives the hook the host's
+triple even for a universal target.
+
+`tauri.conf.json` doesn't declare the sidecar. `tauri-build` checks that an
+`externalBin` exists at compile time, so declaring it there would make every
+`cargo build` and `pnpm tauri dev` build the CLI first. To build a local bundle
+that includes the CLI:
+
+```bash
+pnpm tauri build --config src-tauri/tauri.bundle-cli.conf.json
+```
+
+Inside the bundle the file is `taurus-cli`, not `taurus`. `tauri-build` copies
+the sidecar into cargo's output folder, where `taurus` is the CLI's own build,
+and on Windows the app is `Taurus.exe`, which a case-insensitive filesystem
+treats as the same name.
+Settings › About › Install the taurus command puts it on the PATH as `taurus`:
+
+| Platform | Where | How |
+|---|---|---|
+| macOS | `/usr/local/bin/taurus` | A link into the `.app`. Asks for an administrator password when the folder isn't writable. |
+| Linux `.deb` / `.rpm` | `~/.local/bin/taurus` | A link to `/usr/bin/taurus-cli`. |
+| Linux AppImage | `~/.local/bin/taurus` | A copy, because the image mounts somewhere new on every launch. |
+| Windows | `%LOCALAPPDATA%\Taurus\bin\taurus.exe` | A copy, with that folder added to the user's PATH. |
+
+A link always points at the current bundle. A copy is replaced when the app
+next starts at a new version. The app also writes `~/.taurus/desktop.json`
+with its version, and `taurus doctor` warns when the CLI it's running isn't
+that version.
