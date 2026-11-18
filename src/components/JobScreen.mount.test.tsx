@@ -181,3 +181,30 @@ describe("a command's pane", () => {
     );
   });
 });
+
+describe("previewing what a command serves", () => {
+  const preview = (patch: Partial<BackgroundJob>) => {
+    const onPreview = vi.fn();
+    const host = into(
+      <JobScreen job={job(patch)} text="" problem={null} onStop={() => {}} onPreview={onPreview} />,
+    );
+    const button = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Preview"),
+    );
+    return { button, onPreview };
+  };
+
+  it("offers the address a running server printed, by its host", () => {
+    const { button, onPreview } = preview({ url: "http://localhost:5173/" });
+    expect(button?.textContent).toBe("Preview localhost:5173");
+    act(() => button!.click());
+    expect(onPreview).toHaveBeenCalledWith("http://localhost:5173/");
+  });
+
+  it("offers nothing before an address or after the server stops", () => {
+    expect(preview({}).button).toBeUndefined();
+    expect(
+      preview({ url: "http://localhost:5173/", running: false, stopped: true }).button,
+    ).toBeUndefined();
+  });
+});

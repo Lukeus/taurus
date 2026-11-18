@@ -29,6 +29,15 @@ describe("tabs kept between sessions", () => {
     expect(recallTabs("/never")).toBeNull();
   });
 
+  it("leave previews behind: the server that served one is gone", () => {
+    rememberTabs("/w", opened("a.md", "preview:http://localhost:5173/"));
+    const back = recallTabs("/w")!;
+    expect(back.tabs.map((tab) => tab.path)).toEqual(["a.md"]);
+    expect(back.active).toBe("a.md");
+    rememberTabs("/p", opened("preview:http://localhost:5173/"));
+    expect(recallTabs("/p")).toBeNull();
+  });
+
   it("keep their order, so the oldest is still the first to close for room", () => {
     rememberTabs("/w", opened(...Array.from({ length: MAX_TABS }, (_, i) => `f${i}.md`)));
     const back = recallTabs("/w")!;

@@ -1,0 +1,31 @@
+[package]
+name = "taurus-webshot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Takes a picture of a Tauri webview, or part of one: the one crate in the workspace that may write `unsafe`"
+
+[dependencies]
+tauri = "2"
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSError", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = ["NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+
+# Not `workspace = true`, because the workspace forbids `unsafe`, and `forbid`
+# can't be lifted for one module. This crate exists to be the exception, so
+# the rule is spelled out here instead: denied everywhere, allowed only in the
+# platform module that calls the engine, and every block says why it holds.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"

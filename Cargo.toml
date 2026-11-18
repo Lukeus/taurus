@@ -24,6 +24,7 @@ members = [
     "crates/taurus-voice",
     "crates/taurus-speech",
     "crates/taurus-cli",
+    "crates/taurus-webshot",
     "src-tauri",
 ]
 # Patched, not ours to lint or test: see vendor/whisper-rs-sys/TAURUS.md.
@@ -58,6 +59,7 @@ taurus-telemetry = { path = "crates/taurus-telemetry" }
 taurus-voice = { path = "crates/taurus-voice" }
 taurus-speech = { path = "crates/taurus-speech" }
 taurus-core = { path = "crates/taurus-core" }
+taurus-webshot = { path = "crates/taurus-webshot" }
 
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "process", "fs", "time", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }

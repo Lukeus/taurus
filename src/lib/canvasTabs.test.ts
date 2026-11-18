@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   closeTab,
+  isPreviewTab,
   MAX_TABS,
   nameTab,
   openTab,
+  PREVIEW_PREFIX,
+  previewTabUrl,
   samePath,
   showTab,
   tabLabels,
@@ -129,5 +132,22 @@ describe("tabLabels", () => {
     expect(labels.get("x/one/lib.rs")).toBe("one/lib.rs");
     expect(labels.get("x/two/lib.rs")).toBe("two/lib.rs");
     expect(labels.get("main.rs")).toBe("main.rs");
+  });
+});
+
+describe("preview tabs", () => {
+  const path = `${PREVIEW_PREFIX}http://localhost:5173`;
+
+  it("opens under its address, untouched", () => {
+    const state = openTab(null, path, null);
+    expect(state.active).toBe(path);
+    expect(isPreviewTab(state.active)).toBe(true);
+    expect(previewTabUrl(state.active)).toBe("http://localhost:5173");
+  });
+
+  it("is labelled by its host, beside files", () => {
+    const labels = tabLabels(["src/main.rs", path]);
+    expect(labels.get(path)).toBe("localhost:5173");
+    expect(labels.get("src/main.rs")).toBe("main.rs");
   });
 });

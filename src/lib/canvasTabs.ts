@@ -228,7 +228,9 @@ export function rememberTabs(workspace: string, state: CanvasTabs | null): void 
 export function recallTabs(workspace: string): CanvasTabs | null {
   const kept = readKept()[workspace];
   if (!kept) return null;
-  const paths = [...new Set(kept.paths)].slice(0, MAX_TABS);
+  // Not a preview. The command that served it ended with the session
+  // that started it, and the address may be something else's by now.
+  const paths = [...new Set(kept.paths)].filter((path) => !isPreviewTab(path)).slice(0, MAX_TABS);
   if (paths.length === 0) return null;
   const tabs = paths.map((path, i) => ({ path, shown: null, reveal: null, used: i + 1, restored: true }));
   const active = paths.includes(kept.active) ? kept.active : paths[paths.length - 1];
@@ -257,3 +259,14 @@ function readKept(): Kept {
     return {};
   }
 }
+
+/**
+ * A tab showing a dev server's page instead of a file.
+ *
+ * Marked in the path, which is all a tab is known by, so opening, closing,
+ * remembering and labelling need nothing new: the label of
+ * `preview:http://localhost:5173` is `localhost:5173`.
+ */
+export const PREVIEW_PREFIX = "preview:";
+export const isPreviewTab = (path: string) => path.startsWith(PREVIEW_PREFIX);
+export const previewTabUrl = (path: string) => path.slice(PREVIEW_PREFIX.length);

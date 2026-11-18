@@ -1116,6 +1116,44 @@ CRLF files stay CRLF. A browser reports its editor's contents with LF endings
 whatever went in. Without this, a three-line edit would land as a diff
 touching every line in the file.
 
+### Previewing a page
+
+A dev server's page opens as a canvas tab, beside the files. It's the page
+itself, live: you can click, type and scroll in it, and it resizes with the
+column like any other tab.
+
+There are three ways to open one:
+
+- **Preview** on a background command's tab in the terminal dock, once the
+  command has printed the address it's serving.
+- **Preview a local server** in ⌘K, which opens the newest address a running
+  command is serving, or `http://localhost:5173/` if none is.
+- **`open_preview`**, a tool the model has in the app. It opens only an
+  address a background command in this workspace is serving, so a model can't
+  point the tab at some other service on your machine.
+
+The tab has an address bar for other pages on the same machine, a reload
+button, and **Fill**, **Phone** (390px) and **Tablet** (820px) widths. The
+footer counts what the page logged as errors and warnings; click it for the
+list. The camera button takes a picture of the tab.
+
+The model can look at the page too, with **`look_at_preview`**. It brings the
+preview to the front first, so what the model sees is what you see, then hands
+it a picture of the tab, or, with `mode: outline`, the page as text: headings,
+links and where they go, form fields and their labels, buttons. Either way it
+gets what the page logged since its last look. A model that can't read images
+can still use the outline. A look can ask for a width, and the tab switches
+to it.
+
+`check_command` tells the model when a server is up. Its reply ends with
+`[taurus] serving http://localhost:5173/` once the command has printed that
+address, and a check that's waiting for the command returns then, instead of
+waiting out a server that was never going to exit.
+
+Both tools are desktop-only. The CLI has no canvas to put a page in. What the
+page can and can't reach is in
+[A previewed page](safety.md#a-previewed-page).
+
 ### What it does not do yet
 
 It opens text (source, Markdown, config) up to 4 MB. There's no folding, and

@@ -101,6 +101,8 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_tools::builtin::present::OPEN_FILE_TOOL,
     taurus_tools::builtin::plan::UPDATE_PLAN_TOOL,
     taurus_tools::builtin::terminal::READ_TERMINAL_TOOL,
+    taurus_tools::builtin::preview::OPEN_PREVIEW_TOOL,
+    taurus_tools::builtin::preview::LOOK_AT_PREVIEW_TOOL,
     taurus_core::APPLY_TOOL,
     taurus_core::COMPARE_TOOL,
     crate::memory::REMEMBER_TOOL,
@@ -277,6 +279,8 @@ pub struct Host {
     /// `read_terminal` is offered on every turn while this is set, open shell or
     /// not. See [`Self::set_terminal`].
     terminal: std::sync::RwLock<Option<Arc<dyn taurus_tools::blocks::TerminalReader>>>,
+    /// The window's preview, if this frontend has one. See [`Host::set_preview`].
+    preview: std::sync::RwLock<Option<Arc<dyn taurus_tools::builtin::preview::PreviewEye>>>,
     /// The user's configured hooks, rebuilt on every reload.
     ///
     /// Held rather than read per call for the reason the registry is: a tool
@@ -433,6 +437,7 @@ impl Host {
             theme_seen: RwLock::new(None),
             registry: Arc::new(RwLock::new(ToolRegistry::with_builtins())),
             terminal: std::sync::RwLock::new(None),
+            preview: std::sync::RwLock::new(None),
             hooks: RwLock::new(Arc::new(taurus_hooks::HookRunner::default())),
             permissions: RwLock::new(permissions),
             // Handed the keychain, so a server that wants OAuth can be signed

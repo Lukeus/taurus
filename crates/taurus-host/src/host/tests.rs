@@ -2797,6 +2797,40 @@ async fn the_terminal_is_offered_whenever_the_app_has_a_dock() {
     );
 }
 
+/// A preview with nothing in it.
+struct NoPage;
+
+#[async_trait::async_trait]
+impl taurus_tools::builtin::preview::PreviewEye for NoPage {
+    async fn look(
+        &self,
+        _request: taurus_tools::builtin::preview::LookRequest,
+    ) -> Result<taurus_tools::builtin::preview::Look, String> {
+        Err("No preview is open.".into())
+    }
+}
+
+#[tokio::test]
+async fn the_preview_tools_are_offered_only_where_there_is_a_window() {
+    // The CLI never hands the host a preview, so it never gets the tools: it
+    // has no canvas to open a page in and nothing to photograph it with.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+    let open = taurus_tools::builtin::preview::OPEN_PREVIEW_TOOL.to_string();
+    let look = taurus_tools::builtin::preview::LOOK_AT_PREVIEW_TOOL.to_string();
+
+    let tools = turn_tools(&host).await;
+    assert!(
+        !tools.contains(&open) && !tools.contains(&look),
+        "no window"
+    );
+    host.set_preview(Some(Arc::new(NoPage)));
+    let tools = turn_tools(&host).await;
+    assert!(tools.contains(&open) && tools.contains(&look), "the app");
+}
+
 #[tokio::test]
 async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
     // The three drawing tools address the person watching this
@@ -2808,8 +2842,9 @@ async fn a_turn_can_draw_and_ask_but_a_sub_agent_cannot() {
     let (host, _home) = host(&workspace);
     host.reload().await;
     // `read_terminal` is per turn, and only in a frontend with a dock, so this
-    // turn has one.
+    // turn has one. The preview tools likewise want a window's preview.
     host.set_terminal(Some(Arc::new(Terminal { live: true })));
+    host.set_preview(Some(Arc::new(NoPage)));
 
     let turn = turn_tools(&host).await;
     let shared: Vec<String> = host

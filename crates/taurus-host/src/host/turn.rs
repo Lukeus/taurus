@@ -143,6 +143,17 @@ impl Host {
             ));
         }
 
+        // Per turn for the canvas's reason: a preview is a tab in this
+        // window, and a delegate has no window. Offered whenever the app has a
+        // preview to show, for the dock's reason above: a tool list that
+        // changed with what's on screen would cost the cached prefix each time.
+        if let Some(eye) = self.preview() {
+            registry.register(Arc::new(taurus_tools::builtin::preview::OpenPreview));
+            registry.register(Arc::new(
+                taurus_tools::builtin::preview::LookAtPreview::new(eye),
+            ));
+        }
+
         // The *tool* is per turn, like the three above: a delegate writing into
         // the parent's checklist would report progress against a task nobody
         // gave it. The *board* is per conversation, so an unfinished plan
@@ -570,6 +581,20 @@ impl Host {
     /// tool itself. The CLI never calls this, and never gets the tool.
     pub fn set_terminal(&self, terminal: Option<Arc<dyn taurus_tools::blocks::TerminalReader>>) {
         *self.terminal.write().unwrap_or_else(|e| e.into_inner()) = terminal;
+    }
+
+    /// Hands the host the window's preview, which is what makes
+    /// `open_preview` and `look_at_preview` worth offering. The app calls this
+    /// once at startup; the CLI never does, and never gets the tools.
+    pub fn set_preview(&self, eye: Option<Arc<dyn taurus_tools::builtin::preview::PreviewEye>>) {
+        *self.preview.write().unwrap_or_else(|e| e.into_inner()) = eye;
+    }
+
+    fn preview(&self) -> Option<Arc<dyn taurus_tools::builtin::preview::PreviewEye>> {
+        self.preview
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The terminal, if this frontend has one.
