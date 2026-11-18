@@ -731,6 +731,31 @@ checkpointed, isn't recorded in the Changes panel, and can't be undone by a
 rewind. The two halves of the window make different promises. See
 [Terminal](capabilities.md#terminal).
 
+### A previewed page
+
+A dev server's page in a [preview tab](capabilities.md#previewing-a-page) is
+code you're building, which can mean code you haven't read: a dependency, a
+template, whatever the model just wrote. So it's treated as untrusted.
+
+- **It runs in a sandboxed frame.** It can run scripts and submit forms, but
+  it can't navigate the window it sits in, so a `target="_top"` link or a
+  script setting `top.location` can't replace Taurus with itself. It's
+  another origin from the app's, so it can't read the app's page either.
+- **It can't call into the app.** None of Taurus's commands are reachable
+  from inside the frame. The tab's footer shows `ipc: absent` to say so.
+  Taurus checks this by looking for the command channel, never by calling a
+  command to see whether one answers.
+- **Only this machine.** The tab opens `localhost` and `127.0.0.1` addresses
+  only, and the window's content policy refuses to frame anything else.
+- **The model opens only what's being served.** `open_preview` refuses any
+  address no running background command has printed, so a model can't open
+  a local admin console or a database's web port. A transcript card from a
+  refused call doesn't open it either, and preview tabs aren't brought back
+  when the app restarts, because the server that served them has ended.
+- **What the page logs reaches the model as the page's words.** A look
+  includes the page's console errors and warnings, labelled as text the page
+  wrote, not as instructions. A page can write anything to its console.
+
 ## Rewinding a turn
 
 A transcript remembers that the model called `edit_file`. It doesn't remember

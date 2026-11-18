@@ -4,6 +4,7 @@ pub mod condense;
 pub mod fs;
 pub mod plan;
 pub mod present;
+pub mod preview;
 pub mod pty;
 pub mod search;
 pub mod shell;

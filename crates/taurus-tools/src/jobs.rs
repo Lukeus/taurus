@@ -151,6 +151,11 @@ pub struct BackgroundJob {
     /// not the case this loses.
     pub ran_for: u32,
     pub status: String,
+    /// The first address on this machine the command said it was serving,
+    /// like Vite's `Local: http://localhost:5173/`, while it runs. What the
+    /// window offers to preview. See [`served_url`].
+    #[ts(optional)]
+    pub url: Option<String>,
 }
 
 /// A reader's next helping of one command's output.
@@ -189,6 +194,9 @@ struct Job {
     /// `None` while it is running.
     outcome: Mutex<Option<Outcome>>,
     finished: Notify,
+    /// Fired once, when the command first prints an address it serves. See
+    /// [`Output::hear`].
+    served: Notify,
     stop: CancellationToken,
     /// The workspace as it stood when this started, until it exits.
     ///
@@ -231,6 +239,91 @@ struct Output {
     /// The window keeps its own, passed in and handed back, because neither
     /// reader may move the other's. See the module note.
     read: usize,
+    /// The first local address it printed. See [`served_url`].
+    serves: Option<String>,
+    /// The end of the last chunk, back to its last newline, while nothing has
+    /// been found: a pipe hands over whatever has been written, and a URL cut
+    /// in two by a chunk boundary is in neither half.
+    partial: String,
+}
+
+impl Output {
+    /// Takes a chunk in, and looks through it for a served address until one
+    /// is found. After that it's one comparison per chunk.
+    ///
+    /// `true` for the chunk that found it, so whoever is waiting on a server
+    /// to come up can be woken then rather than when it exits, which a server
+    /// doesn't.
+    fn hear(&mut self, chunk: &str) -> bool {
+        self.tail.push(chunk);
+        if self.serves.is_some() {
+            return false;
+        }
+        self.partial.push_str(chunk);
+        // Whole lines only. The end of a chunk can be the middle of an
+        // address (`http://localhost:51` of `:5173`), and what's there so far
+        // is an address too, just the wrong one.
+        let found = match self.partial.rfind('\n') {
+            Some(end) => {
+                let found = served_url(&self.partial[..end]);
+                self.partial.drain(..=end);
+                found
+            }
+            None => None,
+        };
+        if let Some(url) = found {
+            self.serves = Some(url);
+            self.partial = String::new();
+            return true;
+        }
+        // What's left is the unfinished line, and not much of that is kept:
+        // an address is short, and a progress bar that never prints a newline
+        // is not.
+        let keep_from = self.partial.len().saturating_sub(MAX_PARTIAL);
+        let keep_from = ceil_boundary(&self.partial, keep_from);
+        self.partial.drain(..keep_from);
+        false
+    }
+}
+
+/// How much of an unfinished line is kept for [`Output::hear`].
+const MAX_PARTIAL: usize = 1024;
+
+/// The first address on this machine `text` says something is being served
+/// at, as an address a browser here can open.
+///
+/// Loopback only, and that is the point rather than a limit: this is what the
+/// window offers to open in a preview, and an address on the network a dev
+/// server also prints (`Network: http://192.168.1.5:5173/`) is the same page
+/// reached a way that needn't work. `0.0.0.0` and `[::]` mean "every
+/// interface", which a browser can't open, so they become `localhost`.
+///
+/// Read from what servers actually print: Vite and Astro (`Local:
+/// http://localhost:5173/`), Next (`- Local: http://localhost:3000`), Python's
+/// `http.server` (`(http://127.0.0.1:8000/)`), Django, Rails, Storybook.
+/// Colour codes are taken off first, because Vite colours the port.
+pub fn served_url(text: &str) -> Option<String> {
+    // The address is group 1. What follows it is matched too, so that a host
+    // that only starts with `localhost` (`localhost.example.com`) isn't read
+    // as `localhost`: after the address comes something that can't continue a
+    // hostname, a dot that ends a sentence, or the end.
+    static URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"(https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\])",
+            r"(?::\d{1,5})?(?:/[^\s'\x22<>()\[\]]*)?)",
+            r"(?:[^A-Za-z0-9.\-]|\.(?:[^A-Za-z0-9]|$)|$)",
+        ))
+        .expect("a fixed pattern")
+    });
+    let plain = crate::builtin::pty::strip_ansi(text);
+    let found = URL.captures(&plain)?.get(1)?.as_str();
+    let found = found.trim_end_matches(['.', ',', ';', ':']);
+    Some(
+        found
+            .replacen("://0.0.0.0", "://localhost", 1)
+            .replacen("://[::]", "://localhost", 1)
+            .replacen("://[::1]", "://localhost", 1),
+    )
 }
 
 /// The end of a command's output, and a count of all of it.
@@ -354,6 +447,7 @@ impl Jobs {
             command,
             started: Instant::now(),
             output: Mutex::new(Output::default()),
+            served: Notify::new(),
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
@@ -442,8 +536,23 @@ impl Jobs {
             // notification that has been and gone is how a poll becomes a
             // two-minute stall.
             let finished = job.finished.notified();
+            // A server never finishes, so a wait on one ends when it says
+            // where it's serving, which is what anybody waiting on it is
+            // waiting for. Created before the check for the same reason.
+            let served = job.served.notified();
+            let serving = job.output.lock().unwrap().serves.is_some();
             if job.outcome.lock().unwrap().is_none() {
-                let _ = tokio::time::timeout(wait, finished).await;
+                let _ = tokio::time::timeout(wait, async {
+                    if serving {
+                        finished.await;
+                    } else {
+                        tokio::select! {
+                            () = finished => {}
+                            () = served => {}
+                        }
+                    }
+                })
+                .await;
             }
         }
 
@@ -458,6 +567,9 @@ impl Jobs {
             read
         };
         let mut report = format!("#{} {} — {}", job.id, job.command, job.status());
+        if let Some(url) = job.serving() {
+            report.push_str(&format!("\n[taurus] serving {url}"));
+        }
         if missed > 0 {
             report.push_str(&format!(
                 "\n[{missed} bytes of earlier output dropped; check more often to keep up]"
@@ -633,7 +745,15 @@ impl Jobs {
             return "No commands have been started in the background.".into();
         }
         jobs.iter()
-            .map(|job| format!("#{} {} — {}", job.id, job.command, job.status()))
+            .map(|job| match job.serving() {
+                Some(url) => format!(
+                    "#{} {} — {}, serving {url}",
+                    job.id,
+                    job.command,
+                    job.status()
+                ),
+                None => format!("#{} {} — {}", job.id, job.command, job.status()),
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -694,11 +814,22 @@ impl Jobs {
 }
 
 impl Job {
+    /// The address it's serving, while it runs. A stopped server serves
+    /// nothing, and an address that opens onto a refused connection would be
+    /// a claim this made that isn't true.
+    fn serving(&self) -> Option<String> {
+        let url = self.output.lock().unwrap().serves.clone()?;
+        self.outcome.lock().unwrap().is_none().then_some(url)
+    }
+
     fn status(&self) -> String {
         say(&self.outcome.lock().unwrap(), self.started)
     }
 
     fn view(&self) -> BackgroundJob {
+        // Before the outcome's lock, not under it: the drain holds this one
+        // and never the other, and nothing here needs the two to agree.
+        let url = self.output.lock().unwrap().serves.clone();
         // One lock for all of it: a job read field by field could report
         // itself running with an exit code, which is a state it never was in.
         let outcome = self.outcome.lock().unwrap();
@@ -718,6 +849,8 @@ impl Job {
                 Some(note) => format!("{} — {note}", say(&outcome, self.started)),
                 None => say(&outcome, self.started),
             },
+            // Only while it runs, as `serving` says.
+            url: outcome.is_none().then_some(url).flatten(),
         }
     }
 }
@@ -776,7 +909,10 @@ where
                 Ok(n) => n,
             };
             let text = carry.text(&chunk[..n]);
-            job.output.lock().unwrap().tail.push(&text);
+            let found = job.output.lock().unwrap().hear(&text);
+            if found {
+                job.served.notify_waiters();
+            }
         }
     })
 }
@@ -975,6 +1111,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_server_says_where_it_serves_through_the_listing() {
+        // Printed by a real process through the real pipes, so the drain is
+        // what's tested and not only the parser beside it.
+        let line = "echo Network: http://192.168.1.5:5173/ && echo Local: http://localhost:5173/ && sleep 30";
+        let jobs = Jobs::new();
+        let id = jobs.adopt(line.into(), sh(line), None);
+        let _ = jobs.check(Some(id), Duration::from_secs(10)).await.unwrap();
+        let listed = jobs.list();
+        assert_eq!(listed[0].url.as_deref(), Some("http://localhost:5173/"));
+
+        // A stopped server serves nothing, and the listing stops saying so.
+        jobs.stop(id).await.unwrap();
+        assert_eq!(jobs.list()[0].url, None);
+    }
+
+    /// Unix for the shape of the command: print, then keep running.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn waiting_on_a_server_ends_when_it_says_where_it_serves() {
+        let line = "sleep 0.3; echo 'Local: http://localhost:5173/'; sleep 30";
+        let jobs = Jobs::new();
+        let id = jobs.adopt(line.into(), sh(line), None);
+        let started = Instant::now();
+        let report = jobs.check(Some(id), Duration::from_secs(25)).await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited for an exit a server never makes"
+        );
+        assert!(
+            report.contains("[taurus] serving http://localhost:5173/"),
+            "{report}"
+        );
+        assert!(jobs.roster().contains("serving http://localhost:5173/"));
+
+        jobs.stop(id).await.unwrap();
+        // Stopped, it serves nothing, and says nothing about serving.
+        assert!(!jobs.roster().contains("serving"), "{}", jobs.roster());
+    }
+
+    #[tokio::test]
     async fn output_is_read_once() {
         let jobs = Jobs::new();
         let id = jobs.adopt("echo hi".into(), sh("echo hi"), None);
@@ -1023,6 +1199,7 @@ mod tests {
             command: "npm run dev".into(),
             started: Instant::now(),
             output: Mutex::new(Output::default()),
+            served: Notify::new(),
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
@@ -1270,6 +1447,7 @@ mod tests {
             command: "x".into(),
             started: Instant::now(),
             output: Mutex::new(Output::default()),
+            served: Notify::new(),
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
@@ -1323,5 +1501,93 @@ mod tests {
         drop(writer);
         draining.await.unwrap();
         assert_eq!(job.output.lock().unwrap().tail.text, "é");
+    }
+
+    #[test]
+    fn served_urls_are_read_from_what_dev_servers_print() {
+        let cases = [
+            // Vite, coloured: the port is bold inside the address.
+            (
+                "  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://localhost:\x1b[1m5173\x1b[22m/\x1b[39m\n",
+                "http://localhost:5173/",
+            ),
+            ("   - Local:        http://localhost:3000\n", "http://localhost:3000"),
+            (
+                "Serving HTTP on 127.0.0.1 port 8000 (http://127.0.0.1:8000/) ...\n",
+                "http://127.0.0.1:8000/",
+            ),
+            (
+                "Starting development server at http://127.0.0.1:8000/\n",
+                "http://127.0.0.1:8000/",
+            ),
+            ("Listening on http://0.0.0.0:4000.\n", "http://localhost:4000"),
+            ("ready on http://[::]:8080\n", "http://localhost:8080"),
+            ("ready on http://[::1]:8080/app\n", "http://localhost:8080/app"),
+        ];
+        for (printed, expected) in cases {
+            assert_eq!(
+                served_url(printed).as_deref(),
+                Some(expected),
+                "{printed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn addresses_off_this_machine_are_not_served_urls() {
+        for printed in [
+            "  ➜  Network: http://192.168.1.5:5173/\n",
+            "See https://vitejs.dev/config for more\n",
+            "http://localhost.example.com:5173/\n",
+            "Compiling... 40%\n",
+        ] {
+            assert_eq!(served_url(printed), None, "{printed:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_local_address_wins_over_the_network_one() {
+        let printed =
+            "  ➜  Network: http://192.168.1.5:5173/\n  ➜  Local:   http://localhost:5173/\n";
+        assert_eq!(
+            served_url(printed).as_deref(),
+            Some("http://localhost:5173/")
+        );
+    }
+
+    #[test]
+    fn a_url_cut_across_chunks_is_still_heard() {
+        let mut output = Output::default();
+        output.hear("compiled in 300ms\n  Local:   http://local");
+        assert_eq!(output.serves, None);
+        output.hear("host:5173/\n");
+        assert_eq!(output.serves.as_deref(), Some("http://localhost:5173/"));
+        // Later addresses don't replace it.
+        output.hear("Local: http://localhost:9999/\n");
+        assert_eq!(output.serves.as_deref(), Some("http://localhost:5173/"));
+        assert!(output.partial.is_empty());
+    }
+
+    #[test]
+    fn a_url_cut_inside_its_port_is_not_heard_short() {
+        let mut output = Output::default();
+        output.hear("  Local:   http://localhost:51");
+        assert_eq!(output.serves, None);
+        output.hear("73/\n");
+        assert_eq!(output.serves.as_deref(), Some("http://localhost:5173/"));
+
+        let mut output = Output::default();
+        output.hear("  Local:   http://localhost");
+        output.hear(":5173/\n");
+        assert_eq!(output.serves.as_deref(), Some("http://localhost:5173/"));
+    }
+
+    #[test]
+    fn a_line_with_no_end_is_not_kept_forever() {
+        let mut output = Output::default();
+        output.hear(&"=".repeat(10 * MAX_PARTIAL));
+        assert!(output.partial.len() <= MAX_PARTIAL);
+        output.hear("\nLocal: http://localhost:5173/\n");
+        assert_eq!(output.serves.as_deref(), Some("http://localhost:5173/"));
     }
 }

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react";
 
 import type { BackgroundJob } from "../lib/api";
 import { mark, title, tone } from "../lib/jobs";
+import { hostOf } from "../lib/preview";
 import { onTabKeys } from "../lib/tabs";
 
 /**
@@ -83,12 +84,15 @@ export function JobScreen({
   text,
   problem,
   onStop,
+  onPreview,
 }: {
   job: BackgroundJob;
   /** Everything the pane has collected, gaps marked. See `extend` in `lib/jobs`. */
   text: string;
   problem: string | null;
   onStop: () => void;
+  /** Opens what the command is serving as a canvas tab. */
+  onPreview?: (url: string) => void;
 }) {
   const view = useRef<HTMLPreElement>(null);
   /**
@@ -118,6 +122,13 @@ export function JobScreen({
       <div className="job-bar">
         <span className={`job-status ${tone(job)}`}>{job.status}</span>
         <div className="spacer" />
+        {/* Only while it runs: a server that stopped serves nothing, and an
+            address that opens onto "connection refused" is a button that lies. */}
+        {job.running && job.url && onPreview && (
+          <button className="pill" onClick={() => onPreview(job.url!)} data-tip={job.url}>
+            Preview {hostOf(job.url)}
+          </button>
+        )}
         {job.running && (
           <button className="pill" onClick={onStop}>
             Stop

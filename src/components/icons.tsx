@@ -134,6 +134,21 @@ export function NarrowIcon({ size }: { size?: number }) {
   );
 }
 
+/** A camera: take a picture of what's showing. */
+export function CameraIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path
+        d="M2 5.5A1.5 1.5 0 0 1 3.5 4h1.8l1-1.5h3.4l1 1.5h1.8A1.5 1.5 0 0 1 14 5.5v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="8.5" r="2.3" stroke="currentColor" strokeWidth="1.3" />
+    </Icon>
+  );
+}
+
 /** Skills. The same four-point star the skill proposal card is marked with. */
 export function SparkIcon({ size }: { size?: number }) {
   return (

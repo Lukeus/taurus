@@ -7,6 +7,7 @@ mod bridge;
 mod cli_install;
 mod commands;
 mod live;
+mod preview;
 mod state;
 mod terminal;
 
@@ -184,6 +185,9 @@ pub fn run() {
         ),
     }
 
+    // Shared by the preview's eye, which waits, and the command that answers.
+    let looks = preview::LookWaits::default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -191,6 +195,9 @@ pub fn run() {
         // nothing for it. See `commands::notify_done`.
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Tells the app what a previewed page logs. See `preview`.
+        .plugin(preview::plugin())
+        .manage(looks.clone())
         .manage(commands::PendingUpdate::default())
         // A shell started under a pty is not in this process's tree in any way
         // the OS will tidy up, so a closed window would otherwise leave one
@@ -252,6 +259,13 @@ pub fn run() {
             // host decides per turn whether one is running and marking its
             // commands, which is when the tool is offered.
             state.host.set_terminal(Some(state.terminals.clone()));
+            // The model's eye on the preview. See `preview`.
+            state
+                .host
+                .set_preview(Some(Arc::new(preview::UiPreviewEye::new(
+                    app.handle().clone(),
+                    looks,
+                ))));
 
             // Skill discovery touches the filesystem; do it off the setup path
             // so the window paints immediately. `mark_loaded` is what lets
@@ -481,6 +495,8 @@ pub fn run() {
             commands::background,
             commands::background_stop,
             commands::attention,
+            preview::preview_snapshot,
+            preview::preview_look_answer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Taurus");

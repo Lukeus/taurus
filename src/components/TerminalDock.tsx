@@ -70,6 +70,7 @@ export function TerminalDock({
   onStop,
   onClose,
   onAsk,
+  onPreview,
 }: {
   /**
    * The folder the shell starts in, and the identity of the dock.
@@ -98,6 +99,8 @@ export function TerminalDock({
   onClose: () => void;
   /** Puts a draft in the composer, the way the other panes' "ask" buttons do. */
   onAsk: (draft: string) => void;
+  /** Opens what a background command is serving as a canvas tab. */
+  onPreview?: (url: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
@@ -626,6 +629,7 @@ export function TerminalDock({
           job={shown}
           text={output}
           problem={stopFailed?.id === shown.id ? stopFailed.why : null}
+          onPreview={onPreview}
           onStop={() => {
             setStopFailed(null);
             void onStop(shown.id).catch((e) =>

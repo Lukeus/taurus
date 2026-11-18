@@ -1,4 +1,6 @@
 import type { LineRange, TranscriptView } from "../lib/api";
+import { isPreviewTab, previewTabUrl } from "../lib/canvasTabs";
+import { hostOf } from "../lib/preview";
 
 type DocumentView = Extract<TranscriptView, { type: "document" }>;
 
@@ -31,10 +33,14 @@ export function DocumentCard({
    *  in — inside a delegate's transcript, which is read on its own. */
   onOpen?: (path: string, lines: LineRange | null) => void;
 }) {
-  const name = view.path.split("/").pop() ?? view.path;
-  const folder = view.path.includes("/")
-    ? view.path.slice(0, view.path.lastIndexOf("/"))
-    : null;
+  // An `open_preview` card names the server, not a path segment.
+  const page = isPreviewTab(view.path) ? previewTabUrl(view.path) : null;
+  const name = page ? hostOf(page) : (view.path.split("/").pop() ?? view.path);
+  const folder = page
+    ? "preview"
+    : view.path.includes("/")
+      ? view.path.slice(0, view.path.lastIndexOf("/"))
+      : null;
 
   return (
     <div className="view-card document-card">

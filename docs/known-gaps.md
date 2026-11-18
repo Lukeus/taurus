@@ -85,6 +85,23 @@ the backlog, and they're the minority.
   pre-image. The cost is the command's own change to such a file. Undoing the
   command's turn doesn't touch it. Undoing the other call's turn restores the
   file as it stood then, the command's change so far included.
+- **A preview picture is macOS only.** `look_at_preview` photographs the
+  app's own webview cropped to the tab, through WebKit's snapshot API. On
+  Windows and Linux the picture fails and the model has only the outline
+  mode. Covering it means WebView2's `CapturePreview` and WebKitGTK's
+  snapshot call, each behind the same `taurus-webshot` crate.
+- **A preview can't open an `https` dev server with a self-signed
+  certificate.** The window's content policy allows `https://localhost`, but
+  the webview refuses a certificate it doesn't trust and the tab stays blank.
+  Vite's `basicSsl` and similar plugins make exactly that kind of
+  certificate. Covering it means trusting a loopback certificate for the
+  preview frame only, which needs care not to trust it anywhere else.
+- **A preview can't open an IPv6 address.** A content policy has no way to
+  name `[::1]`, so the tab refuses it. A server that prints `[::1]` or `[::]`
+  is reported as `localhost`, which reaches it.
+- **A preview tab isn't kept between launches.** The server that served it
+  ended with the session that started it, and the address may belong to
+  something else by the next launch.
 - **What a message costs is estimated at four characters a token, then
   corrected by a single ratio.** The fixed part of a request — the system
   prompt, the tool schemas, the envelope — is estimated directly from the text

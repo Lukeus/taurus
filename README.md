@@ -417,6 +417,7 @@ crates/
   taurus-data/              Reading, profiling, and transforming tabular files, behind one engine trait
   taurus-voice/             Dictation: microphone capture, whisper.cpp transcription
   taurus-speech/            Reading aloud: the speakable-text filter, voices, playback
+  taurus-webshot/           A picture of the app's webview, for looking at a preview (macOS)
   taurus-core/              Session state, the agent loop, sub-agents
   taurus-host/              Config, system prompt, registry assembly
   taurus-cli/               The `taurus` binary

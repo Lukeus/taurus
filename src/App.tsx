@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { LookRequest } from "./bindings/LookRequest";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
@@ -25,8 +26,11 @@ import { keptIn, type TabMark } from "./components/CanvasSlot";
 import { CanvasDeck } from "./components/CanvasDeck";
 import {
   closeTab,
+  isPreviewTab,
   nameTab,
   openTab,
+  PREVIEW_PREFIX,
+  previewTabUrl,
   recallTabs,
   rememberTabs,
   samePath,
@@ -56,6 +60,7 @@ import { TipLayer } from "./components/Tooltip";
 import { Transcript, type TranscriptProps } from "./components/Transcript";
 import type { DataTab } from "./components/DataPane";
 import * as api from "./lib/api";
+import { hostOf, lookerFor, servedBy, wait } from "./lib/preview";
 import type {
   BackgroundJob,
   DataOnScreen,
@@ -327,6 +332,12 @@ export default function App() {
    * `watching` is a job number, or null for the shell's own tab.
    */
   const [jobs, setJobs] = useState<BackgroundJob[]>([]);
+  /** The jobs as they are now, for checks that run after a render. */
+  const jobsNow = useRef(jobs);
+  jobsNow.current = jobs;
+  /** The newest address a running command is serving, for ⌘K's Preview. */
+  const servingNow = useRef<string | null>(null);
+  servingNow.current = [...jobs].reverse().find((job) => job.running && job.url)?.url ?? null;
   const [watching, setWatching] = useState<number | null>(null);
   const [jobOutput, setJobOutput] = useState("");
   /**
@@ -1043,6 +1054,16 @@ export default function App() {
         run: toggleRail,
       },
       {
+        id: "preview",
+        label: "Preview a local server",
+        group: "Panels",
+        keywords: "browser localhost dev server vite page web app ui",
+        // What a running command is serving, newest first; Vite's default
+        // port when nothing has said. Read when it runs, through `latest`'s
+        // reason: this list is built long before the palette opens.
+        run: () => linkTo.current(`${PREVIEW_PREFIX}${servingNow.current ?? "http://localhost:5173/"}`, null),
+      },
+      {
         id: "changes",
         label: "Changes",
         group: "Panels",
@@ -1203,11 +1224,42 @@ export default function App() {
   const showDocument = (path: string, lines: LineRange | null, quietly = false) => {
     const mark = canvasMarksNow.current;
     setCanvas((now) =>
-      openTab(now, samePath(path, workspace), lines ? { from: lines.from, to: lines.to } : null, {
+      // A preview's path is an address, which `samePath` would mangle.
+      openTab(now, isPreviewTab(path) ? path : samePath(path, workspace), lines ? { from: lines.from, to: lines.to } : null, {
         quietly,
         keep: (open) => !!mark[open]?.unsaved || !!mark[open]?.trouble,
       }),
     );
+  };
+
+  /*
+   * A transcript card's Open. A preview card is drawn before
+   * `open_preview` decides, so a refused call has one too, and the card's
+   * button holds the same rule the tool does: the page has to be one a
+   * command here is serving now.
+   */
+  const openFromCard = (path: string, lines: LineRange | null) => {
+    if (isPreviewTab(path) && !servedBy(jobsNow.current, previewTabUrl(path))) {
+      store.noteError(
+        `Nothing here is serving ${hostOf(previewTabUrl(path))} now. Start the dev server, then preview it from its command in the terminal dock.`,
+      );
+      return;
+    }
+    showDocument(path, lines);
+  };
+
+  /*
+   * Puts away whatever has the side column, so the canvas has it. Every way
+   * of bringing a tab forward goes through here: a panel left open over the
+   * canvas would hide the tab it brought, and a look waits for its tab to show.
+   * The setters and the store are the same on every render, so a stale copy of
+   * this is still right.
+   */
+  const giveCanvasTheColumn = () => {
+    setSkillsOpen(false);
+    setAgentsOpen(false);
+    setChangesOpen(false);
+    useAgentsView.getState().close();
   };
 
   /*
@@ -1219,16 +1271,60 @@ export default function App() {
    */
   const linkTo = useRef<(path: string, lines: LineRange | null) => void>(() => {});
   linkTo.current = (path, lines) => {
-    setSkillsOpen(false);
-    setAgentsOpen(false);
-    setChangesOpen(false);
-    useAgentsView.getState().close();
+    giveCanvasTheColumn();
     showDocument(path, lines);
   };
   const openFromLink = useCallback(
     (path: string, lines: LineRange | null) => linkTo.current(path, lines),
     [],
   );
+
+  /*
+   * The model looking at the preview.
+   *
+   * At the tab in front if it's a preview, or the last one used. Brought to
+   * the front first, with whatever had the column put away: the model looks at
+   * what the person sees, so what it reports is something they can check.
+   */
+  const canvasNow = useRef(canvas);
+  canvasNow.current = canvas;
+  useEffect(() => {
+    const look = async (request: LookRequest) => {
+      const now = canvasNow.current;
+      const tab =
+        now && isPreviewTab(now.active)
+          ? now.active
+          : now?.tabs
+              .filter((t) => isPreviewTab(t.path))
+              .sort((a, b) => b.used - a.used)[0]?.path;
+      const looker = tab ? lookerFor(tab) : undefined;
+      if (!tab || !looker) {
+        void api.previewLookAnswer(
+          request.id,
+          null,
+          "No preview is open. Open the page with open_preview first.",
+        );
+        return;
+      }
+      giveCanvasTheColumn();
+      setCanvas((c) => c && showTab(c, tab));
+      try {
+        void api.previewLookAnswer(request.id, await looker(request), null);
+      } catch (e) {
+        void api.previewLookAnswer(request.id, null, e instanceof Error ? e.message : String(e));
+      }
+    };
+    // One look at a time. Two at once (the model can call tools in parallel)
+    // would each set a width and both photograph whichever landed last, each
+    // labelled with the width it asked for.
+    let queue = Promise.resolve();
+    const off = api.onPreviewLook((request) => {
+      queue = queue.then(() => look(request));
+    });
+    return () => {
+      void off.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const closeDocument = useCallback((path: string) => {
     setCanvas((now) => now && closeTab(now, path));
@@ -1328,7 +1424,28 @@ export default function App() {
     // Typed lately rather than focused: the model pointing at lines focuses the
     // editor itself, so focus would have kept its next file behind its last.
     const typing = Date.now() - canvasTypedAt.current < TYPING_MS;
-    showDocument(opening.path, opening.lines, typing);
+    if (!isPreviewTab(opening.path)) {
+      showDocument(opening.path, opening.lines, typing);
+      return;
+    }
+    // A page the model opens has to be one a command here is serving,
+    // the rule `open_preview` holds it to. That check runs after this
+    // announcement does, so the window holds it too. Given a moment, because
+    // the job list is polled and the address it reported may not be in it yet.
+    let gone = false;
+    void (async () => {
+      const url = previewTabUrl(opening.path);
+      for (let waited = 0; waited <= 3000 && !gone; waited += 250) {
+        if (servedBy(jobsNow.current, url)) {
+          showDocument(opening.path, null, typing);
+          return;
+        }
+        await wait(250);
+      }
+    })();
+    return () => {
+      gone = true;
+    };
     // Only the counter. The path and the lines are read through the closure,
     // and depending on them would re-open the file every time this component
     // re-rendered with the same errand still sitting there.
@@ -1428,7 +1545,9 @@ export default function App() {
     pane,
     showing,
     sql,
-    canvas && {
+    // A page in front is not a file on screen. Telling the model about
+    // the page is a later step; naming it as a file would send it reading one.
+    canvas && !isPreviewTab(canvas.active) ? {
       // The file on screen and no other. A tab behind it isn't what "this" means.
       path:
         canvas.tabs.find((tab) => tab.path === canvas.active)?.shown ?? canvas.active,
@@ -1437,7 +1556,7 @@ export default function App() {
       // What it catches is the conflict, where the screen and the disk hold
       // different things until somebody decides.
       unsaved: !!canvasMarks[canvas.active]?.unsaved,
-    },
+    } : null,
     notebook.onScreen,
   );
 
@@ -1726,7 +1845,7 @@ export default function App() {
                 onAnswer={store.answerQuestions}
                 onOpenDelegate={setDelegate}
                 onOpenDataset={showDataset}
-                onOpenDocument={showDocument}
+                onOpenDocument={openFromCard}
                 onOpenNote={showNote}
                 onRunQuery={showQuery}
                 find={find}
@@ -2007,6 +2126,7 @@ export default function App() {
                     onStop={api.stopBackground}
                     onClose={() => setTerminalOpen(false)}
                     onAsk={ask}
+                    onPreview={(url) => linkTo.current(`${PREVIEW_PREFIX}${url}`, null)}
                   />
                 </div>
               </Suspense>
@@ -2058,10 +2178,7 @@ export default function App() {
             <FileFinder
               open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
               onOpen={(path) => {
-                setSkillsOpen(false);
-                setAgentsOpen(false);
-                setChangesOpen(false);
-                useAgentsView.getState().close();
+                giveCanvasTheColumn();
                 showDocument(path, null);
               }}
               onClose={() => setFinderOpen(false)}

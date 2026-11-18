@@ -19,6 +19,8 @@ import type { ContextStrategy } from "../bindings/ContextStrategy";
 import type { Attachment } from "../bindings/Attachment";
 import type { Background } from "../bindings/Background";
 import type { BackgroundJob } from "../bindings/BackgroundJob";
+import type { LookRequest } from "../bindings/LookRequest";
+import type { LookAnswer } from "./preview";
 import type { DelegateDisposition } from "../bindings/DelegateDisposition";
 import type { DelegateReport } from "../bindings/DelegateReport";
 import type { DelegateStep } from "../bindings/DelegateStep";
@@ -1776,3 +1778,22 @@ export const onChanged = (
   handler: (changed: ChangedFiles) => void,
 ): Promise<UnlistenFn> =>
   listen<ChangedFiles>(EVENT_CHANGED, (e) => handler(e.payload));
+
+/** A picture of a box of this page, as a PNG `data:` URL. The box is in
+ *  CSS pixels, with `innerWidth` so the interface zoom can be undone. macOS
+ *  only for now. See `src-tauri/src/preview.rs`. */
+export const previewSnapshot = (area: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  viewport: number;
+}) => invoke<string>("preview_snapshot", { area });
+
+/** The host asking for a look at the preview. See `lib/preview`. */
+export const EVENT_PREVIEW_LOOK = "preview-look";
+export const onPreviewLook = (handler: (request: LookRequest) => void) =>
+  listen<LookRequest>(EVENT_PREVIEW_LOOK, (e) => handler(e.payload));
+/** The window's answer to one: what it showed, or why it couldn't. */
+export const previewLookAnswer = (id: string, answer: LookAnswer | null, error: string | null) =>
+  invoke<void>("preview_look_answer", { id, answer, error });

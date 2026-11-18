@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import type { Selection } from "../lib/api";
-import { tabLabels, type CanvasTabs } from "../lib/canvasTabs";
+import { isPreviewTab, previewTabUrl, tabLabels, type CanvasTabs } from "../lib/canvasTabs";
 import { useGlide } from "../lib/motion";
 import { onTabKeys } from "../lib/tabs";
 import { useStore } from "../state/store";
 import { CanvasSlot, type TabMark } from "./CanvasSlot";
+import { PreviewTab } from "./PreviewTab";
 import { ResizeHandle, type Resizable } from "./ResizeHandle";
 
 type Flush = MutableRefObject<(() => Promise<boolean>) | null>;
@@ -200,7 +201,18 @@ export function CanvasDeck({
           </div>
         )}
         <div className="canvas-stack">
-          {tabs.map((tab) => (
+          {tabs.map((tab) =>
+            isPreviewTab(tab.path) ? (
+              <PreviewTab
+                key={tab.path}
+                path={tab.path}
+                url={previewTabUrl(tab.path)}
+                showing={tab.path === active && showing}
+                tabbed={tabs.length > 1}
+                wide={wide}
+                onClose={() => onClose(tab.path)}
+              />
+            ) : (
             <TabSlot
               key={tab.path}
               path={tab.path}
@@ -218,7 +230,8 @@ export function CanvasDeck({
               wide={wide}
               tabbed={tabs.length > 1}
             />
-          ))}
+            ),
+          )}
         </div>
       </div>
     </>

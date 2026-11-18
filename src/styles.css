@@ -764,6 +764,13 @@ body.resizing-y * {
   cursor: row-resize !important;
   user-select: none;
 }
+/* A drag is heard on this document, and a pointer over an iframe is in the
+   iframe's: crossing a preview mid-drag would freeze the edge and lose the
+   mouseup that ends it. So frames let the pointer through until it does. */
+body.resizing iframe,
+body.resizing-y iframe {
+  pointer-events: none;
+}
 
 /*
  * A square badge holding one letter, in the accent.
@@ -8390,4 +8397,116 @@ button.link:where(:not(.excalidraw *)):hover {
   list-style: none;
   display: grid;
   gap: 4px;
+}
+
+/* ------------------------------------------------------ a preview tab */
+/* Sized against its own width, not the window's: the column is dragged,
+   widened and shared, so the window says nothing about the room in here. */
+.preview-tab {
+  container: preview / inline-size;
+}
+/* The address is the one control that needs room to be any use, so it takes
+   what's left and is the last thing to give it up. */
+.preview-address-form {
+  flex: 1;
+  min-width: 100px;
+  display: flex;
+}
+.preview-address {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.preview-viewport-select {
+  display: none;
+  flex: none;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+@container preview (max-width: 600px) {
+  .preview-viewport-seg {
+    display: none;
+  }
+  .preview-viewport-select {
+    display: block;
+  }
+}
+/* Narrower than a phone: a phone-width preset would be wider than the column. */
+@container preview (max-width: 400px) {
+  .preview-viewport-select {
+    display: none;
+  }
+}
+/* A narrower viewport sits centred on a bare stage, so it reads as a device
+   width rather than a column that didn't fill. */
+.preview-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  overflow: auto;
+}
+.preview-frame {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.preview-note {
+  margin: 8px 12px;
+  font-size: 12px;
+}
+.preview-note.error {
+  color: var(--danger, crimson);
+}
+.preview-status {
+  flex: none;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 3px 12px;
+  font-size: 11px;
+  font-family: var(--mono, ui-monospace, monospace);
+  border-top: 1px solid var(--rule);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.preview-status-log {
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.preview-log {
+  flex: none;
+  max-height: 30%;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 12px 6px 32px;
+  font-size: 11px;
+  font-family: var(--mono, ui-monospace, monospace);
+  border-top: 1px solid var(--rule);
+}
+.preview-log .error {
+  color: var(--danger, crimson);
+}
+.preview-look {
+  flex: none;
+  height: 160px;
+  padding: 6px;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  background: none;
+  cursor: zoom-out;
+}
+.preview-look img {
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
 }

@@ -106,6 +106,9 @@ export function sameJobs(
         a.running === b.running &&
         a.stopped === b.stopped &&
         a.code === b.code &&
+        // Whether the dock is open or not: the address is what the palette's
+        // Preview offers, and it arrives once, mid-run.
+        a.url === b.url &&
         (!clock || (a.ran_for === b.ran_for && a.status === b.status))
       );
     })
