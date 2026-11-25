@@ -4156,3 +4156,77 @@ async fn what_a_prompt_hook_prints_reaches_the_model_with_the_message() {
     assert!(asked.contains("what's here?"), "{asked}");
     assert!(asked.contains("hook 'branch': on branch main"), "{asked}");
 }
+
+/// [`plan_harness`], planning.
+fn planning_harness(turns: Vec<ScriptedTurn>) -> Harness {
+    let h = plan_harness(turns);
+    Harness {
+        agent: h.agent.with_planning(true),
+        ..h
+    }
+}
+
+#[tokio::test]
+async fn a_planning_turn_is_told_so_on_every_request() {
+    // At the tail, beside the plan, and on each request rather than the first:
+    // a small model reads the end of what it was sent.
+    let h = planning_harness(vec![
+        plan_call(
+            "p1",
+            serde_json::json!([{ "text": "Read the parser", "state": "todo" }]),
+        ),
+        ScriptedTurn::text("That's the plan."),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "rework the parser").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let seen = h.provider.seen.lock().await;
+    assert_eq!(seen.len(), 2);
+    for request in seen.iter() {
+        let tail = request.messages.last().unwrap().text();
+        assert!(tail.contains(taurus_core::PLANNING_NOTE), "{tail}");
+    }
+    // And never in the history the conversation keeps.
+    assert!(!session
+        .messages
+        .iter()
+        .any(|m| m.text().contains(taurus_core::PLANNING_NOTE)));
+}
+
+#[tokio::test]
+async fn a_plan_described_in_prose_is_asked_for_once_and_open_steps_are_not_chased() {
+    // A planning turn's steps are all open by design — they're the proposal.
+    // Asking it to close them would be asking it to claim work it was told not
+    // to do. What it can owe is the plan itself, when it wrote it as prose.
+    let h = planning_harness(vec![
+        ScriptedTurn::text("First I'd read the parser, then split it."),
+        plan_call(
+            "p1",
+            serde_json::json!([
+                { "text": "Read the parser", "state": "todo" },
+                { "text": "Split it in two", "state": "todo" },
+            ]),
+        ),
+        ScriptedTurn::text("That's the plan."),
+        ScriptedTurn::text("never reached"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "rework the parser").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let seen = h.provider.seen.lock().await;
+    assert_eq!(
+        seen.len(),
+        3,
+        "prose, nudge, plan; no nudge about open steps"
+    );
+    assert!(seen[1]
+        .messages
+        .iter()
+        .any(|m| m.text().contains("You haven't written the plan yet")));
+    assert!(!seen
+        .iter()
+        .flat_map(|r| r.messages.iter())
+        .any(|m| m.text().contains("not marked done")));
+}

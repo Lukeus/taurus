@@ -244,6 +244,34 @@ Your plan still has steps that are not marked done. If you finished them, call \
 update_plan now with the whole list and every finished step marked 'done'. If \
 you have stopped without finishing them, say why in one line and stop.";
 
+/// Said at the end of every request while a conversation is planning.
+///
+/// At the tail, beside the plan, for the plan's own reason: the system prompt
+/// leads every request and a line there that came and went with the mode would
+/// cost the cached prefix twice per task. It is an instruction about this
+/// request rather than about the agent, which is also where it belongs.
+///
+/// It says what is enforced rather than asking for restraint. The tools that
+/// change things are not offered at all while planning — see
+/// [`Agent::with_planning`] — so a model that tries anyway finds no such tool;
+/// what this adds is the reason, so it plans instead of hunting for a way round.
+pub const PLANNING_NOTE: &str = "\
+You are planning, not doing. Read what you need, then write the plan with \
+update_plan: concrete steps, each with a check command where one exists. Then \
+stop and say in a line or two what you need decided, if anything. Nothing can \
+be changed until the user approves the plan.";
+
+/// Asked once, when a planning turn stops without having written a plan.
+///
+/// The planning turn's version of [`PLAN_NUDGE`]: the failure is a model that
+/// describes its plan in prose, which leaves the person nothing to approve or
+/// comment on step by step. Same way out, for the same reason — a request that
+/// needs a question answered first has to be able to stop and ask it.
+const PLANNING_NUDGE: &str = "\
+You haven't written the plan yet. Call update_plan now with the steps, all \
+'pending'. If you can't plan this without an answer from the user first, ask \
+the question in one line and stop.";
+
 /// How far below the budget a trim brings the conversation, as a share of it.
 ///
 /// Every trim edits an old message and costs a backend's cached prefix from
@@ -511,6 +539,10 @@ pub struct Agent {
     /// answering it means rendering every tool schema to a string. See
     /// [`Agent::request_overhead`].
     overhead: std::sync::OnceLock<u32>,
+    /// The conversation is planning: [`PLANNING_NOTE`] rides on every request,
+    /// and the nudges about unverified writes and open steps give way to one
+    /// about a missing plan. See [`Agent::with_planning`].
+    planning: bool,
 }
 
 /// What a completed turn produced.
@@ -536,6 +568,7 @@ impl Agent {
             plan: None,
             recorder: None,
             overhead: std::sync::OnceLock::new(),
+            planning: false,
         }
     }
 
@@ -547,6 +580,20 @@ impl Agent {
     /// pass a `None` to say so.
     pub fn with_plan(mut self, board: PlanBoard) -> Self {
         self.plan = Some(board);
+        self
+    }
+
+    /// Runs this agent's turns as planning: it reads and writes a plan, and
+    /// stops for the person to approve it.
+    ///
+    /// This changes what the model is told and nudged toward, and nothing it
+    /// can do. What it can do is the registry's business, and the caller that
+    /// sets this is the one that builds the registry: Taurus's host takes every
+    /// tool that changes anything out of it first. Kept apart deliberately —
+    /// a flag here that also filtered tools would be a second place deciding
+    /// what an agent may do, and the two could disagree.
+    pub fn with_planning(mut self, planning: bool) -> Self {
+        self.planning = planning;
         self
     }
 
@@ -1542,8 +1589,13 @@ impl Agent {
     /// request carries. So this answers how many blocks it added, for
     /// [`ChatRequest::volatile_tail`].
     fn append_plan(&self, messages: &mut Vec<Message>) -> usize {
-        let Some(plan) = self.plan.as_ref().and_then(|board| board.reminder()) else {
-            return 0;
+        let reminder = self.plan.as_ref().and_then(|board| board.reminder());
+        // One block rather than two, so the tail is still one block long.
+        let plan = match (reminder, self.planning) {
+            (None, false) => return 0,
+            (Some(plan), false) => plan,
+            (None, true) => PLANNING_NOTE.to_string(),
+            (Some(plan), true) => format!("{plan}\n\n{PLANNING_NOTE}"),
         };
         // Onto the last message rather than after it. Every request is built
         // with a user message last — the person's turn, a round of tool
@@ -1671,6 +1723,16 @@ impl Agent {
         nudged: &mut bool,
         plan_nudged: &mut bool,
     ) -> Option<String> {
+        // A planning turn has written nothing to verify and has no steps to
+        // close: the steps are the proposal. What it can owe is the plan.
+        if self.planning {
+            if !*plan_nudged && self.plan.as_ref().is_some_and(|b| b.steps().is_empty()) {
+                *plan_nudged = true;
+                info!("asking a planning turn for the plan it described");
+                return Some(PLANNING_NUDGE.to_string());
+            }
+            return None;
+        }
         if !*nudged && self.config.verify_changes {
             let unrun = match &self.plan {
                 Some(board) if wrote_this_turn => board.unrun_checks(ran),

@@ -103,6 +103,8 @@ import type { DataOnScreen } from "../bindings/DataOnScreen";
 import type { DocumentOnScreen } from "../bindings/DocumentOnScreen";
 import type { NoteOnScreen } from "../bindings/NoteOnScreen";
 import type { OnScreen } from "../bindings/OnScreen";
+import type { Anchor } from "../bindings/Anchor";
+import type { Remark } from "../bindings/Remark";
 import type { Selection } from "../bindings/Selection";
 import type { PermissionDecision } from "../bindings/PermissionDecision";
 import type { PermissionRequest } from "../bindings/PermissionRequest";
@@ -198,6 +200,7 @@ export type { EmbeddingDownload, EmbeddingModel, EmbeddingModels };
 export type { SpeechEngine, SpeechSettings, SpeechState, SpeechStatus, VoiceInfo };
 export type { AvailableUpdate, UpdateCheck, UpdateDownload };
 export type { CliStatus };
+export type { Anchor, Remark };
 
 export type {
   ModelLatency,
@@ -443,6 +446,16 @@ export const createSession = (providerId: string, model: string) =>
   invoke<CreatedSession>("create_session", { providerId, model });
 
 /**
+ * What a message says once the comments waiting to go with it are added.
+ *
+ * Asked for before the send rather than done inside it, because the composed
+ * text is what the transcript keeps: the message on screen has to be the one a
+ * reopened conversation will replay. See `taurus_host::remarks`.
+ */
+export const composeMessage = (text: string, remarks: Remark[]) =>
+  invoke<string>("compose_message", { text, remarks });
+
+/**
  * Runs one turn. Resolves when the turn is over; progress arrives on the
  * channel in order.
  */
@@ -490,6 +503,21 @@ export function sendMessage(
  */
 export const setUnattended = (sessionId: string, unattended: boolean) =>
   invoke<UnattendedMark | null>("set_unattended", { sessionId, unattended });
+
+/**
+ * Starts or stops planning in a conversation, from its next turn: the model
+ * reads and writes a plan, with nothing that changes anything offered to it.
+ * See `taurus_host::planning`. Not persisted.
+ */
+export const setPlanning = (sessionId: string, planning: boolean) =>
+  invoke<void>("set_planning", { sessionId, planning });
+
+/**
+ * Stops planning and answers the message that approves the plan, to be sent
+ * as the person's own. The words are the backend's, so the CLI and the app
+ * approve a plan in the same sentence.
+ */
+export const approvePlan = (sessionId: string) => invoke<string>("approve_plan", { sessionId });
 
 /**
  * Which conversations have a turn running in them.

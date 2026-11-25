@@ -7,7 +7,8 @@ import type { Attachment, CommandSummary, InterruptedTurn, OnScreen } from "../l
 import { basename } from "../lib/format";
 import { isImage, toAttachments } from "../lib/images";
 import { isComposing } from "../lib/keys";
-import type { Outgoing } from "../state/store";
+import { NO_REMARKS, useStore, type Outgoing } from "../state/store";
+import type { Remark } from "../lib/api";
 import * as api from "../lib/api";
 import { useVoice } from "../state/voice";
 import { useSpeech } from "../state/speech";
@@ -382,12 +383,19 @@ export function Composer({
     setActive(0);
   };
 
+  const commenting = useStore((s) =>
+    s.session ? (s.remarks[s.session.id] ?? NO_REMARKS).length : 0,
+  );
+
   const submit = () => {
     // No longer refused while a turn runs. The box stays typeable through one
     // on purpose, and the send is held rather than dropped — see `queued` in
     // the store, and the line below the box that says which of the two just
     // happened.
-    if (!text.trim()) return;
+    //
+    // An empty box sends when there are comments waiting: they are the
+    // message. Not while a turn runs, when there is nothing to hold.
+    if (!text.trim() && (commenting === 0 || busy)) return;
     onSend(text, images, onScreen);
     setText("");
     setImages([]);
@@ -495,6 +503,7 @@ export function Composer({
           </button>
         </div>
       )}
+      <CommentTray busy={busy} />
       <VoiceStrip />
       <div
         className={`composer-box${dragDepth > 0 ? " dropping" : ""}`}
@@ -619,6 +628,7 @@ export function Composer({
           >
             {unattended ? "◐ unattended" : "◑ asks you"}
           </button>
+          <PlanFirst busy={busy} />
           <div className="spacer" />
           {/* The hint is the only place the slash namespace announces itself,
               and only while there is something in it to run. Paste is the
@@ -661,7 +671,7 @@ export function Composer({
             <button
               className="primary composer-send"
               onClick={submit}
-              disabled={!ready || !text.trim()}
+              disabled={!ready || (!text.trim() && commenting === 0)}
             >
               Send
             </button>
@@ -670,6 +680,80 @@ export function Composer({
       </div>
     </footer>
   );
+}
+
+/**
+ * Whether the next turn plans instead of doing.
+ *
+ * A pill beside "asks you", for the same reason it is not in Settings: it is
+ * about this conversation and the task at hand. Switchable during a turn, and
+ * that is safe to allow — it applies from the next one, and the turn running
+ * keeps the tools it was built with.
+ */
+function PlanFirst({ busy }: { busy: boolean }) {
+  const session = useStore((s) => s.session?.id ?? null);
+  const planning = useStore((s) => (s.session ? !!s.planning[s.session.id] : false));
+  const setPlanning = useStore((s) => s.setPlanning);
+  if (!session) return null;
+  return (
+    <button
+      className={`pill${planning ? " on" : ""}`}
+      aria-pressed={planning}
+      onClick={() => void setPlanning(session, !planning)}
+      data-tip={
+        planning
+          ? `Planning: ${busy ? "after this turn, " : ""}Taurus reads and writes a plan, with nothing that changes anything offered to it, and waits for you to approve it.`
+          : "Plan first: the next turn writes a plan for you to approve or comment on, and changes nothing until you do."
+      }
+    >
+      {planning ? "◇ plans first" : "▷ does the work"}
+    </button>
+  );
+}
+
+/**
+ * The comments waiting to go with the next message.
+ *
+ * Above the box with the message typed ahead, and for the same reason: until
+ * something on screen says so, a comment that has not gone anywhere yet is
+ * indistinguishable from one that has. Each can be taken back; none can be
+ * edited here, because the place it is about is in the diff, not here.
+ */
+function CommentTray({ busy }: { busy: boolean }) {
+  const session = useStore((s) => s.session?.id ?? null);
+  const remarks = useStore((s) => (s.session ? (s.remarks[s.session.id] ?? NO_REMARKS) : NO_REMARKS));
+  const remove = useStore((s) => s.removeRemark);
+  if (!session || remarks.length === 0) return null;
+  return (
+    <div className="composer-comments" role="status">
+      <span>
+        {remarks.length === 1 ? "1 comment" : `${remarks.length} comments`}{" "}
+        {busy ? "will go" : remarks.length === 1 ? "goes" : "go"} with your next message
+      </span>
+      <ul>
+        {remarks.map((remark, i) => (
+          <li key={i}>
+            <span className="composer-comment-place">{commentPlace(remark)}</span>
+            <span className="composer-queued-text">{remark.text}</span>
+            <div className="spacer" />
+            <button
+              className="quiet"
+              onClick={() => remove(session, i)}
+              aria-label={`Remove the comment on ${commentPlace(remark)}`}
+            >
+              ✕
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Where a comment is pinned, in the few characters the tray has for it. */
+export function commentPlace(remark: Remark): string {
+  const a = remark.anchor;
+  return a.kind === "diff" ? `${basename(a.path)}:${a.line}` : "plan step";
 }
 
 /** What the interrupted-turn strip says. */

@@ -86,7 +86,7 @@ import { useStable } from "./lib/stable";
 import { onTabKeys } from "./lib/tabs";
 import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry } from "./state/store";
-import { pinnedPlan, useStore, yourSteps } from "./state/store";
+import { NO_REMARKS, pinnedPlan, useStore, yourSteps } from "./state/store";
 import { Composer, type Parked } from "./components/Composer";
 import { DICTATE_SHORTCUT } from "./components/Mic";
 import { useSpeech } from "./state/speech";
@@ -2480,7 +2480,37 @@ function PinnedPlan() {
   // Shallow: a fresh array of the same strings every frame is the same answer.
   const yours = useStore(useShallow((s) => yourSteps(s.entries)));
   const editPlan = useStore((s) => s.editPlan);
-  return plan ? <PlanPanel view={plan} yours={yours} onEdit={editPlan} /> : null;
+  const session = useStore((s) => s.session?.id ?? null);
+  const planning = useStore((s) => (s.session ? !!s.planning[s.session.id] : false));
+  const busy = useStore((s) => s.busy);
+  const approve = useStore((s) => s.approvePlan);
+  const addRemark = useStore((s) => s.addRemark);
+  const remarks = useStore((s) =>
+    s.session ? (s.remarks[s.session.id] ?? NO_REMARKS) : NO_REMARKS,
+  );
+  if (!plan) return null;
+  // Comments on steps only while planning: then the plan is a proposal, and a
+  // comment is how to change it before anything happens. Once it is running,
+  // Edit is the way to change it, and the model reads that at its next step.
+  const comments = planning && session;
+  return (
+    <PlanPanel
+      view={plan}
+      yours={yours}
+      onEdit={editPlan}
+      planning={planning}
+      busy={busy}
+      onApprove={planning ? () => void approve() : undefined}
+      onComment={
+        comments
+          ? (step, text) => addRemark(session, { anchor: { kind: "step", text: step.text }, text })
+          : undefined
+      }
+      commented={(step) =>
+        remarks.some((r) => r.anchor.kind === "step" && r.anchor.text === step.text)
+      }
+    />
+  );
 }
 
 /**

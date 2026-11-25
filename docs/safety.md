@@ -1329,7 +1329,52 @@ The terminal does the same thing: `taurus review` lists what there is, and
 than the conversation's own. That's how you say "check that with the big one"
 without moving the conversation onto it.
 
-### Committing a turn
+### Commenting on a turn
+
+Reading a turn's diff, you'll often disagree with one line, not the whole
+turn. Hover a line and press **+** to leave a comment on it. Enter adds it,
+Escape drops it. The line gets a mark at its edge, and the comment waits in a
+list above the composer:
+
+![A comment being written under a line of a turn's diff, a line already
+commented on marked at its edge, and the list of waiting comments above the
+composer](screenshots/comments.png)
+
+Comments go with the next message you send, not into a turn that's already
+running. With comments waiting, the box can be empty: the comments are the
+message. A message typed while a turn runs is held as usual, and the comments
+go with it when it's sent. The ✕ beside one takes it back.
+
+They're written into the message itself, under what you typed:
+
+```
+looks close
+
+Comments:
+
+- `src/widget.rs` line 42: `pub fn new(name: &str) -> Self {`
+  keep the old constructor too
+```
+
+So unlike a selection sent with [**Ask about this**](capabilities.md#the-canvas),
+they're in the transcript. A conversation reopened next week shows what you
+said about which line, a retry resends the same comments, and the CLI reads
+them like any other message.
+
+The line's text is quoted beside its number on purpose. The number is where the
+line was when the turn finished, and a later turn may have moved it. The model
+finds the line by what it says. A removed line is named by where it was.
+
+Comments are kept per conversation. Moving to another conversation and back
+doesn't lose them, and they never go with another conversation's message.
+Rewinding drops the ones on the turns it undid, since the lines they quote
+are gone.
+
+A plan waiting for your approval takes comments too, one per step: see
+[Plan first](working-with-it.md#plan-first). They go in the same list and the
+same message, as `- Plan step "Cache the build in OUT_DIR"`, and the
+conversation keeps planning until you approve.
+
 
 Below the diffs, in a workspace that's a git repository, is the offer to keep
 it:

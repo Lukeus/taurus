@@ -5143,3 +5143,111 @@ fn an_agent_borrowed_from_another_harness_keeps_its_tools() {
         ["read_file", "list_dir", "grep", "Task"]
     );
 }
+
+#[tokio::test]
+async fn a_planning_turn_is_offered_nothing_that_changes_anything() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.reload().await;
+
+    host.set_planning("s1", true).await;
+    let planning = turn_tools(&host).await;
+    for gone in [
+        "write_file",
+        "edit_file",
+        "run_command",
+        "stop_command",
+        crate::notebook::WRITE_NOTE_TOOL,
+        taurus_core::APPLY_TOOL,
+    ] {
+        assert!(!planning.iter().any(|t| t == gone), "{gone}: {planning:?}");
+    }
+    for kept in ["read_file", "grep", "update_plan", taurus_core::SPAWN_TOOL] {
+        assert!(planning.iter().any(|t| t == kept), "{kept}: {planning:?}");
+    }
+
+    // Approving is the next turn getting them back.
+    host.set_planning("s1", false).await;
+    assert!(turn_tools(&host).await.iter().any(|t| t == "write_file"));
+}
+
+#[tokio::test]
+async fn planning_is_one_conversations_business() {
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.set_planning("another", true).await;
+    assert!(turn_tools(&host).await.iter().any(|t| t == "write_file"));
+}
+
+#[tokio::test]
+async fn a_planning_turn_cannot_delegate_to_an_agent_that_writes() {
+    // The spawn tool says it only reads, because each child's calls are gated
+    // on their own. True, and no help here: a coder would write. So while
+    // planning it is offered only the agents that read.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    host.set_planning("conversation1", true).await;
+
+    let provider = taurus_core::testing::FakeProvider::new(vec![
+        taurus_core::testing::ScriptedTurn::tool_call(
+            "call1",
+            taurus_core::SPAWN_TOOL,
+            serde_json::json!({
+                "agent_type": "coder",
+                "prompt": "Split the parser module into two files."
+            }),
+        ),
+        taurus_core::testing::ScriptedTurn::text("I'll plan it instead."),
+    ]);
+    let agent = host
+        .build_agent(
+            provider,
+            "fake",
+            CancellationToken::new(),
+            TurnRef {
+                session_id: "conversation1",
+                prompt: "split the parser",
+                unattended: None,
+            },
+        )
+        .await;
+
+    let spawn = agent.registry().get(taurus_core::SPAWN_TOOL).unwrap();
+    assert_eq!(
+        spawn.input_schema()["properties"]["agent_type"]["enum"],
+        serde_json::json!(["explorer"])
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut session = taurus_core::Session::new("fake");
+    session.id = "conversation1".into();
+    agent
+        .run_turn(
+            &mut session,
+            taurus_provider::Message::user("split the parser"),
+            tx,
+        )
+        .await
+        .expect("the turn should finish");
+    drain.await.unwrap();
+
+    let refusal = session
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            taurus_provider::ContentBlock::ToolResult {
+                is_error: true,
+                content,
+                ..
+            } => Some(format!("{content:?}")),
+            _ => None,
+        })
+        .expect("the delegation is refused");
+    assert!(refusal.contains("no sub-agent type 'coder'"), "{refusal}");
+    assert!(crate::sessions::list_subagents("conversation1").is_empty());
+}

@@ -193,6 +193,11 @@ It's the same agent as the app and the CLI, on the same host:
   the app can open it.
 - **Slash commands work.** `/best-of`, a skill or an agent typed in the
   editor's box runs as it would anywhere else.
+- **Plan mode is the editor's mode picker.** Each session offers two modes,
+  Default and Plan. In Plan, the next turn reads and writes a plan with
+  nothing that changes anything available to it, as with
+  [Plan first](#plan-first). ACP has no Approve button, so approving is
+  switching back to Default and saying so in your next message.
 
 What it doesn't do yet is in [Known gaps](known-gaps.md).
 
@@ -424,6 +429,71 @@ five-step mechanical task, `qwen3.6:27b` and `qwen3.5:9b` both did the work
 correctly and never called it. Asked to plan, the 27B kept the list accurate
 through every step. The prompt says when to plan and when to update, and
 that's all the harness can do. See [Known gaps](known-gaps.md).
+
+### Plan first
+
+Press **▷ does the work** under the message box and it becomes **◇ plans
+first**. From the next turn, the model reads what it needs, writes the plan
+with `update_plan`, and stops, with nothing that could change anything
+offered to it. The plan panel opens on its own:
+
+![A plan waiting for approval: three steps with their checks, one marked as
+commented, Approve in the panel's foot, the comment waiting above the message
+box, and the plans-first switch under it](screenshots/planning.png)
+
+- **Comment** on a step, as on a line of a diff. The comment waits above the
+  message box and goes with your next message, and the conversation keeps
+  planning: the model revises the plan and stops again. You can also type a
+  message, or **Edit** the steps yourself.
+- **Approve** sends "The plan is approved. Carry it out.", with any comments
+  still waiting, and the conversation goes back to doing. The pill goes back
+  with it. Approve waits while a turn is running, since the plan it would
+  approve is still being written.
+
+Each step's check is on the panel, so approving the plan approves how it will
+be proved too. Switching the pill during a turn applies from the next one: the
+turn running keeps the tools it started with.
+
+From a terminal, `taurus run --plan "split the parser in two"` does the same,
+and asks:
+
+```
+Plan:
+  1. Read src/parser.rs and list what calls into it
+  2. Move the tokenizer into src/lexer.rs  (check: cargo build)
+  3. Update the imports  (check: cargo test -p parser)
+
+Carry out this plan? [y] yes  [N] no, or type what to change:
+```
+
+- **`y`** sends "The plan is approved. Carry it out." and the turn that
+  follows has its full set of tools back.
+- **Anything else you type** goes to the model as feedback. It revises the
+  plan, still planning, and you're asked again.
+- **Enter, or `n`**, stops. Nothing was changed.
+
+Without a terminal, or with `--json`, it plans and stops, and prints the
+`taurus run --resume` line that carries the plan out.
+
+**While planning, nothing that changes anything is offered.** The tools that
+write, run commands, or apply a delegate's work aren't refused, they're absent
+from the request. A small model offered `write_file` and refused it spends the
+turn retrying. One that never sees it writes the plan. Reading, searching, web
+lookups, and `update_plan` stay. So does delegating, but only to agents whose
+`tools:` list holds nothing that writes, like `explorer`. A `coder` asked for
+while planning is refused by name, and the delegates themselves draw their
+tools from the same reduced set. Commands are out entirely, read-only ones
+included: no line of shell can be classified as harmless with enough
+confidence to let it past this promise.
+
+The model is told it's planning at the end of every request, beside the plan,
+for the plan's own reason: the start of the request is the cached part. A
+planning turn that describes its plan in prose instead of writing it is asked
+once for the list. It isn't asked to close open steps, the way an ordinary
+turn is, because open steps are what a plan for approval is.
+
+Approving costs one cache miss. The tool list changes once, when the writers
+come back.
 
 ## Showing it a picture
 

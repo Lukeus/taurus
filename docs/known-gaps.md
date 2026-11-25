@@ -322,6 +322,18 @@ the backlog, and they're the minority.
   anything is structural, not an instruction. The scope holds no writing
   tool, and the context carries no checkpoint recorder, so there's nothing to
   record a write into.
+- **Comments are only in the app.** On a line of a turn's diff, or on a step
+  of a plan waiting for approval. The CLI and `taurus acp` have no way to
+  leave one. An editor speaking ACP has its own review UI, and a `/comment`
+  command for the REPL is the missing piece there. A step comment is anchored
+  by the step's text, since steps have no ids, so it still names the step
+  after the model rewrites the plan around it, and names nothing if the step
+  is reworded. See [Commenting on a turn](safety.md#commenting-on-a-turn).
+- **A rewind from the CLI leaves the app's comments waiting.** Rewinding in
+  the Changes drawer drops the comments on the turns it undid. Comments live
+  in the window, so `taurus rewind` can't reach them, and an open window keeps
+  them until you take them back with ✕. They quote the line they're about, so
+  the model can at least tell the line is gone.
 - **A turn that changed nothing can't be reviewed.** Reviews hang off the
   Changes drawer, which lists the turns that changed files, so a turn that
   only *said* something ("I couldn't, because…", "it's already correct") has
@@ -610,6 +622,22 @@ the backlog, and they're the minority.
   isn't on disk yet when you save. And if the model rewrites the plan while
   you're editing, your edit isn't merged into the new list. You start again
   from the current one.
+- **Planning isn't in the REPL, and ACP can't approve.** `taurus repl` has
+  no `/plan`. In an editor, Plan is a session mode, and the editor's picker
+  is the whole interface: there's no Approve, and no comments on steps, so
+  approving is switching back to Default and asking for the work in the next
+  prompt. Taurus doesn't announce a mode change of its own, because it never
+  makes one. See [Plan first](working-with-it.md#plan-first).
+- **Planning isn't saved with the conversation.** It's held in memory, by
+  the CLI for the run and by the app until it quits. Resuming a conversation that was planning resumes it doing, which is
+  what the `--resume` line printed after an unattended plan relies on, but it
+  also means a planning conversation interrupted before you answered comes
+  back with every tool.
+- **A planning turn can't run commands, read-only ones included.** `git log`
+  or `cargo metadata` would often help a plan, and `explorer` goes without
+  them for the same reason: a command can't be classified as harmless with
+  the confidence this needs. An MCP tool is out too, because MCP tools are
+  marked as running programs whatever they actually do.
 - **Only the desktop app edits a plan.** The CLI has no way to make an edit.
   It does honor edits made in the app when it resumes the conversation, since
   it rebuilds the plan from the same transcript.

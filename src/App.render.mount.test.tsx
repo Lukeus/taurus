@@ -121,6 +121,13 @@ const state = {
   retry: vi.fn(),
   switchModel: vi.fn(),
   unqueue: vi.fn(),
+  remarks: {},
+  addRemark: vi.fn(),
+  removeRemark: vi.fn(),
+  dropRemarksFrom: vi.fn(),
+  planning: {},
+  setPlanning: vi.fn(),
+  approvePlan: vi.fn(),
 };
 vi.mock("./state/store", async (original) => ({
   ...(await original<typeof import("./state/store")>()),

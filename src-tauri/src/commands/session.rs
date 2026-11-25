@@ -400,6 +400,17 @@ pub async fn resume_session(
     Ok(resumed)
 }
 
+/// The message a set of comments makes: what was typed, then the comments.
+///
+/// Its own command, run before `send_message` rather than inside it, because
+/// the composed text is what the transcript keeps — and the window shows the
+/// message the moment it is sent, so it has to be holding the same text the
+/// transcript will replay. See `taurus_host::remarks`.
+#[tauri::command]
+pub fn compose_message(text: String, remarks: Vec<taurus_host::Remark>) -> CmdResult<String> {
+    taurus_host::remarks::compose(&text, &remarks)
+}
+
 /// Runs one turn, streaming events to `on_event`.
 ///
 /// A `Channel` rather than a global event: delivery is ordered and scoped to
@@ -738,6 +749,38 @@ pub async fn attach_session(
         dropped,
         unattended,
     })
+}
+
+/// Starts or stops planning in a conversation, from its next turn. See
+/// `taurus_host::planning`.
+///
+/// Held by the host rather than on the window's session entry, because the
+/// host is what builds the turn and has to take the tools away. Not saved: a
+/// conversation reopened in a new window is doing, not planning.
+#[tauri::command]
+pub async fn set_planning(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    planning: bool,
+) -> CmdResult<()> {
+    state.host.set_planning(&session_id, planning).await;
+    info!(session = %session_id, planning, "planning set");
+    Ok(())
+}
+
+/// Approves a conversation's plan: stops planning, and answers the message
+/// that says so, for the window to send as the person's own.
+///
+/// The words are the host's, so a plan approved here and one approved with
+/// `taurus run --plan` read the same in a transcript.
+#[tauri::command]
+pub async fn approve_plan(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> CmdResult<String> {
+    state.host.set_planning(&session_id, false).await;
+    info!(session = %session_id, "plan approved");
+    Ok(taurus_host::planning::APPROVED.to_string())
 }
 
 /// Sets whether a conversation runs with nobody to answer it.

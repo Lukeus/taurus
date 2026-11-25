@@ -35,6 +35,7 @@ import type {
   PermissionRequest,
   PlanEditMark,
   PlanEdited,
+  Remark,
   RunningTurn,
   UnattendedMark,
   SessionMeta,
@@ -184,6 +185,9 @@ export type Entry =
       /** What that edit added and took off, by step text. */
       edit?: { added: string[]; removed: string[] };
     };
+
+/** Shared rather than a fresh `[]`, so a selector reading no comments is stable. */
+export const NO_REMARKS: Remark[] = [];
 
 /** A message on its way, or waiting for the turn in front of it to finish. */
 export interface Outgoing {
@@ -348,6 +352,25 @@ interface Store {
    */
   queued: Outgoing | null;
   /**
+   * Comments waiting to go with the next message, by conversation.
+   *
+   * Left on a turn's diff or a plan's steps while reading, and sent with
+   * whatever is sent next — never into a turn already running. Kept per
+   * conversation rather than cleared on a switch, for the same reason a draft
+   * is parked: leaving a conversation is not a decision to throw away what you
+   * wrote about it. See `taurus_host::remarks`.
+   */
+  remarks: Record<string, Remark[]>;
+  /**
+   * The conversations that are planning, from their next turn. See
+   * `taurus_host::planning`.
+   *
+   * A copy of what the backend holds, set only once the backend has taken it,
+   * so the composer never says a conversation is planning when its next turn
+   * would be handed every tool. Neither side saves it.
+   */
+  planning: Record<string, boolean>;
+  /**
    * The last message actually sent, so a turn that died can be tried again.
    *
    * Held rather than read back off `entries`, because what a retry needs is
@@ -456,6 +479,8 @@ interface Store {
     onScreen?: OnScreen | null,
     /** Continue the interrupted turn instead. See `continueInterrupted`. */
     continuing?: boolean,
+    /** Take this conversation's waiting comments with it. Off for a retry. */
+    commenting?: boolean,
   ) => Promise<void>;
   /**
    * Sends the last message again, for a turn that died before answering.
@@ -493,6 +518,24 @@ interface Store {
   restoreAgents: () => Promise<void>;
   /** Throws away a message typed ahead, without sending it. */
   unqueue: () => void;
+  /** Starts or stops planning in a conversation, from its next turn. */
+  setPlanning: (sessionId: string, planning: boolean) => Promise<void>;
+  /**
+   * Approves the plan on screen: stops planning, and sends the message that
+   * says so, with any comments on its steps. A no-op during a turn — the plan
+   * it would approve is still being written.
+   */
+  approvePlan: () => Promise<void>;
+  /** Adds a comment to go with this conversation's next message. */
+  addRemark: (sessionId: string, remark: Remark) => void;
+  /** Takes back one of this conversation's waiting comments, by position. */
+  removeRemark: (sessionId: string, index: number) => void;
+  /**
+   * Drops the comments on turns a rewind has undone: `turn` and every one after
+   * it. Each quotes a line that is no longer in the file, and sending it would
+   * ask the model about code that does not exist.
+   */
+  dropRemarksFrom: (sessionId: string, turn: number) => void;
   stop: () => Promise<void>;
   answerPermission: (decision: PermissionDecision) => Promise<void>;
   /**
@@ -803,6 +846,8 @@ export const useStore = create<Store>((set, get) => ({
   stopping: false,
   resuming: false,
   queued: null,
+  remarks: {},
+  planning: {},
   sent: null,
   interrupted: null,
   permission: null,
@@ -1262,19 +1307,44 @@ export const useStore = create<Store>((set, get) => ({
     return result;
   },
 
-  send: async (text, images = [], onScreen = null, continuing = false) => {
+  send: async (text, images = [], onScreen = null, continuing = false, commenting = true) => {
     const { session, busy } = get();
+    // Waiting comments go with whatever is sent next — except a continuation,
+    // which carries no message, and a retry, whose text already holds the
+    // comments it was first sent with.
+    const remarks =
+      session && commenting && !continuing
+        ? (get().remarks[session.id] ?? NO_REMARKS)
+        : NO_REMARKS;
     // Text is still required with an image attached. "What is wrong with this?"
     // is a question; a bare screenshot is a guess about what was wanted.
-    if (!session || !text.trim()) return;
+    // Comments are the exception: they say what they want on their own.
+    if (!session || (!text.trim() && remarks.length === 0)) return;
 
     // Held rather than refused. The composer stays typeable through a turn on
     // purpose — thinking of the next thing while the model works is most of
     // how this gets used — and the previous behaviour was to swallow the Enter
     // that ended that thought. See `queued` for why there is only ever one.
+    //
+    // Comments are not copied into the held message. They stay where they
+    // are, and whichever send actually starts the next turn takes them.
     if (busy) {
-      set({ queued: { text, images, onScreen } });
+      if (text.trim()) set({ queued: { text, images, onScreen } });
       return;
+    }
+
+    if (remarks.length > 0) {
+      try {
+        text = await api.composeMessage(text, remarks);
+      } catch (e) {
+        set({ error: String(e) });
+        return;
+      }
+      // Something else may have started a turn, or moved to another
+      // conversation, while that was asked. Either way this send is not the
+      // one that goes, and the comments are left for the one that is.
+      if (get().busy || get().session?.id !== session.id) return;
+      set((s) => ({ remarks: { ...s.remarks, [session.id]: NO_REMARKS } }));
     }
 
     set((s) => ({
@@ -1393,7 +1463,7 @@ export const useStore = create<Store>((set, get) => ({
     // otherwise queue this behind the running turn, and a retry that fires a
     // minute later is not one anybody asked for.
     if (!sent || busy) return;
-    await get().send(sent.text, sent.images, sent.onScreen);
+    await get().send(sent.text, sent.images, sent.onScreen, false, false);
   },
 
   continueInterrupted: async () => {
@@ -1445,6 +1515,56 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   unqueue: () => set({ queued: null }),
+
+  setPlanning: async (sessionId, planning) => {
+    try {
+      await api.setPlanning(sessionId, planning);
+    } catch (e) {
+      set({ error: String(e) });
+      return;
+    }
+    set((s) => ({ planning: { ...s.planning, [sessionId]: planning } }));
+  },
+
+  approvePlan: async () => {
+    const { session, busy } = get();
+    if (!session || busy) return;
+    let text: string;
+    try {
+      text = await api.approvePlan(session.id);
+    } catch (e) {
+      set({ error: String(e) });
+      return;
+    }
+    set((s) => ({ planning: { ...s.planning, [session.id]: false } }));
+    // The backend has stopped planning either way; what is left is the
+    // message, and it belongs to the conversation that approved it.
+    if (get().session?.id !== session.id) return;
+    await get().send(text);
+  },
+
+  addRemark: (sessionId, remark) =>
+    set((s) => ({
+      remarks: { ...s.remarks, [sessionId]: [...(s.remarks[sessionId] ?? NO_REMARKS), remark] },
+    })),
+
+  dropRemarksFrom: (sessionId, turn) =>
+    set((s) => ({
+      remarks: {
+        ...s.remarks,
+        [sessionId]: (s.remarks[sessionId] ?? NO_REMARKS).filter(
+          (r) => r.anchor.kind !== "diff" || r.anchor.turn < turn,
+        ),
+      },
+    })),
+
+  removeRemark: (sessionId, index) =>
+    set((s) => ({
+      remarks: {
+        ...s.remarks,
+        [sessionId]: (s.remarks[sessionId] ?? NO_REMARKS).filter((_, i) => i !== index),
+      },
+    })),
 
   stop: async () => {
     const { session } = get();

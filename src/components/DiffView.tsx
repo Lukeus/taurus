@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import type { DiffLine, FileDiff } from "../lib/api";
+import { CommentBox } from "./CommentBox";
 import { grammarFor, mark, paint } from "../lib/ink";
 import { pairs, refine } from "../lib/intraline";
 
@@ -26,9 +27,25 @@ import { pairs, refine } from "../lib/intraline";
  * after, the part that actually differs is marked inside them — see
  * `intraline.ts`, which includes the cases where it declines to guess.
  */
-export function DiffView({ diff }: { diff: FileDiff }) {
+export function DiffView({
+  diff,
+  onComment,
+  commented,
+}: {
+  diff: FileDiff;
+  /**
+   * Leave a comment on one line. Only a turn that has already happened offers
+   * this: in the permission dialog the answer to a line you disagree with is
+   * Deny, not a note for later. See `taurus_host::remarks`.
+   */
+  onComment?: (line: DiffLine, text: string) => void;
+  /** Whether a line already has a comment waiting, to mark it. */
+  commented?: (line: DiffLine) => boolean;
+}) {
   const empty = diff.added === 0 && diff.removed === 0;
   const body = useRef<HTMLDivElement>(null);
+  /** The line being commented on, as `hunk:line`. One at a time. */
+  const [writing, setWriting] = useState<string | null>(null);
 
   // Code scrolls sideways rather than wrapping, so the right edge fades while
   // any line runs past it: with the scrollbar hidden until somebody scrolls, a
@@ -70,7 +87,24 @@ export function DiffView({ diff }: { diff: FileDiff }) {
       ) : (
         <div className="diff-body" ref={body} role="table" aria-label={`Changes to ${diff.path}`}>
           {diff.hunks.map((hunk, h) => (
-            <Hunk key={h} lines={hunk.lines} grammar={grammarFor(diff.path)} />
+            <Hunk
+              key={h}
+              lines={hunk.lines}
+              grammar={grammarFor(diff.path)}
+              comments={
+                onComment && {
+                  writing:
+                    writing?.startsWith(`${h}:`) ? Number(writing.slice(`${h}:`.length)) : null,
+                  open: (i) => setWriting(`${h}:${i}`),
+                  close: () => setWriting(null),
+                  save: (line, text) => {
+                    onComment(line, text);
+                    setWriting(null);
+                  },
+                  has: commented ?? (() => false),
+                }
+              }
+            />
           ))}
         </div>
       )}
@@ -113,7 +147,25 @@ const GUTTER: Record<string, string> = {
  * work proportional to what is on screen — the Changes panel draws a diff per
  * file, and the permission dialog draws one while a turn waits on it.
  */
-function Hunk({ lines, grammar }: { lines: DiffLine[]; grammar: string | null }) {
+/** What a hunk needs to take comments, when its diff takes them at all. */
+interface HunkComments {
+  /** The line in this hunk with its comment box open, by index. */
+  writing: number | null;
+  open: (index: number) => void;
+  close: () => void;
+  save: (line: DiffLine, text: string) => void;
+  has: (line: DiffLine) => boolean;
+}
+
+function Hunk({
+  lines,
+  grammar,
+  comments,
+}: {
+  lines: DiffLine[];
+  grammar: string | null;
+  comments?: HunkComments | false;
+}) {
   const painted = useMemo(() => {
     const paired = pairs(lines.map((line) => line.kind));
     const spans = new Map<number, { from: number; to: number }>();
@@ -133,33 +185,62 @@ function Hunk({ lines, grammar }: { lines: DiffLine[]; grammar: string | null })
   return (
     <div className="diff-hunk">
       {lines.map((line, i) => (
-        <div className={`diff-line ${line.kind}`} key={i} role="row">
-          {/* Numbers are the file's own, so one read off this dialog
-              means the same thing as one read off `read_file`. */}
-          <span className="diff-num" aria-hidden="true">
-            {line.old_line ?? ""}
-          </span>
-          <span className="diff-num" aria-hidden="true">
-            {line.new_line ?? ""}
-          </span>
-          <span className="diff-gutter" aria-hidden="true">
-            {GUTTER[line.kind]}
-          </span>
-          {/* A blank line still has to fill its row, or the grid closes it up
-              and the numbers stop lining up with the file. */}
-          <span className="diff-text">
-            {line.text
-              ? painted[i].map((run, r) => (
-                  <span
-                    key={r}
-                    className={`ink-${run.kind}${run.changed ? " ink-changed" : ""}`}
-                  >
-                    {run.text}
-                  </span>
-                ))
-              : " "}
-          </span>
-        </div>
+        <Fragment key={i}>
+          <div
+            className={`diff-line ${line.kind}${comments && comments.has(line) ? " commented" : ""}`}
+            role="row"
+          >
+            {/* Numbers are the file's own, so one read off this dialog
+                means the same thing as one read off `read_file`. */}
+            <span className="diff-num" aria-hidden="true">
+              {line.old_line ?? ""}
+            </span>
+            <span className="diff-num" aria-hidden="true">
+              {line.new_line ?? ""}
+            </span>
+            <span className="diff-gutter" aria-hidden="true">
+              {GUTTER[line.kind]}
+            </span>
+            {/* A blank line still has to fill its row, or the grid closes it up
+                and the numbers stop lining up with the file. */}
+            <span className="diff-text">
+              {line.text
+                ? painted[i].map((run, r) => (
+                    <span
+                      key={r}
+                      className={`ink-${run.kind}${run.changed ? " ink-changed" : ""}`}
+                    >
+                      {run.text}
+                    </span>
+                  ))
+                : " "}
+            </span>
+            {/* Last in the row and positioned over the numbers by CSS, so the
+                grid the numbers line up in is the same with or without it. */}
+            {comments && (
+              <button
+                className="diff-comment-add"
+                onClick={() => comments.open(i)}
+                aria-label={`Comment on ${line.kind === "removed" ? "removed " : ""}line ${
+                  line.new_line ?? line.old_line ?? ""
+                }`}
+                data-tip="Comment"
+              >
+                +
+              </button>
+            )}
+          </div>
+          {comments && comments.writing === i && (
+            <div className="diff-comment-box" role="row">
+              <div role="cell">
+                <CommentBox
+                  onSave={(text) => comments.save(line, text)}
+                  onCancel={comments.close}
+                />
+              </div>
+            </div>
+          )}
+        </Fragment>
       ))}
     </div>
   );
