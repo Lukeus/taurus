@@ -408,7 +408,7 @@ describe("a typeface", () => {
     };
 
     setFace("Body", "Inter");
-    expect(field("Body").textContent).toContain("Everything that is a sentence");
+    expect(field("Body").textContent).toContain("Sentences, labels, and the rest of the interface");
     setFace("Mono", "Comic Mono");
     expect(field("Mono").textContent).toContain(
       "Comic Mono isn't installed on this machine, so the app's own face shows instead.",

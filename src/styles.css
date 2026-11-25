@@ -210,8 +210,8 @@
   --run-indent: calc(12px + 12px + 12px);
 
   /*
-   * The tracking every mono micro-label shares. One value, so a tag, a section
-   * label and a run header line up as the same kind of thing.
+   * The tracking for the few labels still set in capitals (the risk badge on a
+   * permission prompt). Labels in general are sentence case in the body face.
    *
    * Named for the type rather than for the job, which is the opposite of every
    * other role here and is deliberate: `tailwind.css` publishes this as the
@@ -579,24 +579,31 @@ code:where(:not(.excalidraw *)) {
  */
 
 /*
- * The micro-label: mono, tracked out, uppercase. Names a region without
+ * The micro-label: small, faint, sentence case. Names a region without
  * needing a box around it, which is most of why the boxes could go.
+ *
+ * In the body face, not mono. Mono is kept for text the machine wrote or will
+ * read back literally (a path, a command, a model id, code) so that seeing it
+ * means exactly that. A label naming a part of the window is the window
+ * talking, and when labels wore mono too, mono stopped saying anything.
+ * Uppercase and tracking went for the same reason: they were there to make a
+ * 10px mono label read as a label, and the type change does that job.
  */
 .micro {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 
 /*
- * The same label, with the case left alone. For a micro-label or tag that
- * holds a value rather than naming a region: a path, a branch, a commit, a
- * time, a unit, a sentence. Uppercasing those changes what they say:
- * `data/a.csv` is not `DATA/A.CSV` on a case-sensitive disk, "10m ago" read
- * as "10M AGO" is months, and "0.1S" is not seconds. The tracking goes too,
- * because it is there to open up capitals and lowercase does not need it.
+ * A micro-label or tag that holds a value rather than naming a region: a
+ * path, a branch, a commit, a time, a unit, a sentence. When labels were
+ * uppercased this undid it, because uppercasing a value changes what it says:
+ * `data/a.csv` is not `DATA/A.CSV` on a case-sensitive disk, and "10m ago"
+ * read as "10M AGO" is months. Labels are sentence case now, so this is a
+ * guard rather than a fix: it keeps a value safe if a label style ever
+ * transforms case again.
  */
 .micro.verbatim,
 .tag.verbatim,
@@ -627,12 +634,13 @@ code:where(:not(.excalidraw *)) {
   background: var(--accent);
 }
 
+/* A status word in a pill. Sentence case in the body face, like `.micro` and
+   for the same reason: "by you" and "degraded" are the window talking. */
 .tag {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
-  padding: 2px 8px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-faint);
@@ -1282,15 +1290,19 @@ body.resizing-y iframe {
 .run.open .run-head {
   border-bottom: 1px solid var(--rule);
 }
-/* Not uppercased: it ends in a duration, and "0.1S" is a different unit. */
+/* The run header is the window summarising, not the machine speaking, so it
+   is in the body face. Tabular figures keep the counts from jittering as a
+   run ticks up, which is the one thing mono was doing for it. */
 .run-steps {
-  font-family: var(--mono);
-  font-size: 10.5px;
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
   color: var(--text-dim);
 }
 .run-breakdown {
-  font-family: var(--mono);
-  font-size: 11px;
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1734,10 +1746,8 @@ body.resizing-y iframe {
   white-space: nowrap;
 }
 .agents-state {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
   color: var(--text-faint);
   white-space: nowrap;
 }
@@ -1921,10 +1931,8 @@ body.resizing-y iframe {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -2171,15 +2179,13 @@ body.resizing-y iframe {
   margin-top: 2px;
 }
 .plan-status {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
   white-space: nowrap;
   color: var(--text-faint);
-  /* Same line as the mark opposite it. Mono at 10px sits higher in its box
-     than the 13.5px label, so it needs a little more. */
-  margin-top: 4px;
+  /* Same line as the mark opposite it. The 11.5px label sits a little
+     higher in its box than the 13.5px one beside it. */
+  margin-top: 2px;
 }
 
 /* Finished work recedes; it is context for the step that is live, not the
@@ -2432,10 +2438,8 @@ body.resizing-y iframe {
    the boxes would invert what the picture is about. */
 .flow-stage {
   fill: var(--text-faint);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
 }
 
 /* One step up from the sunken ground it sits on, which is the same ladder the
@@ -2549,10 +2553,9 @@ body.resizing-y iframe {
 }
 
 .table-sort {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
   background: transparent;
   border: none;
@@ -2765,8 +2768,8 @@ body.resizing-y iframe {
   flex: 1;
   min-width: 0;
 }
-/* Mono like a micro-label, but not uppercased: these carry filenames and
-   paths, and `SETTINGS.TEST.TSX` is a worse answer than the thing it names. */
+/* Mono, because these carry filenames and paths: literal text the machine
+   will read back, which is what mono is kept for. */
 .option-note {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -2957,9 +2960,7 @@ body.resizing-y iframe {
 .md-code-lang {
   flex: 1;
   font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-size: 11px;
   color: var(--text-faint);
 }
 .md-copy {
@@ -3239,8 +3240,8 @@ body.resizing-y iframe {
  */
 .composer-foot .pill {
   flex: none;
-  font-family: var(--mono);
-  font-size: 11.5px;
+  font-family: var(--sans);
+  font-size: 12px;
   display: block;
   color: var(--text-dim);
   max-width: 26ch;
@@ -3257,8 +3258,8 @@ body.resizing-y iframe {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--mono);
-  font-size: 10.5px;
+  font-family: var(--sans);
+  font-size: 11.5px;
   color: var(--text-faint);
 }
 .composer-send {
@@ -3556,10 +3557,9 @@ body.resizing-y iframe {
   font-size: 13px;
 }
 .proposal-meta dt {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
   padding-top: 2px;
 }
@@ -3767,9 +3767,8 @@ body.resizing-y iframe {
 }
 .palette-group {
   padding: 8px 8px 4px;
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 .palette-row {
@@ -3960,9 +3959,8 @@ body.resizing-y iframe {
   padding: 8px 12px;
 }
 .usage-total-row dt {
-  font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 .usage-total-row dd {
@@ -3971,8 +3969,8 @@ body.resizing-y iframe {
   font-size: 15px;
   color: var(--text);
 }
-/* A sentence, so it is set as one. In the uppercase mono of the label above
-   it, "the middle one, not the average" read as a second label. */
+/* A sentence, so it is set as one: smaller and lighter than the value above
+   it, so "the middle one, not the average" doesn't read as a second label. */
 .usage-total-note {
   margin: 0;
   font-size: 12px;
@@ -3986,8 +3984,7 @@ body.resizing-y iframe {
   gap: 8px;
   margin: var(--usage-gap) 0 4px;
   font-size: 12px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-weight: 500;
   color: var(--text-faint);
 }
 .usage-total {
@@ -4015,10 +4012,8 @@ body.resizing-y iframe {
   border-bottom: 1px solid var(--rule);
 }
 .usage-table thead th {
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 .usage-table tbody th {
@@ -4284,8 +4279,9 @@ body.resizing-y iframe {
   color: var(--text-dim);
 }
 .card-files {
-  font-family: var(--mono);
-  font-size: 11px;
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
   color: var(--text-faint);
   overflow-wrap: anywhere;
 }
@@ -4894,10 +4890,8 @@ button.link:where(:not(.excalidraw *)):hover {
   font-size: 12px;
 }
 .diff-verb {
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-mono);
+  font-family: var(--sans);
+  font-size: 11.5px;
   color: var(--text-faint);
 }
 .diff-path {
@@ -5241,10 +5235,8 @@ button.link:where(:not(.excalidraw *)):hover {
   background: var(--bg-raised);
 }
 .dock-title {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
   color: var(--text-dim);
 }
 .dock-where {
@@ -5581,10 +5573,8 @@ button.link:where(:not(.excalidraw *)):hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
   color: var(--text-faint);
   background: transparent;
   border: 1px solid transparent;
@@ -6050,10 +6040,9 @@ button.link:where(:not(.excalidraw *)):hover {
   z-index: 1;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--rule);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 .profile-row .right {
@@ -6174,9 +6163,7 @@ button.link:where(:not(.excalidraw *)):hover {
   background: var(--bg-raised);
   border-bottom: 1px solid var(--rule);
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-size: 11px;
   color: var(--text-faint);
 }
 .grid-row.head > span {
@@ -6561,9 +6548,7 @@ button.link:where(:not(.excalidraw *)):hover {
   padding: 1px 6px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--ok) 18%, transparent);
-  font-size: 10px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-size: 11.5px;
   color: var(--ok);
 }
 
@@ -7472,8 +7457,9 @@ button.link:where(:not(.excalidraw *)):hover {
   text-align: left;
 }
 .canvas-count {
-  font-family: var(--mono);
-  font-size: 10.5px;
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
   color: var(--text-faint);
   white-space: nowrap;
 }
@@ -7917,10 +7903,8 @@ button.link:where(:not(.excalidraw *)):hover {
 /* One word where the line count sits, so the header does not change width as
    a save comes and goes. */
 .canvas-state {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: var(--tracking-mono);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
   color: var(--text-faint);
   white-space: nowrap;
 }

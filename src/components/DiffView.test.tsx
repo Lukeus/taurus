@@ -126,8 +126,8 @@ describe("diff view", () => {
     const html = renderToStaticMarkup(
       <DiffView diff={diff({ created: true, removed: 0 })} />,
     );
-    expect(html).toContain("create");
-    expect(html).not.toContain("replace");
+    expect(html).toContain(">Create<");
+    expect(html).not.toContain("Replace");
   });
 
   it("says delete rather than replace for a file that is gone", () => {
@@ -137,8 +137,8 @@ describe("diff view", () => {
     const html = renderToStaticMarkup(
       <DiffView diff={diff({ deleted: true, added: 0 })} />,
     );
-    expect(html).toContain("delete");
-    expect(html).not.toContain("replace");
+    expect(html).toContain(">Delete<");
+    expect(html).not.toContain("Replace");
   });
 
   it("names a write that would change nothing", () => {

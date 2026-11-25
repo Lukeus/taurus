@@ -302,7 +302,7 @@ export function ChangesDrawer({
                     <span className="card-title">
                       {turn.prompt || "(no prompt recorded)"}
                     </span>
-                    <span className="card-files">{turn.files.join(" · ")}</span>
+                    <span className="card-files font-mono">{turn.files.join(" · ")}</span>
                     {/* What a turn's own record now says about itself. Only
                         drawn when there is something to say: a conversation
                         that stayed on one branch and committed nothing is the
