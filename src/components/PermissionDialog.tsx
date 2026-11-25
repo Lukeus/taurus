@@ -120,7 +120,9 @@ export function PermissionDialog({
             with it: in an untrusted workspace there is nowhere to keep one, and
             a footnote about a button that is not there reads as a bug. */}
         {request.offer_always && (
-          <p className="dialog-footnote">{request.always_scope}.</p>
+          <p className="dialog-footnote">
+            <Ticked text={request.always_scope} />.
+          </p>
         )}
         {/* In its place when no standing grant can cover the line. Without
             it, a prompt with only "Allow once" on it reads as a bug. */}
@@ -156,7 +158,7 @@ export function PermissionDialog({
           {request.offer_always && (
             <button
               onClick={() => onDecide("allow_always")}
-              data-tip={request.always_scope}
+              data-tip={untick(request.always_scope)}
             >
               {/* One name whether or not "everywhere" is beside it, the
                   name the docs use. The tip says what "here" covers. */}
@@ -167,9 +169,14 @@ export function PermissionDialog({
               where "every project you ever open" is the wrong unit, and an
               untrusted workspace, where "here" is absent too. */}
           {request.always_global_scope && (
+            // Set apart from "Always here" because it is the widest grant on
+            // the dialog: one press reaches every project this machine will
+            // ever open. Looking the same as the narrower button made the two
+            // read as equals.
             <button
+              className="wide"
               onClick={() => onDecide("allow_always_global")}
-              data-tip={request.always_global_scope}
+              data-tip={untick(request.always_global_scope)}
             >
               Always everywhere
             </button>
@@ -183,6 +190,26 @@ export function PermissionDialog({
       </div>
     </Modal>
   );
+}
+
+/**
+ * A scope sentence with its backtick spans set as code.
+ *
+ * The engine writes these for the CLI as well, where `edit_file` in backticks
+ * reads fine. Here the backticks used to show up as literal characters around
+ * the tool name, so they are turned into what they mean instead.
+ */
+function Ticked({ text }: { text: string }) {
+  return (
+    <>
+      {text.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}
+    </>
+  );
+}
+
+/** The same sentence for a tooltip, which is plain text: the backticks go. */
+function untick(text: string): string {
+  return text.replaceAll("`", "");
 }
 
 /** The chip above the call, in the imperative the user is being asked about. */

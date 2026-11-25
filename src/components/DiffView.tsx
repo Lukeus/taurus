@@ -94,8 +94,8 @@ export function DiffView({ diff }: { diff: FileDiff }) {
  * identically to a file truncated to nothing.
  */
 function VERB(diff: FileDiff): string {
-  if (diff.deleted) return "delete";
-  return diff.created ? "create" : "replace";
+  if (diff.deleted) return "Delete";
+  return diff.created ? "Create" : "Replace";
 }
 
 const GUTTER: Record<string, string> = {

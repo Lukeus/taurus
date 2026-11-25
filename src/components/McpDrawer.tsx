@@ -431,7 +431,7 @@ function ServerCard({
             connect is attempted, so the answer is there the first time someone
             looks rather than after a reload. */}
         {stdio && server.program && (
-          <span className="card-files">→ {server.program}</span>
+          <span className="card-files font-mono">→ {server.program}</span>
         )}
         {/* One line, not two. When the program is missing the connect error says
             the same thing at more length, and a card that states one fact twice

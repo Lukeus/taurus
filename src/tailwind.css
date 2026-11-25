@@ -178,8 +178,8 @@
   --text-22: 22px;
   --text-24: 24px;
 
-  /* The one tracking every mono micro-label shares, so a tag, a section label
-     and a run header line up as the same kind of thing. */
+  /* Tracking for the few labels still set in capitals (the risk badge on a
+     permission prompt). Labels in general are sentence case now. */
   --tracking-*: initial;
   --tracking-label: var(--tracking-mono);
   /* And the way back off it, for the counts that sit inside a tracked label

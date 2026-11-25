@@ -515,8 +515,8 @@ export const PERMISSION = {
   tool: "edit_file",
   effect: "write",
   preview: "Edit crates/taurus-core/src/agent.rs",
-  always_scope: "Allows edit_file in this workspace",
-  always_global_scope: "Allows edit_file in every workspace",
+  always_scope: "Always allow `edit_file` in this workspace",
+  always_global_scope: "Always allow `edit_file` in every workspace",
   // A trusted workspace, so both standing grants are on offer. Left out, it
   // read as false and the shot showed an untrusted prompt's buttons.
   offer_always: true,

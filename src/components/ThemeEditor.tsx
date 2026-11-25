@@ -257,8 +257,8 @@ export function ThemeEditor({
         {(
           [
             ["display", "Display", "Headings and the wordmark"],
-            ["body", "Body", "Everything that is a sentence"],
-            ["mono", "Mono", "Code, paths, counts, and every micro-label"],
+            ["body", "Body", "Sentences, labels, and the rest of the interface"],
+            ["mono", "Mono", "Code, paths, commands, and model names"],
           ] as const
         ).map(([key, label, hint]) => (
           <label className="settings-field" key={key}>

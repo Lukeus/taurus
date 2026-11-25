@@ -701,7 +701,7 @@ function Elapsed() {
   if (startedAt === null) return null;
   const seconds = Math.floor(now / 1000) - startedAt;
   if (seconds < 30) return null;
-  return <span className="elapsed font-mono text-11 text-faint">{duration(seconds * 1000)}</span>;
+  return <span className="elapsed text-12 tabular-nums text-faint">{duration(seconds * 1000)}</span>;
 }
 
 /** The question, at the head of the thread that answers it. */
