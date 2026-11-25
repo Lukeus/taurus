@@ -115,7 +115,7 @@ export function QuestionsCard({
               <div>
                 <span>{question.prompt}</span>
                 <span className="micro">
-                  {multi ? "pick any that apply" : "pick one"}
+                  {multi ? "Pick any that apply" : "Pick one"}
                 </span>
               </div>
             </div>

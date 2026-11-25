@@ -1,6 +1,6 @@
 import { memo, useRef, useState, type ReactNode } from "react";
 
-import { TERMINAL_SHORTCUT, SWITCH_SHORTCUT } from "../lib/keys";
+import { TERMINAL_SHORTCUT, SWITCH_SHORTCUT, chord } from "../lib/keys";
 import type { SessionMeta, Theme } from "../lib/api";
 import { forkPlace } from "../lib/branches";
 import { basename, isToday, parentDir, plural, when } from "../lib/format";
@@ -16,6 +16,7 @@ import {
   WaterfallIcon,
   BookmarkIcon,
   PackageIcon,
+  PlusIcon,
   SparkIcon,
   SunIcon,
   SwapIcon,
@@ -36,8 +37,10 @@ import { useMoreBelow } from "../lib/moreBelow";
  */
 
 /** One of the seven panels in the footer, and the glyph that leads it. */
-const LINK =
-  "rail-link flex items-center gap-2 py-2 px-3 rounded-sm border-0 bg-transparent text-13 text-dim text-left hover:not-disabled:bg-hover";
+/** A rail row's shape, shared by the panel links and the New conversation row. */
+const ROW =
+  "flex items-center gap-2 py-2 px-3 rounded-sm border-0 bg-transparent text-13 text-dim text-left hover:not-disabled:bg-hover";
+const LINK = `rail-link ${ROW}`;
 const GLYPH = "glyph w-3.5 flex-none inline-flex items-center";
 
 /**
@@ -50,7 +53,7 @@ const GLYPH = "glyph w-3.5 flex-none inline-flex items-center";
 const DELETE =
   "rail-delete flex-none inline-flex items-center justify-center border-0 rounded-sm bg-transparent min-w-7 min-h-7 hover:not-disabled:text-danger hover:not-disabled:bg-danger/12";
 const DELETE_ICON = `${DELETE} p-1.5 text-faint`;
-const DELETE_CONFIRM = `${DELETE} py-1 px-2 font-mono text-11 text-danger`;
+const DELETE_CONFIRM = `${DELETE} py-1 px-2 text-12 text-danger`;
 
 /** How the provider behind the current session is actually doing. */
 export type ProviderHealth =
@@ -268,7 +271,7 @@ export const Rail = memo(function Rail({
           </b>
           {/* Armed, the row spends its subtitle line saying what is about to
               be lost; there is no other room at this width to say it. */}
-          <span className="font-mono text-10 text-faint truncate group-data-armed:text-danger">
+          <span className="text-11-5 tabular-nums text-faint truncate group-data-armed:text-danger">
             {armed
               ? "delete this and its undo history?"
               : working
@@ -414,8 +417,13 @@ export const Rail = memo(function Rail({
       </div>
 
       <div className="rail-pad px-2 pb-2.5">
+        {/* A row, not a filled button. It used to be the loudest thing in the
+            window, which put a verb you use once per conversation above the
+            conversation itself. The accent belongs to Send, which is the verb
+            you use all the time; this one wears its shortcut instead, so the
+            quieter version is also the faster one. */}
         <button
-          className="primary rail-new w-full py-2 px-2.5 text-13"
+          className={`${ROW} rail-new w-full text-ink`}
           onClick={onNew}
           // Not gated on a running turn any more, for the same reason the rows
           // above are not: starting something else is precisely what a person
@@ -423,7 +431,11 @@ export const Rail = memo(function Rail({
           data-tip="Start a new conversation in this workspace"
           data-tip-side="bottom"
         >
-          New conversation
+          <span className={`${GLYPH} text-accent`}>
+            <PlusIcon />
+          </span>
+          <b className="flex-1 font-normal">New conversation</b>
+          <kbd className="rail-new-key text-11 text-faint">{chord("N")}</kbd>
         </button>
       </div>
 
@@ -518,14 +530,14 @@ export const Rail = memo(function Rail({
               <SparkIcon />
             </span>
             <b className="flex-1 font-normal">Skills</b>
-            {skillCount !== null && <span className="count font-mono text-10 text-faint">{skillCount}</span>}
+            {skillCount !== null && <span className="count text-11 tabular-nums text-faint">{skillCount}</span>}
           </button>
           <button className={LINK} onClick={onAgents} data-tip={AGENTS_HINT}>
             <span className={`${GLYPH} text-faint`}>
               <DelegateIcon />
             </span>
             <b className="flex-1 font-normal">Agents</b>
-            {agentCount !== null && <span className="count font-mono text-10 text-faint">{agentCount}</span>}
+            {agentCount !== null && <span className="count text-11 tabular-nums text-faint">{agentCount}</span>}
           </button>
           <button
             className={LINK}
@@ -537,7 +549,7 @@ export const Rail = memo(function Rail({
             </span>
             <b className="flex-1 font-normal">Memory</b>
             {noteCount !== null && noteCount > 0 && (
-              <span className="count font-mono text-10 text-faint">{noteCount}</span>
+              <span className="count text-11 tabular-nums text-faint">{noteCount}</span>
             )}
           </button>
           <button
@@ -581,7 +593,7 @@ export const Rail = memo(function Rail({
                  A configured server that is not there is the one state this
                  feature keeps being reported for. */
               <span
-                className="count font-mono text-10 text-faint data-warn:text-warn"
+                className="count text-11 tabular-nums text-faint data-warn:text-warn"
                 data-warn={mcp.connected < mcp.total || undefined}
               >
                 {mcp.connected < mcp.total
@@ -603,7 +615,7 @@ export const Rail = memo(function Rail({
               <TerminalIcon />
             </span>
             <b className="flex-1 font-normal">Terminal</b>
-            {jobsRunning > 0 && <span className="count font-mono text-10 text-accent" data-live>
+            {jobsRunning > 0 && <span className="count text-11 tabular-nums text-accent" data-live>
               {jobsRunning}
             </span>}
           </button>
@@ -669,7 +681,7 @@ export const Rail = memo(function Rail({
         </div>
         <div className="rail-status flex items-center gap-2 py-2 px-3" data-tip={healthTitle(health)}>
           <span className={`dot ml-1 ${healthDot(health)}`} />
-          <span className="font-mono text-10-5 text-faint truncate">{healthLabel(health)}</span>
+          <span className="text-11-5 text-faint truncate">{healthLabel(health)}</span>
         </div>
       </div>
     </aside>
@@ -746,8 +758,8 @@ function Section({
   return (
     <>
       {/*
-          Still a micro-label to read — mono, tracked, faint — because the
-          sections are furniture and the conversations inside them are the
+          Still a micro-label to read — small, faint, sentence case — because
+          the sections are furniture and the conversations inside them are the
           content. What changed when it became a button is only that it answers
           a pointer: no border, no fill, and the same left edge every other line
           in the rail sits on, so a column of headers does not read as a column
@@ -785,10 +797,10 @@ function Section({
         {/* Only while it is shut. Open, the rows are right there to be counted,
             and a number beside them is one more thing on a dense surface. */}
         {shut && count !== undefined && (
-          <span className="count ml-auto font-mono text-10 tracking-normal">{count}</span>
+          <span className="count ml-auto text-11 tabular-nums">{count}</span>
         )}
         {shut && live !== undefined && live > 0 && (
-          <span className="count ml-auto font-mono text-10 tracking-normal text-accent" data-live>
+          <span className="count ml-auto text-11 tabular-nums text-accent" data-live>
             {live}
           </span>
         )}

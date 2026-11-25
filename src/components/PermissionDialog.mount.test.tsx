@@ -184,3 +184,40 @@ describe("an untrusted workspace", () => {
     expect(host.textContent).not.toContain("isn't trusted");
   });
 });
+
+describe("the scope sentence", () => {
+  // The engine writes it for the terminal too, with the tool name in
+  // backticks. Rendered as plain text here, those showed up as literal
+  // characters, so they have to become code instead.
+  const SCOPED = {
+    ...WRITE,
+    always_scope: "Always allow `edit_file` in this workspace",
+    always_global_scope: "Always allow `edit_file` in every workspace",
+  } as unknown as PermissionRequest;
+
+  it("sets the tool name as code, with no backticks left", () => {
+    const { host } = mount(SCOPED);
+    const footnote = host.querySelector(".dialog-footnote")!;
+    expect(footnote.querySelector("code")?.textContent).toBe("edit_file");
+    expect(footnote.textContent).toBe("Always allow edit_file in this workspace.");
+  });
+
+  it("strips the backticks from the tooltips, which are plain text", () => {
+    const { host } = mount(SCOPED);
+    const tips = [...host.querySelectorAll(".dialog-actions [data-tip]")].map((b) =>
+      b.getAttribute("data-tip"),
+    );
+    expect(tips).toEqual([
+      "Always allow edit_file in this workspace",
+      "Always allow edit_file in every workspace",
+    ]);
+  });
+
+  it("sets the widest grant apart from the narrower one", () => {
+    const { host } = mount(SCOPED);
+    const everywhere = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Always everywhere"),
+    );
+    expect(everywhere?.classList.contains("wide")).toBe(true);
+  });
+});

@@ -94,6 +94,15 @@ export function TrashIcon({ size }: { size?: number }) {
   );
 }
 
+/** A plus: start something new. */
+export function PlusIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </Icon>
+  );
+}
+
 /** A panel with its left column ruled off: show or hide the list beside it. */
 export function ListPaneIcon({ size }: { size?: number }) {
   return (
