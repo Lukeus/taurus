@@ -3505,6 +3505,16 @@ body.resizing-y iframe {
   padding: 8px 16px;
   font-size: 13.5px;
 }
+/* "Always everywhere": the widest grant, so it is set apart from "Always
+   here" in the warning colour the effect badge already uses. */
+.dialog-actions button.wide {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.dialog-actions button.wide:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+}
 
 /* ------------------------------------------------------------- proposals */
 

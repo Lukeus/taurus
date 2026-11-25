@@ -337,12 +337,10 @@ export function Settings({
                   provider is checked as a whole, and saving on every keystroke
                   would hand a running turn a half-typed address. */}
               <p className="drawer-intro">
-                Changes here wait for <b>Save</b>, unlike the other tabs: a
-                provider is checked as a whole, so a half-typed address never
-                reaches a running conversation. Saved to{" "}
-                <code>~/.taurus/providers.json</code>, shared with the CLI. Keys
-                never go in that file: store one below and it goes to your OS
-                keychain, or name an environment variable that holds it.
+                Changes here apply when you press <b>Save</b>. They're saved to{" "}
+                <code>~/.taurus/providers.json</code>, which the CLI also reads.
+                API keys never go in that file: they're kept in your OS
+                keychain, or read from an environment variable you name.
               </p>
 
               {/* A providers.json that will not parse is why the list below can
