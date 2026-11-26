@@ -86,7 +86,7 @@ import { useStable } from "./lib/stable";
 import { onTabKeys } from "./lib/tabs";
 import { applyTheme, currentToken, watchSystemTheme } from "./lib/theme";
 import type { Entry } from "./state/store";
-import { pinnedPlan, useStore, yourSteps } from "./state/store";
+import { NO_REMARKS, pinnedPlan, useStore, yourSteps } from "./state/store";
 import { Composer, type Parked } from "./components/Composer";
 import { DICTATE_SHORTCUT } from "./components/Mic";
 import { useSpeech } from "./state/speech";
@@ -239,6 +239,8 @@ export default function App() {
       stopping: s.stopping,
       resuming: s.resuming,
       queued: s.queued,
+      returned: s.returned,
+      takeReturned: s.takeReturned,
       interrupted: s.interrupted,
       error: s.error,
       permission: s.permission,
@@ -1524,6 +1526,31 @@ export default function App() {
     });
   }, []);
 
+  // A message the store took from the box and couldn't start — see
+  // `returned` — goes back where it was typed: into the box if that
+  // conversation is still on screen, and otherwise onto its parked draft,
+  // ahead of anything already there, for when it is opened again.
+  const returned = store.returned;
+  const takeReturned = store.takeReturned;
+  useEffect(() => {
+    if (!returned) return;
+    takeReturned();
+    if (returned.sessionId === sessionKey) {
+      setDraft({ text: returned.text });
+      return;
+    }
+    setParked((all) => {
+      const was = all[returned.sessionId];
+      return {
+        ...all,
+        [returned.sessionId]: {
+          text: was?.text.trim() ? `${returned.text}\n\n${was.text}` : returned.text,
+          images: [...returned.images, ...(was?.images ?? [])],
+        },
+      };
+    });
+  }, [returned, takeReturned, sessionKey]);
+
   /** Whichever dataset the pane is actually showing — see `DataPane`, which
    *  falls back to the first rather than being open on nothing. */
   const showing =
@@ -2480,7 +2507,37 @@ function PinnedPlan() {
   // Shallow: a fresh array of the same strings every frame is the same answer.
   const yours = useStore(useShallow((s) => yourSteps(s.entries)));
   const editPlan = useStore((s) => s.editPlan);
-  return plan ? <PlanPanel view={plan} yours={yours} onEdit={editPlan} /> : null;
+  const session = useStore((s) => s.session?.id ?? null);
+  const planning = useStore((s) => (s.session ? !!s.planning[s.session.id] : false));
+  const busy = useStore((s) => s.busy);
+  const approve = useStore((s) => s.approvePlan);
+  const addRemark = useStore((s) => s.addRemark);
+  const remarks = useStore((s) =>
+    s.session ? (s.remarks[s.session.id] ?? NO_REMARKS) : NO_REMARKS,
+  );
+  if (!plan) return null;
+  // Comments on steps only while planning: then the plan is a proposal, and a
+  // comment is how to change it before anything happens. Once it is running,
+  // Edit is the way to change it, and the model reads that at its next step.
+  const comments = planning && session;
+  return (
+    <PlanPanel
+      view={plan}
+      yours={yours}
+      onEdit={editPlan}
+      planning={planning}
+      busy={busy}
+      onApprove={planning ? () => void approve() : undefined}
+      onComment={
+        comments
+          ? (step, text) => addRemark(session, { anchor: { kind: "step", text: step.text }, text })
+          : undefined
+      }
+      commented={(step) =>
+        remarks.some((r) => r.anchor.kind === "step" && r.anchor.text === step.text)
+      }
+    />
+  );
 }
 
 /**

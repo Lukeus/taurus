@@ -192,6 +192,7 @@ fn interrupted_notice(interrupted: &taurus_core::Interrupted) -> String {
 const CONTINUE_COMMAND: &str = "/continue";
 
 /// Runs one task and exits.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_once(
     runtime: &Runtime,
     args: &SessionArgs,
@@ -200,27 +201,130 @@ pub async fn run_once(
     format: Format,
     quiet: bool,
     verbose: bool,
+    plan: bool,
 ) -> Result<ExitCode, String> {
     let (mut session, mut log, provider_id, model) = open_session(runtime, resume, args).await?;
     let provider = runtime.host.provider(&provider_id).await?;
 
-    let cancel = CancellationToken::new();
-    let _interrupts = install_interrupt_handler(cancel.clone());
+    if plan {
+        runtime.host.set_planning(&session.id, true).await;
+    }
 
-    let ok = turn(
-        runtime,
-        &provider_id,
-        provider,
-        &model,
-        &mut session,
-        &mut log,
-        task,
-        format,
-        quiet,
-        verbose,
-        cancel,
-    )
-    .await?;
+    let mut ok = {
+        let cancel = CancellationToken::new();
+        let _interrupts = install_interrupt_handler(cancel.clone());
+        turn(
+            runtime,
+            &provider_id,
+            provider.clone(),
+            &model,
+            &mut session,
+            &mut log,
+            task,
+            format,
+            quiet,
+            verbose,
+            cancel,
+        )
+        .await?
+    };
+
+    // Asked only after a planning turn that finished. One that failed or was
+    // interrupted has left a plan nobody should be asked to approve.
+    let asking = runtime.interactive && format == Format::Human;
+    while plan && ok {
+        let steps = runtime.host.plan_steps(&session.id).await;
+        // No plan usually means a question: the planning nudge tells the model
+        // to ask one rather than guess. With somebody here, they answer it and
+        // the conversation goes on planning; without, there is nothing to do.
+        if steps.is_empty() && !asking {
+            eprintln!(
+                "taurus: no plan was written, so there's nothing to approve. Nothing was changed."
+            );
+            ok = false;
+            break;
+        }
+        if steps.is_empty() {
+            let reply = ask_line("\nNo plan yet. Reply, or press Enter to stop: ").await?;
+            if reply.trim().is_empty() {
+                eprintln!("Stopped. Nothing was changed.");
+                break;
+            }
+            let cancel = CancellationToken::new();
+            let _interrupts = install_interrupt_handler(cancel.clone());
+            ok = turn(
+                runtime,
+                &provider_id,
+                provider.clone(),
+                &model,
+                &mut session,
+                &mut log,
+                reply.trim(),
+                format,
+                quiet,
+                verbose,
+                cancel,
+            )
+            .await?;
+            continue;
+        }
+        if format == Format::Human {
+            println!("\nPlan:");
+            for (index, step) in steps.iter().enumerate() {
+                let check = step
+                    .check
+                    .as_deref()
+                    .map(|c| format!("  (check: {c})"))
+                    .unwrap_or_default();
+                println!("  {}. {}{check}", index + 1, step.text);
+            }
+        }
+        // Nobody to ask: the plan is the result. Picking it up later is
+        // resuming the conversation, which is no longer planning.
+        if !asking {
+            eprintln!(
+                "Planned only; nothing was changed. To carry it out:\n  taurus run --resume {} \"{}\"",
+                session.id,
+                taurus_host::planning::APPROVED
+            );
+            break;
+        }
+
+        let next = match ask_about_plan().await? {
+            PlanAnswer::Proceed => {
+                runtime.host.set_planning(&session.id, false).await;
+                taurus_host::planning::APPROVED.to_string()
+            }
+            PlanAnswer::Stop => {
+                eprintln!("Stopped. Nothing was changed.");
+                break;
+            }
+            // Still planning: what they typed goes to the model, which
+            // revises the plan and is asked again.
+            PlanAnswer::Revise(text) => text,
+        };
+        let approved = !runtime.host.is_planning(&session.id).await;
+
+        let cancel = CancellationToken::new();
+        let _interrupts = install_interrupt_handler(cancel.clone());
+        ok = turn(
+            runtime,
+            &provider_id,
+            provider.clone(),
+            &model,
+            &mut session,
+            &mut log,
+            &next,
+            format,
+            quiet,
+            verbose,
+            cancel,
+        )
+        .await?;
+        if approved {
+            break;
+        }
+    }
 
     handle_proposals(runtime).await;
     Ok(if ok {
@@ -228,6 +332,45 @@ pub async fn run_once(
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// What the person said to a plan.
+enum PlanAnswer {
+    Proceed,
+    Stop,
+    /// Anything else they typed, which is feedback on the plan.
+    Revise(String),
+}
+
+/// Asks whether to carry out the plan.
+///
+/// An empty answer stops, as `[y/N]` promises: carrying out a plan is the one
+/// choice here that changes files, and it should never be what Enter does.
+async fn ask_about_plan() -> Result<PlanAnswer, String> {
+    let read = ask_line("\nCarry out this plan? [y] yes  [N] no, or type what to change: ").await?;
+    Ok(read_plan_answer(&read))
+}
+
+/// Asks on stderr and reads one line from stdin, off the async runtime.
+async fn ask_line(question: &'static str) -> Result<String, String> {
+    eprint!("{question}");
+    let _ = std::io::stderr().flush();
+    tokio::task::spawn_blocking(|| {
+        let mut buf = String::new();
+        std::io::stdin().read_line(&mut buf).map(|_| buf)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+fn read_plan_answer(line: &str) -> PlanAnswer {
+    let line = line.trim();
+    match line.to_ascii_lowercase().as_str() {
+        "y" | "yes" => PlanAnswer::Proceed,
+        "" | "n" | "no" => PlanAnswer::Stop,
+        _ => PlanAnswer::Revise(line.to_string()),
+    }
 }
 
 /// Interactive session over stdin.
@@ -654,6 +797,19 @@ impl Drop for Interrupts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_yes_carries_out_a_plan() {
+        assert!(matches!(read_plan_answer("y\n"), PlanAnswer::Proceed));
+        assert!(matches!(read_plan_answer(" YES "), PlanAnswer::Proceed));
+        // Enter is no: carrying it out is the choice that changes files.
+        assert!(matches!(read_plan_answer("\n"), PlanAnswer::Stop));
+        assert!(matches!(read_plan_answer("n"), PlanAnswer::Stop));
+        match read_plan_answer("  keep the old constructor too\n") {
+            PlanAnswer::Revise(text) => assert_eq!(text, "keep the old constructor too"),
+            _ => panic!("feedback was not sent back to the planner"),
+        }
+    }
 
     #[test]
     fn a_resumed_conversation_goes_on_with_what_it_was_on_unless_told_otherwise() {

@@ -67,6 +67,10 @@ const SHOTS = [
   // it is the half that already existed, and a frame of that alone would not
   // show what moved.
   { name: "changes", shot: "changes", theme: "dark" },
+  // A comment left on a line of a turn's diff and a second being written,
+  // with the tray above the composer that sends them with the next message.
+  { name: "comments", shot: "comments", theme: "dark" },
+  { name: "planning", shot: "planning", theme: "dark" },
   // A conversation whose files are set aside because a fork of it has the
   // workspace: the fork's row in the rail, the banner offering the switch
   // back, and Fork beside Rewind on each turn. The only picture of the three

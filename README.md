@@ -69,6 +69,7 @@ cargo install --path crates/taurus-cli
 taurus repl                                     # interactive
 taurus run "summarize the modules in src/"      # one-shot
 taurus run --json "count the rust files" | jq   # for scripts
+taurus run --plan "split the parser in two"     # plan first, approve, then do it
 taurus acp                                      # inside Zed or a JetBrains IDE, over ACP
 taurus rewind --to last                         # undo what the last turn wrote
 taurus fork --at last                           # try it again, keeping the first try
@@ -274,6 +275,7 @@ What it asks before acting, and how you put things back afterwards.
 | [Rewinding a turn](docs/safety.md#rewinding-a-turn) | Every file a turn touches is recorded first, so you can undo any turn. |
 | [Forking a turn](docs/safety.md#forking-a-turn) | Try a turn again, another way or on another model, and switch back to the first attempt with its files. Compare two branches without switching. |
 | [Keeping a turn](docs/safety.md#keeping-a-turn) | Read a turn back as a diff and commit it on its own. |
+| [Commenting on a turn](docs/safety.md#commenting-on-a-turn) | Leave a comment on any line of a turn's diff. Comments wait above the composer and go with your next message, quoting the line they're about. |
 | [Reviewing a turn](docs/safety.md#reading-it-back-to-somebody-who-did-not-write-it) | Hand that diff to an agent that has seen none of the conversation. It can read but not write, and it can't know what you asked for. That's the point, and also the cost. |
 
 ### [Working with it](docs/working-with-it.md)
@@ -286,6 +288,7 @@ What a turn looks like in use.
 | [In your editor](docs/working-with-it.md#in-your-editor) | `taurus acp` runs Taurus inside Zed, JetBrains IDEs or any other Agent Client Protocol editor, with your providers, skills, allowlist and undo history. |
 | [Finding a conversation](docs/working-with-it.md#finding-a-conversation) | ⌘K finds every panel and action by name, conversations by title, and transcripts by what was said, and opens a conversation *at* the hit. |
 | [Planning a long task](docs/working-with-it.md#planning-a-long-task) | A plan it pins and keeps current, not one it announces once and forgets. |
+| [Plan first](docs/working-with-it.md#plan-first) | A plan you approve before anything changes, with nothing that writes offered until you do. |
 | [Showing it a picture](docs/working-with-it.md#showing-it-a-picture) | Paste a screenshot in. |
 | [Talking instead of typing](docs/working-with-it.md#talking-instead-of-typing) | Speech becomes text on your own computer, in the box for you to check. The audio is never saved or sent anywhere. |
 | [Hearing replies read aloud](docs/working-with-it.md#hearing-replies-read-aloud) | Each reply read as it streams, prose only. Your computer's voice, ElevenLabs, or anything shaped like OpenAI's speech endpoint. |

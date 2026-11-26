@@ -5,10 +5,12 @@ import type {
   Checkpoint,
   Commit,
   Comparison,
+  DiffLine,
   Forked,
   SessionMeta,
   Side,
   RepoStatus,
+  Remark,
   Restored,
   ReviewReport,
   Rewind,
@@ -21,6 +23,7 @@ import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { DrawerHead } from "./Drawer";
 import { Problem } from "./Problem";
+import { NO_REMARKS, useStore } from "../state/store";
 
 /**
  * Files this conversation changed, the way back, and the way forward.
@@ -180,6 +183,9 @@ export function ChangesDrawer({
     setApplying(true);
     try {
       const rewound = await api.rewindTo(asked, plan.turn, false);
+      // Before the check below: the comments belong to the conversation that
+      // was rewound, whichever one is on screen now.
+      useStore.getState().dropRemarksFrom(asked, plan.turn);
       if (showing.current !== asked) return;
       setDone(rewound);
       setPlan(null);
@@ -775,6 +781,8 @@ export function TurnDetail({
   const [reviewing, setReviewing] = useState(false);
   const [review, setReview] = useState<ReviewReport | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const addRemark = useStore((s) => s.addRemark);
+  const remarks = useStore((s) => s.remarks[sessionId] ?? NO_REMARKS);
 
   useEffect(() => {
     api
@@ -851,7 +859,14 @@ export function TurnDetail({
 
       {changes?.map((change, i) =>
         change.kind === "diff" ? (
-          <DiffView key={i} diff={change.diff} />
+          <DiffView
+            key={i}
+            diff={change.diff}
+            onComment={(line, text) => addRemark(sessionId, remarkOn(turn.turn, change.diff.path, line, text))}
+            commented={(line) =>
+              remarks.some((r) => sameLine(r, turn.turn, change.diff.path, line))
+            }
+          />
         ) : (
           // The same files a rewind reports as skipped. Leaving them out
           // would make the turn look smaller than it was.
@@ -1007,6 +1022,31 @@ export function TurnDetail({
       )}
     </div>
   );
+}
+
+/** A comment on one line of one turn's diff. */
+export function remarkOn(turn: number, path: string, line: DiffLine, text: string): Remark {
+  return {
+    anchor: {
+      kind: "diff",
+      turn,
+      path,
+      side: line.kind,
+      // The number on the side the line is on: a removed line has only the
+      // old one, and every other line is named as the turn left the file.
+      line: (line.kind === "removed" ? line.old_line : line.new_line) ?? 0,
+      quoted: line.text,
+    },
+    text,
+  };
+}
+
+/** Whether a comment is pinned to this line of this turn's diff. */
+export function sameLine(remark: Remark, turn: number, path: string, line: DiffLine): boolean {
+  const a = remark.anchor;
+  if (a.kind !== "diff") return false;
+  const number = line.kind === "removed" ? line.old_line : line.new_line;
+  return a.turn === turn && a.path === path && a.side === line.kind && a.line === number;
 }
 
 /**

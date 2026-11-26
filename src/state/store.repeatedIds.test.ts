@@ -140,16 +140,18 @@ describe("live events under a repeated id", () => {
   const progress = (id: string, label: string) => ({ type: "tool_progress", id, label }) as never;
 
   it("draws a new card, and leaves the finished one under that id alone", () => {
-    const [old, next] = tools(
-      foldEvents(
-        [started("ptc_1", "a"), finished("ptc_1", "of a"), started("ptc_1", "b"), progress("ptc_1", "working"), finished("ptc_1", "of b")],
-        [],
-      ),
+    const running = foldEvents(
+      [started("ptc_1", "a"), finished("ptc_1", "of a"), started("ptc_1", "b"), progress("ptc_1", "working")],
+      [],
     );
+    // Progress lands on the new card while it runs, not on the finished one.
+    expect(tools(running).map((t) => t.steps)).toEqual([[], ["working"]]);
+
+    const [old, next] = tools(foldEvents([finished("ptc_1", "of b")], running));
     expect(old.output).toBe("of a");
-    expect(old.steps).toEqual([]);
     expect(next.output).toBe("of b");
-    expect(next.steps).toEqual(["working"]);
+    // Its result replaces what it said while running, which isn't kept.
+    expect(next.steps).toEqual([]);
     expect(next.id).not.toBe(old.id);
     expect(wireId(next)).toBe("ptc_1");
   });

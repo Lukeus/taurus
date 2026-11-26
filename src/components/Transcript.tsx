@@ -1038,7 +1038,18 @@ const STREAMS_OUTPUT = new Set([
   "check_command",
 ]);
 
-function ToolRow({
+/**
+ * One call in a run.
+ *
+ * Memoized, and it is what keeps a long agent loop affordable. An open run
+ * re-renders whenever any call in it moves — a progress line, a new call — and
+ * without this every row in it re-rendered with it: joining its streamed
+ * output, re-reading its images, re-subscribing. A loop of two hundred calls
+ * with no prose between them is one run, so each frame of the newest call cost
+ * two hundred rows. The reducer replaces only the entry that changed, so the
+ * default comparison is the right one: the same `step` object is the same row.
+ */
+const ToolRow = memo(function ToolRow({
   step,
   onOpenDelegate,
 }: {
@@ -1168,7 +1179,7 @@ function ToolRow({
       )}
     </div>
   );
-}
+});
 
 /**
  * A command's output, following it as it arrives.

@@ -201,6 +201,9 @@ const ANSWERS: Record<string, unknown> = {
   list_checkpoints: CHECKPOINTS,
   repo_status: REPO,
   conversation_changes: CONVERSATION_CHANGES,
+  // One turn's diff, for the comments scene. The conversation's own will do:
+  // what is being photographed is the commenting, not which lines changed.
+  turn_changes: CONVERSATION_CHANGES,
   // Empty everywhere but the library scenes, whose drawers are the picture.
   list_skills: ["skills", "skill-editor"].includes(shot) ? LIBRARY_SKILLS : [],
   list_instructions: shot === "skills" ? LIBRARY_INSTRUCTIONS : [],
@@ -941,6 +944,76 @@ requestAnimationFrame(() => {
             ? true
             : null,
         );
+      },
+      // A comment left on one line of a turn's diff, and a second being
+      // written: the marked line, the box under the next one, and the tray
+      // above the composer that says where both are going.
+      comments: async () => {
+        (await click(".topbar .chip", (b) => b.includes("changed")))();
+        (await click(".changes-pane button", (b) => b === "View changes"))();
+        const add = async (label: string, text: string, enter: boolean) => {
+          const button = (await until(() =>
+            document.querySelector(`.diff-comment-add[aria-label="${label}"]`),
+          )) as HTMLButtonElement;
+          button.click();
+          const box = (await until(() =>
+            document.querySelector(".diff-comment-box textarea"),
+          )) as HTMLTextAreaElement;
+          typeInto(box, text);
+          if (enter) {
+            box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+            await until(() => (document.querySelector(".diff-comment-box") ? null : true));
+          }
+        };
+        await add("Comment on line 23", "Thin LTO is fine for release, but check the CI cache still hits", true);
+        await add("Comment on line 413", "Keep the constant as the default", false);
+        await until(() => document.querySelector(".composer-comments"));
+      },
+      // A plan written while planning, waiting on the person: open on its
+      // own, a comment left on one step, and Approve in the foot. The
+      // composer's pill below says the conversation is planning.
+      planning: async () => {
+        const session = useStore.getState().session!.id;
+        useStore.setState((s) => ({
+          planning: { [session]: true },
+          entries: [
+            ...s.entries,
+            { kind: "user", id: "plan-q", text: "Stop a clean release build recompiling whisper.cpp every time." },
+            {
+              kind: "tool",
+              id: "plan-1",
+              name: "update_plan",
+              preview: "update_plan",
+              status: "ok",
+              steps: [],
+              view: {
+                type: "plan",
+                steps: [
+                  { text: "Read crates/taurus-voice/build.rs and how it invokes CMake", state: "todo" },
+                  { text: "Cache the whisper.cpp build in OUT_DIR keyed by its source hash", state: "todo", check: "cargo build --release -p taurus-voice" },
+                  { text: "Rerun only when vendor/whisper changes", state: "todo", check: "cargo build --release -p taurus-voice --timings" },
+                ],
+              },
+            },
+            {
+              kind: "assistant",
+              id: "plan-a",
+              text: "That's the plan. One thing to decide: step 2 keys the cache on a hash of the vendored sources, which costs about a second per build to compute.",
+              thinking: "",
+              open: false,
+            },
+          ] as never,
+        }));
+        const add = (await until(() =>
+          document.querySelector('.plan-comment[aria-label="Comment on step 2"]'),
+        )) as HTMLButtonElement;
+        add.click();
+        const box = (await until(() =>
+          document.querySelector(".plan-comment-box textarea"),
+        )) as HTMLTextAreaElement;
+        typeInto(box, "Use the mtime of vendor/whisper instead, a second a build adds up");
+        box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        await until(() => document.querySelector(".composer-comments"));
       },
       changes: async () => {
         (await click(".topbar .chip", (b) => b.includes("changed")))();

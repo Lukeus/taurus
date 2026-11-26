@@ -15,7 +15,7 @@ pub mod subagent;
 pub mod telemetry;
 pub mod testing;
 
-pub use agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder};
+pub use agent::{Agent, AgentConfig, AgentError, TurnOutcome, TurnRecorder, PLANNING_NOTE};
 pub use apply::{ApplyDelegate, APPLY_TOOL};
 pub use compare::{CompareDelegates, COMPARE_TOOL};
 pub use event::UiEvent;
