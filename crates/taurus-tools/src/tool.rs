@@ -448,10 +448,9 @@ impl ToolContext {
             .as_ref()
             .map(|_| Arc::new(crate::sweep::SweepCache::new()));
         self.checkpoints = recorder;
-        self.jobs = self
-            .jobs
-            .as_ref()
-            .map(|_| Arc::new(crate::jobs::Jobs::new()));
+        // Its own, since its commands run in `root`, and nested under this
+        // one's, so stopping this workspace's commands stops these too.
+        self.jobs = self.jobs.as_ref().map(|jobs| jobs.nested());
         self.protected = None;
         self.touched = None;
         self

@@ -1392,14 +1392,11 @@ impl Agent {
         // `true` when the answer cannot be had: stripping images from a
         // conversation on the strength of a failed capability lookup would
         // quietly degrade a session that was working.
-        let vision = self
-            .provider
-            .capabilities(&session.model)
-            .await
-            .map(|caps| caps.vision)
-            .unwrap_or(true);
+        let caps = self.provider.capabilities(&session.model).await.ok();
+        let vision = caps.as_ref().is_none_or(|caps| caps.vision);
+        let window = caps.map(|caps| self.working_window(caps.context_length));
 
-        let request = self.build_request(session, vision);
+        let request = self.build_request(session, vision, window);
 
         // Per attempt rather than per iteration: a request that 429'd and was
         // retried is two round trips against the backend and, on a metered
@@ -1589,7 +1586,7 @@ impl Agent {
     /// which is the entire point of it: a model on iteration nine gets the plan
     /// as it stands on iteration nine, including the step it marked done on
     /// iteration eight.
-    fn build_request(&self, session: &Session, vision: bool) -> ChatRequest {
+    fn build_request(&self, session: &Session, vision: bool, window: Option<u32>) -> ChatRequest {
         let tools = self.request_tools();
 
         let mut messages = if vision {
@@ -1606,7 +1603,17 @@ impl Agent {
             messages,
             tools,
             temperature: self.config.temperature,
-            max_tokens: self.config.max_tokens,
+            // No more than compaction left room for. The history is allowed to
+            // grow to the window less `reply_reserve`, which is held to a
+            // quarter of it, so a configured limit past that asked for a reply
+            // the window couldn't hold beside a full history: a 400 from a
+            // backend that checks, the front of the prompt silently dropped
+            // by one (Ollama) that doesn't. Unset stays unset, and each
+            // backend's own default applies.
+            max_tokens: self.config.max_tokens.map(|wanted| match window {
+                Some(window) if window > 0 => wanted.min(self.reply_reserve(window)),
+                _ => wanted,
+            }),
             stop_sequences: Vec::new(),
             // Free-form by construction: this turn may answer in prose, call
             // any tool, or both, and a schema over the whole response could
@@ -2046,7 +2053,8 @@ impl Agent {
     }
 
     /// What the recent messages kept verbatim cost, calibrated: the part of
-    /// the history summarizing cannot touch.
+    /// the history summarizing cannot touch. `keep_tokens` is uncalibrated,
+    /// like every bound [`split_for_compaction`] is given.
     fn tail_tokens(&self, session: &Session, keep_tokens: u32) -> u32 {
         let (drop_count, _) = split_for_compaction(
             &session.messages,
@@ -2183,7 +2191,13 @@ impl Agent {
         let repeats_supersede = |name: &str| self.is_read(name);
         // The same boundary the summarizer will use, so the two passes cannot
         // disagree about which messages are the recent ones.
-        let keep_tokens = budget / 2;
+        // Half the budget, in the units `split_for_compaction` counts in: the
+        // messages' own uncalibrated estimates, the same as the trim target
+        // below. Handed the calibrated half, it kept a tail that much larger
+        // than meant on a code-heavy session, which then failed the tail check
+        // as too large on its own, or fit by a sliver and was summarized again
+        // every round.
+        let keep_tokens = ((budget / 2) as f32 / session.calibration()) as u32;
         let (_, kept) = split_for_compaction(
             &session.messages,
             self.config.keep_recent_messages,

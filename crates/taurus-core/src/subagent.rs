@@ -97,6 +97,11 @@ pub struct SpawnInput {
 /// whichever folder it's called in.
 const PARENT_INDEX_TOOL: &str = "search_code";
 
+/// How long a delegate's copy waits for its background commands to be gone
+/// before it's closed. The same order as a command's own stop: past it, the
+/// copy is closed anyway, and a removal that fails leaves it to the next tidy.
+const COPY_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Where a delegate's conversation is kept.
 ///
 /// The parent's transcript records one delegation — a call, and the paragraph
@@ -789,8 +794,11 @@ impl Launch {
         if let Some((isolation, opened)) = &self.isolated {
             // A dev server it left running would hold the folder open, and
             // there would be nobody left to read it or stop it.
+            // Waited for, with a limit: closing snapshots the copy and then
+            // removes it, and a command still dying writes into the snapshot
+            // and holds the folder open against the removal.
             if let Some(jobs) = own_jobs {
-                jobs.stop_all();
+                jobs.stop_all_within(COPY_STOP_WAIT).await;
             }
             // What's in the copy is the record of what it changed: a command's
             // writes the sweep missed are in it too.

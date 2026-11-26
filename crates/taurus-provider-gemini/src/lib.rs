@@ -93,6 +93,9 @@ const FALLBACK_TTL: Duration = Duration::from_secs(300);
 #[derive(Clone, Copy)]
 struct Probed {
     capabilities: Capabilities,
+    /// Whether the model's own entry says it thinks, so thought summaries
+    /// may be asked for. False when it doesn't say, or wasn't asked.
+    thinks: bool,
     /// `None` for an answer from the backend, which does not go stale while
     /// this provider lives. A deadline for a fallback.
     until: Option<Instant>,
@@ -258,6 +261,7 @@ impl Provider for GeminiProvider {
         // past the first page would read as one the backend does not describe.
         let probed = self.probe(model).await;
         let answered = probed.is_some();
+        let thinks = probed.as_ref().and_then(|m| m.thinking) == Some(true);
         let capabilities = Capabilities {
             native_tools: true,
             vision: self.capabilities.vision,
@@ -275,6 +279,7 @@ impl Provider for GeminiProvider {
             model.to_string(),
             Probed {
                 capabilities,
+                thinks,
                 until: (!answered).then(|| Instant::now() + self.fallback_ttl),
             },
         );
@@ -349,13 +354,20 @@ impl Provider for GeminiProvider {
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StopReason> {
-        let body = GenerateBody::from_request(&request);
         // The model is in the path, and the method is a suffix on it rather
         // than a separate route.
         let bare = request
             .model
             .strip_prefix("models/")
             .unwrap_or(&request.model);
+        let thinks = {
+            let probed = self.probed.read().await;
+            probed
+                .get(bare)
+                .or_else(|| probed.get(&request.model))
+                .is_some_and(|probed| probed.thinks)
+        };
+        let body = GenerateBody::from_request(&request, thinks);
         let url = self.url(&format!("/models/{bare}:streamGenerateContent"));
 
         let response = tokio::select! {

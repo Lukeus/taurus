@@ -627,9 +627,11 @@ impl OpenAiProvider {
                 finish_reason = Some(reason);
             }
 
-            let Some(delta) = choice.delta else { continue };
+            let Some(mut delta) = choice.delta else {
+                continue;
+            };
 
-            if let Some(content) = delta.content.filter(|c| !c.is_empty()) {
+            if let Some(content) = delta.content.take().filter(|c| !c.is_empty()) {
                 match scanner.as_mut() {
                     Some(scanner) => {
                         for event in scanner.feed(&content) {
@@ -641,7 +643,7 @@ impl OpenAiProvider {
             }
 
             // Some servers expose reasoning models' scratchpad here.
-            if let Some(reasoning) = delta.reasoning_content.filter(|r| !r.is_empty()) {
+            if let Some(reasoning) = delta.reasoning() {
                 send(&tx, StreamEvent::ThinkingDelta { text: reasoning }).await?;
             }
 
@@ -1023,6 +1025,27 @@ mod tests {
         let stop = turn.await.expect("the task").expect("the turn");
         let (message, _, bad) = acc.finish();
         (message, bad, stop)
+    }
+
+    #[tokio::test]
+    async fn a_chunk_naming_its_reasoning_both_ways_is_still_read() {
+        let (message, _) = folded(concat!(
+            r#"data: {"choices":[{"delta":{"reasoning":null,"reasoning_content":"hmm","content":null}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"reasoning":"so","reasoning_content":null,"content":"ok"},"finish_reason":"stop"}]}"#,
+            "\n\ndata: [DONE]\n\n",
+        ))
+        .await;
+        assert_eq!(message.text(), "ok");
+        let thought: String = message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                taurus_provider::ContentBlock::Thinking { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thought, "hmmso");
     }
 
     #[tokio::test]

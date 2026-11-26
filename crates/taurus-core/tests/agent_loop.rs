@@ -3179,6 +3179,90 @@ async fn a_tail_that_really_is_too_big_still_says_so() {
 }
 
 #[tokio::test]
+async fn the_kept_tail_is_sized_in_the_units_it_is_counted_in() {
+    // Code-heavy: the backend counts well over twice the estimate. The tail
+    // kept verbatim is meant to be half the budget once calibrated; sized at
+    // half the budget *before* calibrating, it came to more than the whole
+    // budget after, and the turn said its recent messages were too large to
+    // summarize around.
+    const DENSITY: f32 = 2.4;
+    let system_prompt = "x".repeat(4_000);
+    let h = harness_on(
+        FakeProvider::dense(
+            vec![ScriptedTurn::text("SUMMARY"), ScriptedTurn::text("Done.")],
+            32_768,
+            DENSITY,
+        ),
+        Box::new(AllowAll),
+        AgentConfig {
+            system_prompt: system_prompt.clone(),
+            ..Default::default()
+        },
+    );
+    // Large enough that the tail is bounded by its tokens, not its count.
+    let mut session = Session::new("fake");
+    for i in 0..30 {
+        session.push(Message::user(format!("message {i} {}", "y".repeat(12_000))));
+    }
+    let overhead = fixed_part(&system_prompt);
+    let estimated = session.estimated_tokens();
+    session.record_request((estimated as f32 * DENSITY) as u32 + overhead, overhead);
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let complaints: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(complaints.is_empty(), "{complaints:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_configured_reply_limit_is_held_to_what_the_window_leaves() {
+    let h = harness_with(
+        vec![ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            max_tokens: Some(64_000),
+            ..Default::default()
+        },
+        8_192,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "hi").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    // A quarter of the window, the most `reply_reserve` holds back.
+    assert_eq!(
+        h.provider.last_request().await.unwrap().max_tokens,
+        Some(2_048)
+    );
+
+    let h = harness_with(
+        vec![ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            max_tokens: Some(1_000),
+            ..Default::default()
+        },
+        8_192,
+    );
+    run(&h, &mut session, "hi").await.0.unwrap();
+    assert_eq!(
+        h.provider.last_request().await.unwrap().max_tokens,
+        Some(1_000)
+    );
+}
+
+#[tokio::test]
 async fn a_turn_whose_own_reads_fill_the_window_trims_inside_the_tail() {
     // A first turn: one question, then four reads of a large file, every one
     // of them recent. The trim pass used to leave the recent tail alone and
@@ -3542,7 +3626,11 @@ async fn a_request_the_backend_says_is_too_long_is_compacted_and_sent_again() {
         stopped: false,
     };
     let h = harness_with(
-        vec![too_long, ScriptedTurn::text("SUMMARY"), ScriptedTurn::text("Done.")],
+        vec![
+            too_long,
+            ScriptedTurn::text("SUMMARY"),
+            ScriptedTurn::text("Done."),
+        ],
         Box::new(AllowAll),
         AgentConfig::default(),
         64_000,

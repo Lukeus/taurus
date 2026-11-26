@@ -80,10 +80,27 @@ pub struct Delta {
     #[serde(default)]
     pub content: Option<String>,
     /// Non-standard but widely used by reasoning-model servers.
-    #[serde(default, alias = "reasoning")]
+    #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// The same, under the name other servers use. Its own field rather than
+    /// an alias: serde refuses a chunk carrying both names as a duplicate,
+    /// and a server that writes out every field (`"reasoning": null` beside
+    /// `"reasoning_content": "…"`) had every chunk skipped, its text and tool
+    /// calls with it. See [`Delta::reasoning`].
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub tool_calls: Vec<ToolCallDelta>,
+}
+
+impl Delta {
+    /// The reasoning in this chunk, under whichever name it came.
+    pub fn reasoning(&mut self) -> Option<String> {
+        self.reasoning_content
+            .take()
+            .filter(|r| !r.is_empty())
+            .or_else(|| self.reasoning.take().filter(|r| !r.is_empty()))
+    }
 }
 
 #[derive(Debug, Deserialize)]
