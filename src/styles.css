@@ -3133,10 +3133,10 @@ body.resizing-y iframe {
    under a pointer cannot be reached by anyone who is not using one. */
 .attachment-remove {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 20px;
-  height: 20px;
+  top: 2px;
+  right: 2px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -3890,6 +3890,7 @@ body.resizing-y iframe {
 .workspace-forget {
   position: absolute;
   right: 4px;
+  min-height: 24px;
   padding: 2px 6px;
   font-size: 11px;
   color: var(--text-faint);
@@ -4656,6 +4657,8 @@ button.link:where(:not(.excalidraw *)):hover {
   border: none;
   background: transparent;
   color: var(--text-faint);
+  min-width: 24px;
+  min-height: 24px;
   padding: 4px;
   font-size: 11px;
   line-height: 1;
@@ -5768,7 +5771,8 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .notes-new {
   flex: none;
-  width: 20px;
+  width: 24px;
+  min-height: 24px;
   padding: 0;
   border: none;
   background: transparent;
@@ -7504,6 +7508,8 @@ button.link:where(:not(.excalidraw *)):hover {
 }
 .canvas-tab-close {
   margin-right: 4px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 2px 6px;
   font-size: 10px;
   color: inherit;
@@ -8656,4 +8662,27 @@ button.link:where(:not(.excalidraw *)):hover {
   height: 100%;
   max-width: 100%;
   object-fit: contain;
+}
+
+/* ------------------------------------------------------- forced colours */
+
+/* Windows High Contrast replaces every colour with the system's few, so a
+   selection drawn only as a tinted background disappears. Each of these gets
+   an outline in the system's highlight colour instead. */
+@media (forced-colors: active) {
+  .palette-row.on,
+  .palette-row[aria-selected="true"],
+  .seg.on,
+  .pill.on,
+  .rail-link.on,
+  [role="tab"][aria-selected="true"],
+  [role="option"][aria-selected="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .banner-dot,
+  .dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
 }
