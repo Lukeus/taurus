@@ -180,7 +180,11 @@ Without `matches`, the hook applies to everything on its event.
 
 - `commands` matches any program a command line runs, the same unit an
   "always allow" decision uses: a hook on `git` fires for `cd x && git push`,
-  and `git` never matches `rm`.
+  and `git` never matches `rm`. Names are compared bare, so a hook on `git` also covers
+  `/usr/bin/git`, `Git` and `git.exe`. A line whose programs can't all be read
+  from its words, like `env git push`, `sh -c '…'` or `$(…)`, runs every hook
+  that has a `commands` filter, since none of them can tell it isn't about
+  them.
 - `paths` globs against the workspace-relative paths a call names, taken from
   each tool's own declaration of what it touches. One glob covers every tool
   that writes.

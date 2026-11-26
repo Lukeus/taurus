@@ -19,7 +19,7 @@ use tracing::info;
 use taurus_agents::catalog::{AgentCatalog, SharedAgentCatalog};
 use taurus_agents::proposal::AgentProposalSink;
 use taurus_agents::{AgentDefinition, AgentSummary};
-use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, ProposeAgent, SpawnSubagent};
+use taurus_core::{Agent, AgentConfig, AgentModel, ModelOverrides, SpawnSubagent};
 use taurus_mcp::{McpManager, ServerStatus};
 use taurus_provider::Provider;
 use taurus_provider_anthropic::{
@@ -107,6 +107,8 @@ pub const PER_TURN_TOOLS: &[&str] = &[
     taurus_core::COMPARE_TOOL,
     crate::memory::REMEMBER_TOOL,
     crate::notebook::OPEN_NOTE_TOOL,
+    taurus_skills::PROPOSE_TOOL,
+    taurus_core::PROPOSE_AGENT_TOOL,
 ];
 
 /// Makes a permission prompt on demand.
@@ -586,24 +588,8 @@ impl Host {
         registry.register(Arc::new(taurus_skills::RunSkillScript::new(
             self.catalog.clone(),
         )));
-        // Only when the setting is on. The prompt's authoring guidance already
-        // follows this setting, and advertising the tool without it left the
-        // model holding a schema — one of the largest here — that nothing told
-        // it when to use. Same rule the web tools follow: never offer a tool the
-        // prompt cannot explain.
-        if self.settings.read().await.skill_synthesis_enabled {
-            registry.register(Arc::new(taurus_skills::ProposeSkill::new(
-                self.catalog.clone(),
-                self.proposals.clone(),
-            )));
-        }
-        if self.settings.read().await.agent_synthesis_enabled {
-            registry.register(Arc::new(ProposeAgent::new(
-                self.agents.clone(),
-                self.registry.clone(),
-                self.agent_proposals.clone(),
-            )));
-        }
+        // `propose_skill` and `propose_agent` aren't here: they're added per
+        // turn. See `Host::turn`.
 
         // Both web tools stand or fall together: a `fetch_url` with no way to
         // find a URL is a tool the model can only use on links the user pastes,

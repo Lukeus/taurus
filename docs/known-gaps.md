@@ -504,6 +504,15 @@ the backlog, and they're the minority.
   build appended to may already hold a torn fragment and a whole record on one
   line, and that line is dropped on load like any other it can't parse. Getting
   the record back would mean guessing where the fragment stops, and nothing does.
+- **A conversation open in two places is saved by the first one to write.**
+  When the CLI resumes a conversation the app has open, or two windows hold
+  one, each appends from where it loaded. So a transcript with lines a window
+  didn't write is left to whoever wrote them, and that window stops saving to
+  it rather than splicing two continuations into one history that loads as
+  neither. What it says after that is in the window and not on disk, and the
+  only sign is a line in the log. Reopening the conversation picks up the
+  saved half. Saving it as a conversation of its own instead would keep both,
+  and it's a change to how a log is named.
 - **A cut command's output can be swept away while the transcript still points
   at it.** When a stream outruns what the model's window has room for, the
   whole of it is written to `~/.taurus/output/<workspace-key>/`, and the gap
@@ -1945,9 +1954,18 @@ the backlog, and they're the minority.
   terminal's own Ctrl-C reaches the whole tree without anything in this code
   having to run first, which is worth more than a group would be. So its
   timeout kills the shell alone. Making it a tree would be the same small
-  change as above. It hasn't been made, because it doesn't have the safety
-  argument the hook timeout has: a hook is a guard whose whole promise is
-  that it stopped something.
+  change as above. It hasn't been made, but it has a safety argument now. The
+  look at the files that decide what runs happens when the command's own
+  process exits, so a granted `python3 x.py` that forks, lets the parent go,
+  and writes `.git/config` a second later writes after the look has read the
+  set and found nothing. On macOS the sandbox allows `.git/config` on purpose,
+  so there the look was the only guard on it; on Windows, or on Linux without
+  `bwrap`, that's true of `.git/hooks` as well. Ending what's left in the
+  group before the look would close the plain fork, at the cost of a Ctrl-C
+  that has to go through Taurus. A child that calls `setsid` leaves the group
+  either way, and only a sandbox follows it, which on macOS and Linux it
+  does. Reading the set once more at the next tool call is the other way in,
+  and it's a change to how the look holds its reading.
 - **The built-in voice is the operating system's.** It sounds different on
   each platform, and on Linux it's `espeak-ng`, which is robotic. One neural
   voice downloaded on first use, the way the speech model is, would sound the

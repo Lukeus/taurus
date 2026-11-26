@@ -1241,7 +1241,9 @@ fn sed_reaches_out(script: &str) -> bool {
 
 /// `program` without its directory or `.exe`, lowercased, for matching
 /// against the lists above.
-fn bare_name(program: &str) -> String {
+/// A program's name as a guard should compare it: the last part of a path,
+/// lowercased, without `.exe`. `/usr/bin/git`, `Git` and `git.exe` are `git`.
+pub fn bare_name(program: &str) -> String {
     let lower = program
         .rsplit(['/', '\\'])
         .next()

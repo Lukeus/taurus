@@ -443,6 +443,9 @@ pub struct SessionLog {
     /// True until the first write has looked, and again after a write fails,
     /// since a failed `write_all` can leave part of its line behind.
     tail_unchecked: bool,
+    /// The file's length and line count as this log last left it, or found it
+    /// when it was resumed. See [`Self::still_ours`].
+    seen: Option<Shape>,
 }
 
 impl SessionLog {
@@ -473,6 +476,7 @@ impl SessionLog {
             held_turn: None,
             marks: Vec::new(),
             tail_unchecked: true,
+            seen: None,
         }
     }
 
@@ -500,6 +504,7 @@ impl SessionLog {
             held_turn: None,
             marks: loaded.turns.clone(),
             tail_unchecked: true,
+            seen: Shape::of(&loaded.path),
         }
     }
 
@@ -539,6 +544,7 @@ impl SessionLog {
             held_turn: None,
             marks: Vec::new(),
             tail_unchecked: true,
+            seen: None,
         }
     }
 
@@ -553,6 +559,7 @@ impl SessionLog {
             held_turn: None,
             marks: Vec::new(),
             tail_unchecked: true,
+            seen: None,
         }
     }
 
@@ -659,6 +666,14 @@ impl SessionLog {
         let Some(mut file) = self.open() else {
             return created;
         };
+        // Held for the round, for the reason `write` holds it for one record.
+        if let Err(e) = file.lock() {
+            self.warn(&e);
+            return created;
+        }
+        if !self.still_ours() {
+            return created;
+        }
         // Straight after the header, before the turn's first message.
         if let Some(turn) = self.held_turn.take() {
             if !self.append(&mut file, &turn) {
@@ -792,10 +807,63 @@ impl SessionLog {
     }
 
     /// Appends one record. Returns whether it landed.
+    ///
+    /// Under a lock on the file for the length of the write, so the look
+    /// [`Self::still_ours`] takes and the append it clears can't have another
+    /// process's write land between them.
     fn write(&mut self, record: &Record) -> bool {
-        match self.open() {
-            Some(mut file) => self.append(&mut file, record),
-            None => false,
+        let Some(mut file) = self.open() else {
+            return false;
+        };
+        if let Err(e) = file.lock() {
+            self.warn(&e);
+            return false;
+        }
+        if !self.still_ours() {
+            return false;
+        }
+        self.append(&mut file, record)
+    }
+
+    /// Whether the transcript is as this log last left it.
+    ///
+    /// `persisted` counts what this log wrote, and the next write goes on
+    /// after it. Another process appending to the same conversation (the CLI
+    /// resuming one the app has open) moves the end out from under that
+    /// count, and writing on would splice two continuations into one history
+    /// that loads as neither. So a transcript with lines this log didn't write
+    /// is left to whoever wrote them, and this log stops: told once, and
+    /// reopening the conversation picks up both.
+    ///
+    /// Lines, not bytes, decide. A rename rewrites the header in place, which
+    /// changes the length and keeps every line, and a write that failed
+    /// partway leaves a fragment with no end, which isn't a line.
+    fn still_ours(&mut self) -> bool {
+        let Some(seen) = self.seen else {
+            return true;
+        };
+        let Ok(len) = std::fs::metadata(&self.path).map(|m| m.len()) else {
+            return true;
+        };
+        if len == seen.len {
+            return true;
+        }
+        match Shape::of(&self.path) {
+            Some(now) if now.lines == seen.lines => {
+                self.seen = Some(now);
+                true
+            }
+            Some(_) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    "the transcript was added to by another window or process since it was opened \
+                     here; not writing to it from here, so the two don't splice. Reopen the \
+                     conversation to carry on with both."
+                );
+                self.off = true;
+                false
+            }
+            None => true,
         }
     }
 
@@ -819,10 +887,16 @@ impl SessionLog {
     /// Writes one record to an open transcript: the line and its newline in
     /// one write, so a record never lands without the end that makes the next
     /// one a line of its own. Returns whether it landed.
+    ///
+    /// Keeps [`Self::seen`] up as it goes rather than reading the file back,
+    /// which would be the whole transcript on every message.
     fn append(&mut self, file: &mut std::fs::File, record: &Record) -> bool {
+        let before = self.seen.take();
+        let mut ended = false;
         let written = self
             .end_torn_line(file)
-            .and_then(|()| {
+            .and_then(|torn| {
+                ended = torn;
                 serde_json::to_vec(record)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             })
@@ -831,7 +905,16 @@ impl SessionLog {
                 file.write_all(&line)
             });
         match written {
-            Ok(()) => true,
+            Ok(()) => {
+                self.seen = match (before, file.metadata()) {
+                    (Some(before), Ok(meta)) => Some(Shape {
+                        len: meta.len(),
+                        lines: before.lines + 1 + u64::from(ended),
+                    }),
+                    _ => Shape::of(&self.path),
+                };
+                true
+            }
             Err(e) => {
                 self.tail_unchecked = true;
                 self.warn(&e);
@@ -843,14 +926,17 @@ impl SessionLog {
     /// Ends a line a killed process or a full disk left unfinished, so the next
     /// record gets a line of its own. Glued onto the fragment, that record would
     /// be unreadable too. The fragment stays what it was, a line `load` drops.
-    fn end_torn_line(&mut self, file: &mut std::fs::File) -> std::io::Result<()> {
+    /// Says whether it had to.
+    fn end_torn_line(&mut self, file: &mut std::fs::File) -> std::io::Result<bool> {
+        let mut ended = false;
         if self.tail_unchecked {
             if ends_mid_line(&self.path) {
                 file.write_all(b"\n")?;
+                ended = true;
             }
             self.tail_unchecked = false;
         }
-        Ok(())
+        Ok(ended)
     }
 
     fn warn(&mut self, error: &std::io::Error) {
@@ -862,6 +948,24 @@ impl SessionLog {
             );
             self.warned = true;
         }
+    }
+}
+
+/// A transcript's length and how many lines it has, for telling a file this
+/// log wrote from one somebody else wrote to as well.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shape {
+    len: u64,
+    lines: u64,
+}
+
+impl Shape {
+    fn of(path: &Path) -> Option<Self> {
+        let bytes = std::fs::read(path).ok()?;
+        Some(Self {
+            len: bytes.len() as u64,
+            lines: bytes.iter().filter(|b| **b == b'\n').count() as u64,
+        })
     }
 }
 
@@ -2547,6 +2651,74 @@ mod tests {
         resumed.record(&session);
 
         assert_eq!(load("resume1").unwrap().session.messages.len(), 5);
+    }
+
+    #[test]
+    fn two_writers_on_one_conversation_do_not_splice_it() {
+        // The app has a conversation open and the CLI resumes it: both start
+        // from the same transcript, and each appends from where it loaded.
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let session = session_with("both1", &["one"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        let loaded = load("both1").unwrap();
+        let mut app = SessionLog::resume(&loaded);
+        let mut cli = SessionLog::resume(&loaded);
+        let (mut in_app, mut in_cli) = (loaded.session.clone(), loaded.session);
+
+        in_cli.push(Message::user("from the cli"));
+        cli.record(&in_cli);
+        // The app's next round finds lines it didn't write, and leaves them.
+        in_app.push(Message::user("from the app"));
+        app.record(&in_app);
+        in_app.push(Message::user("and again"));
+        app.record(&in_app);
+
+        let texts: Vec<String> = load("both1")
+            .unwrap()
+            .session
+            .messages
+            .iter()
+            .map(|m| m.text())
+            .collect();
+        assert_eq!(
+            texts.last().map(String::as_str),
+            Some("from the cli"),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("from the app")),
+            "{texts:?}"
+        );
+
+        // The writer that got there first carries on.
+        in_cli.push(Message::user("still the cli"));
+        cli.record(&in_cli);
+        let last = load("both1")
+            .unwrap()
+            .session
+            .messages
+            .last()
+            .unwrap()
+            .text();
+        assert_eq!(last, "still the cli");
+    }
+
+    #[test]
+    fn a_rename_between_rounds_is_not_another_writer() {
+        let _home = isolated_home();
+        let workspace = Path::new("/tmp/project");
+        let mut session = session_with("named1", &["one"]);
+        let mut log = SessionLog::create(&session, workspace, None);
+        log.record(&session);
+
+        rename("named1", Some("A much longer title than before")).unwrap();
+        session.push(Message::user("two"));
+        log.record(&session);
+        let loaded = load("named1").unwrap();
+        assert_eq!(loaded.session.messages.last().unwrap().text(), "two");
     }
 
     #[test]
