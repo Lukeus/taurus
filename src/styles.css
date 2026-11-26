@@ -3304,6 +3304,10 @@ body.resizing-y iframe {
   background: color-mix(in srgb, var(--danger) 12%, var(--bg));
   color: var(--danger);
 }
+.banner.info {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  color: var(--text);
+}
 /* A slow pulse and nothing else. The motion spec is explicit that an error
    does not shake and does not flash: a banner that flinches is one the reader
    learns to stop reading. This is here so an error arriving while somebody is

@@ -13,6 +13,7 @@ import { Problem } from "../Problem";
 import * as api from "../../lib/api";
 import { ApiKeyField } from "./ApiKeyField";
 import { Field, blank } from "./Field";
+import { useArmed } from "../../lib/armed";
 
 /**
  * The settings a save came back with, keeping anything typed since it was sent.
@@ -301,6 +302,9 @@ export function CodeSearch({
   // else on this tab needs them, and the ask goes to disk.
   const [catalog, setCatalog] = useState<EmbeddingModels | null>(null);
   const [download, setDownload] = useState<EmbeddingDownload | null>(null);
+  // Two presses: a deleted model is a download of hundreds of megabytes to
+  // get back.
+  const { armed: deleting, arm: armDelete, disarm: keepModel } = useArmed<string>();
   const loadCatalog = () =>
     api
       .embeddingModels()
@@ -485,9 +489,25 @@ export function CodeSearch({
           {chosen?.installed && (
             <div className="index-actions flex items-center gap-3">
               <span className="hint">Downloaded, in {catalog.folder}.</span>
-              <button disabled={building} onClick={() => void remove(chosen.id)}>
-                Delete
-              </button>
+              {deleting === chosen.id ? (
+                <>
+                  <button
+                    className="danger"
+                    disabled={building}
+                    onClick={() => {
+                      keepModel();
+                      void remove(chosen.id);
+                    }}
+                  >
+                    Delete the download
+                  </button>
+                  <button onClick={keepModel}>Keep it</button>
+                </>
+              ) : (
+                <button disabled={building} onClick={() => armDelete(chosen.id)}>
+                  Delete
+                </button>
+              )}
             </div>
           )}
         </>

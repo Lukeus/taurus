@@ -137,7 +137,7 @@ export function WorkspaceSwitcher({
             ),
           )}
           {folders.length === 0 && (
-            <p className="palette-empty">Folders you open are listed here.</p>
+            <p className="palette-empty">Workspaces you open are listed here.</p>
           )}
         </div>
 

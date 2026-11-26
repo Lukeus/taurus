@@ -177,7 +177,13 @@ export function AgentsDrawer({
       )}
 
       {agents !== null && shown.length === 0 && (
-        <p className="drawer-empty">Nothing here.</p>
+        <p className="drawer-empty">
+          {filter === "all"
+            ? "No agents yet. Write one below, or Taurus will offer to when a delegate is worth keeping."
+            : filter === "builtin"
+              ? "No built-in agents are installed."
+              : "Nothing needs attention."}
+        </p>
       )}
 
       <ul className="card-list">

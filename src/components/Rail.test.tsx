@@ -64,9 +64,9 @@ describe("the panels, grouped", () => {
     // "Tools". A label that does not predict its contents is a label nobody
     // can decide to leave shut, so the fold stops being worth having.
     expect(groups(draw({ sessions: [] }))).toEqual([
-      "Agent",
+      "Library",
       "Connections",
-      "Activity",
+      "Usage",
     ]);
   });
 

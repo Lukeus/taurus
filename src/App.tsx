@@ -235,6 +235,8 @@ export default function App() {
       opening: s.opening,
       wrote: s.wrote,
       noteError: s.noteError,
+      noteNotice: s.noteNotice,
+      errorIsNotice: s.errorIsNotice,
       busy: s.busy,
       running: s.running,
       unattended: s.unattended,
@@ -871,7 +873,7 @@ export default function App() {
     await store.setWorkspace(chosen);
     const left = keptIn(from);
     if (left > 0 && from && useStore.getState().status?.workspace !== from) {
-      store.noteError(
+      store.noteNotice(
         `Your unsaved version of ${left === 1 ? "a file" : `${left} files`} is kept for when ${basename(from)} is open again, until this window closes.`,
       );
     }
@@ -956,6 +958,7 @@ export default function App() {
    * cannot run teaches that it does not exist, and one that says why teaches
    * what it needs.
    */
+  const hasData = store.datasets.length > 0;
   const actions = useMemo<Action[]>(
     () => [
       {
@@ -1034,10 +1037,33 @@ export default function App() {
       },
       {
         id: "workspace",
-        label: "Open another folder",
+        label: "Open another workspace…",
         group: "Do",
-        keywords: "workspace project directory switch",
+        keywords: "workspace folder project directory switch",
         run: () => void latest.current?.pickWorkspace(),
+      },
+      // The centre tabs, which the palette's list of panels left out.
+      {
+        id: "pane-conversation",
+        label: "Conversation",
+        group: "Panels",
+        keywords: "transcript chat messages",
+        run: () => setPane("conversation"),
+      },
+      {
+        id: "pane-notes",
+        label: "Notes",
+        group: "Panels",
+        keywords: "notebook markdown write project global",
+        run: () => setPane("notes"),
+      },
+      {
+        id: "pane-data",
+        label: "Data",
+        group: "Panels",
+        keywords: "dataset query sql table csv",
+        unavailable: hasData ? undefined : "No dataset in this conversation yet",
+        run: () => setPane("data"),
       },
       {
         id: "terminal",
@@ -1168,7 +1194,7 @@ export default function App() {
     // start a conversation against the model list as it stood before the
     // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked, railShut, toggleRail],
+    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked, railShut, toggleRail, hasData],
   );
 
   /**
@@ -1196,8 +1222,16 @@ export default function App() {
    * — which is what the effect above repaints from.
    */
   const chooseTheme = async (next: Theme) => {
+    const was = theme;
     applyTheme(next, custom);
-    await api.setTheme(next);
+    // Every caller fires and forgets, so a failed write looked applied and
+    // then reverted on the next status. Put the screen back and say so.
+    try {
+      await api.setTheme(next);
+    } catch (e) {
+      applyTheme(was ?? "system", custom);
+      store.noteError(`Could not save the theme: ${String(e)}`);
+    }
   };
   latest.current = { pickWorkspace, switchWorkspace, chooseTheme };
 
@@ -2069,13 +2103,19 @@ export default function App() {
             // An alert, like the conflict banner: the trust banner and the
             // composer's notices are announced, and this one, the banner that
             // reports failures, wasn't.
-            <div className="banner error" role="alert">
+            // A notice (something kept, not something failed) is a status
+            // in neutral colours: red for good news teaches the reader that
+            // red does not mean anything.
+            <div
+              className={`banner ${store.errorIsNotice ? "info" : "error"}`}
+              role={store.errorIsNotice ? "status" : "alert"}
+            >
               {/* A slow pulse on a dot, and nothing else. The motion spec is
                   explicit about this one: no shake, no flash — a banner that
                   flinches trains the reader to stop reading banners. The pulse
                   is there so an error that arrives while you are looking
                   somewhere else is catchable out of the corner of an eye. */}
-              <span className="banner-dot" />
+              {!store.errorIsNotice && <span className="banner-dot" />}
               {store.error}
               <div className="spacer" />
               <button onClick={store.dismissError}>Dismiss</button>
