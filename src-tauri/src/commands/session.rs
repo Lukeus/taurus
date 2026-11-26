@@ -756,7 +756,7 @@ pub async fn attach_session(
         });
     };
 
-    let dropped = live.attach(on_event).await;
+    let dropped = live.replace_views(on_event).await;
     info!(session = %session_id, dropped, "attached to a running turn");
     Ok(Attached {
         turn: Some(live.as_ref().into()),

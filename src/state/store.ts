@@ -2902,6 +2902,27 @@ export type PlanView = Extract<TranscriptView, { type: "plan" }>;
  * exactly what a pinned panel is for.
  */
 export function pinnedPlan(entries: Entry[]): PlanView | null {
+  return cached(PINNED, entries, findPinnedPlan);
+}
+
+/**
+ * Answers worked out once per transcript, keyed on the array itself.
+ *
+ * The pinned panel's selectors run on every store write, not only on writes
+ * that touch the transcript — a status push, a session listing, a file opened
+ * — and each one walked every entry of the conversation. The reducer never
+ * edits `entries` in place, so the same array is the same answer.
+ */
+function cached<T>(cache: WeakMap<Entry[], T>, entries: Entry[], find: (entries: Entry[]) => T): T {
+  if (cache.has(entries)) return cache.get(entries) as T;
+  const found = find(entries);
+  cache.set(entries, found);
+  return found;
+}
+const PINNED = new WeakMap<Entry[], PlanView | null>();
+const YOURS = new WeakMap<Entry[], string[]>();
+
+function findPinnedPlan(entries: Entry[]): PlanView | null {
   let plan: PlanView | null = null;
   let at = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -2942,6 +2963,10 @@ function planOf(entry: Entry): PlanView | undefined {
  * of reusing the exact wording.
  */
 export function yourSteps(entries: Entry[]): string[] {
+  return cached(YOURS, entries, findYourSteps);
+}
+
+function findYourSteps(entries: Entry[]): string[] {
   const plan = pinnedPlan(entries);
   if (!plan) return [];
   const yours = new Set<string>();
@@ -3283,6 +3308,11 @@ export function reduce(entries: Entry[], event: UiEvent): Entry[] {
         ...e,
         status: event.ok ? "ok" : "error",
         output: event.output,
+        // Its progress lines were what it said while running. Once there is a
+        // result the row shows that instead, so they would only be held — up
+        // to two hundred batches of a build's output per call, for the life of
+        // the conversation.
+        steps: event.output ? [] : e.steps,
         images: event.images?.length ? event.images : undefined,
         // A refused call leaves nothing behind. The view went out before
         // the call ran, so a chart whose series did not line up is on
@@ -3456,6 +3486,19 @@ export function foldEvents(events: UiEvent[], entries: Entry[]): Entry[] {
   let out = entries;
   for (let i = 0; i < events.length; i++) {
     const event = events[i];
+    // A run of deltas of one kind is one delta. Each folded on its own copied
+    // the whole conversation once per piece — the reducer's one cost that is
+    // conversation length times token rate — and a batch is often dozens of
+    // pieces of the same sentence. Concatenated first, it's one copy a batch.
+    if (event.type === "text_delta" || event.type === "thinking_delta") {
+      let text = event.text;
+      while (i + 1 < events.length && events[i + 1].type === event.type) {
+        text += (events[i + 1] as typeof event).text;
+        i += 1;
+      }
+      out = reduce(out, { ...event, text });
+      continue;
+    }
     if (event.type !== "tool_progress") {
       out = reduce(out, event);
       continue;
