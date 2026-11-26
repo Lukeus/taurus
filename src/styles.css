@@ -1317,6 +1317,18 @@ body.resizing-y iframe {
 .run-row {
   display: flex;
   flex-direction: column;
+  /*
+   * The same windowing `.turn` has, one level down, for the one turn it can't
+   * help: the one running. A long task is a single turn, it is on screen, and
+   * so none of it was ever skipped — every row of a two-hundred-call run, and
+   * every command's output in it, was laid out again on each streamed frame,
+   * when the transcript re-pins its scroll. Off-screen rows now sit that out.
+   * The run clips its overflow already, and row focus rings are drawn inset,
+   * so the paint containment this brings cuts nothing off. 34px is a closed
+   * row's height; `auto` remembers a row's real one once it has been seen.
+   */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 34px;
 }
 /* Steps that changed the workspace are tinted; reads are not. */
 .run-row.wrote {

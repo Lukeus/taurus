@@ -152,6 +152,27 @@ impl Live {
     /// avoiding here.
     pub async fn attach(&self, view: Channel<UiEvent>) -> usize {
         let mut fan = self.fan.lock().await;
+        Self::add(&mut fan, view)
+    }
+
+    /// Makes `view` the only one: the window coming back to a turn it was
+    /// already watching.
+    ///
+    /// There is one window, and it watches a turn through one view at a time.
+    /// Opening the conversation again hands over a new channel, and the old
+    /// ones — the send's own, or an earlier visit's — are ones the window has
+    /// stopped reading but that don't refuse a send, so `publish` never drops
+    /// them. Added rather than replaced, each visit during a long turn put one
+    /// more full copy of every event over IPC for the rest of it, each run
+    /// through a handler only to be thrown away. Under one lock with the
+    /// catch-up, so no event falls between letting go and taking hold.
+    pub async fn replace_views(&self, view: Channel<UiEvent>) -> usize {
+        let mut fan = self.fan.lock().await;
+        fan.views.clear();
+        Self::add(&mut fan, view)
+    }
+
+    fn add(fan: &mut Fan, view: Channel<UiEvent>) -> usize {
         // The round first, then the delegates: a card drawn by this round has
         // to exist before what's said about its delegate lands on it.
         for event in fan.replay.events.iter().chain(&fan.agents.events) {
@@ -356,6 +377,29 @@ mod tests {
 
         assert_eq!(one.seen(), 1);
         assert_eq!(two.seen(), 1);
+    }
+
+    /// Coming back to a running turn replaces the window's view rather than
+    /// adding one: the old channel still accepts sends, and a long turn
+    /// visited five times was sending every event six times.
+    #[tokio::test]
+    async fn coming_back_replaces_the_view_it_came_back_from() {
+        let live = Live::new();
+        let first = View::default();
+        let again = View::default();
+        live.attach(first.open()).await;
+        live.publish(text("before")).await;
+
+        live.replace_views(again.open()).await;
+        live.publish(text("after")).await;
+
+        assert_eq!(
+            first.seen(),
+            1,
+            "the old view hears nothing after it is replaced"
+        );
+        assert_eq!(again.seen(), 2, "caught up on the round, then the rest");
+        assert_eq!(live.fan.lock().await.views.len(), 1);
     }
 
     /// The whole point of the module. A window that has gone away used to stop
