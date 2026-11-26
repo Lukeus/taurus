@@ -165,7 +165,8 @@ pub struct AgentConfig {
     /// genuinely different candidates from tripping it — as does a failure that
     /// says nothing about the call it came from, since a model told "the user
     /// denied that" three times has been told nothing about the three calls.
-    /// See [`FailedCall::repeats`].
+    /// See [`FailedCall::repeats`]. Zero turns it off, rather than stopping
+    /// every round that failed at all.
     pub stall_limit: u32,
     /// Whether a trace may carry the conversation itself, not only its shape.
     ///
@@ -448,10 +449,96 @@ fn without_images(messages: &[Message]) -> Vec<Message> {
         .collect()
 }
 
+/// The history with every tool call and result written out as text, for a
+/// request that offers no tools.
+///
+/// Anthropic refuses a history holding `tool_use` or `tool_result` blocks
+/// when the request defines no tools, so the summary's fallback, sent without
+/// them, failed on exactly the backend whose first attempt had sent it there.
+/// What each call was and what it said survive as prose, which is all a
+/// summary needs of them.
+fn as_prose(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .map(|message| Message {
+            role: message.role,
+            content: message
+                .content
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        ContentBlock::text(format!("[called `{name}` with {input}]"))
+                    }
+                    ContentBlock::ToolResult {
+                        content, is_error, ..
+                    } => ContentBlock::text(format!(
+                        "[{}]\n{}",
+                        if *is_error {
+                            "the call failed"
+                        } else {
+                            "what it returned"
+                        },
+                        content.to_text()
+                    )),
+                    other => other.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The part of `older` a summary request can carry within `room`, newest
+/// kept, with a line in front saying how much was left out.
+///
+/// The summary is asked over the same window the conversation is too big
+/// for, and it was asked over all of `older`, however large. A conversation
+/// reopened after several compactions (the transcript keeps everything, and
+/// the estimate starts uncalibrated) had more history than fit, so the
+/// summary request overflowed, the turn's request overflowed after it, and
+/// every turn after that did the same. Leaving the oldest part out of the
+/// summary loses it; the alternative was losing the conversation.
+///
+/// Cut where a message starts a new exchange rather than at a tool result,
+/// which would answer a call the request no longer carries.
+fn fits_to_summarize(session: &Session, older: &[Message], room: u32) -> Vec<Message> {
+    // A tenth held back for the ask itself and its answer.
+    let room = room - room / 10;
+    let mut spent = 0u32;
+    let mut start = older.len();
+    for (at, message) in older.iter().enumerate().rev() {
+        let cost = session.calibrated(crate::session::estimate_message(message));
+        if spent.saturating_add(cost) > room && start < older.len() {
+            break;
+        }
+        spent = spent.saturating_add(cost);
+        start = at;
+    }
+    while start < older.len()
+        && older[start]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    {
+        start += 1;
+    }
+    if start == 0 {
+        return older.to_vec();
+    }
+    warn!(
+        left_out = start,
+        "the history to summarize is bigger than the window; summarizing the newest part"
+    );
+    let mut kept = vec![Message::user(format!(
+        "[The {start} oldest messages of this conversation are left out of what follows: \
+         together they were more than one request could hold.]"
+    ))];
+    kept.extend_from_slice(&older[start..]);
+    kept
+}
+
 /// What stands in for a picture the current model cannot read.
 const IMAGE_OMITTED: &str = "[an image was attached here; this model cannot read images]";
 
-/// What a call that Stop arrived before is answered with.
 /// The answer to a call the reply's output limit cut off. See
 /// [`Agent::execute_one`].
 const CUT_OFF_CALL: &str = "This call was cut off: your reply reached its output limit while you \
@@ -459,6 +546,7 @@ const CUT_OFF_CALL: &str = "This call was cut off: your reply reached its output
      (write_file for the first part, then edit_file to add the rest), or split the work into \
      several calls.";
 
+/// What a call that Stop arrived before is answered with.
 const CANCELED_BEFORE_IT_RAN: &str =
     "Not run: the user pressed Stop before this call was carried out.";
 
@@ -556,6 +644,9 @@ pub struct Agent {
     /// and the nudges about unverified writes and open steps give way to one
     /// about a missing plan. See [`Agent::with_planning`].
     planning: bool,
+    /// What a reply that failed partway had already put on screen, held for
+    /// the turn to write down. See [`Agent::keep_cut_off`].
+    cut_off: std::sync::Mutex<Option<Message>>,
 }
 
 /// What a completed turn produced.
@@ -582,6 +673,7 @@ impl Agent {
             recorder: None,
             overhead: std::sync::OnceLock::new(),
             planning: false,
+            cut_off: std::sync::Mutex::new(None),
         }
     }
 
@@ -773,7 +865,8 @@ impl Agent {
                 .await
                 .is_err()
             {
-                warn!("background work did not stop in time; the turn ends without it");
+                warn!("background work did not stop in time; ending it");
+                pending.abort_all();
             }
         }
         // Whatever a delegate stopped above managed to spend before it went.
@@ -975,9 +1068,30 @@ impl Agent {
                 // so a resumed session has the context.
                 session.push(Message::user(format!(
                     "Stopped after {} tool round trips without finishing. Summarize what you \
-                     learned and what remains.",
+                     learned and what remains, in text: no more tool calls.",
                     self.config.max_iterations
                 )));
+                // And asked once more, so the request is answered. It used to
+                // be left for nobody, and the person saw only that the turn
+                // had stopped. With the tools still offered, so the cached
+                // prefix holds and a history of calls is one this request may
+                // carry; a call made anyway is dropped and its text kept.
+                let caps = self.provider.capabilities(&session.model).await.ok();
+                let request = self.build_request(
+                    session,
+                    caps.as_ref().is_none_or(|caps| caps.vision),
+                    caps.map(|caps| self.working_window(caps.context_length)),
+                );
+                let mut asked = TokenUsage::default();
+                let wrapped = self.ask(request, &mut asked).await;
+                total.add(&asked);
+                session.add_usage(self.provider.id(), &session.model.clone(), asked);
+                if let Ok(text) = wrapped.map(|t| t.trim().to_string()) {
+                    if !text.is_empty() {
+                        let _ = ui.send(UiEvent::TextDelta { text: text.clone() }).await;
+                        session.push(Message::assistant(text));
+                    }
+                }
                 let _ = ui
                     .send(UiEvent::Error {
                         message: format!(
@@ -994,8 +1108,8 @@ impl Agent {
                 .await;
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
-            let (mut assistant, usage, stop) = match self.stream_once(session, &ui).await {
-                Ok(answer) => answer,
+            let answered = match self.stream_once(session, &ui).await {
+                Ok(answer) => Ok(answer),
                 // The estimate runs a request behind what the backend counts,
                 // and on a reopened conversation it starts uncalibrated, so a
                 // request can be sent that doesn't fit. Ending the turn there
@@ -1026,9 +1140,16 @@ impl Agent {
                             shrink,
                         )
                         .await;
-                    self.stream_once(session, &ui).await?
+                    self.stream_once(session, &ui).await
                 }
-                Err(error) => return Err(error),
+                Err(error) => Err(error),
+            };
+            let (mut assistant, usage, stop) = match answered {
+                Ok(answer) => answer,
+                Err(error) => {
+                    self.keep_cut_off(session, &error).await;
+                    return Err(error);
+                }
             };
             total.add(&usage);
             // Before the answer is pushed: what the provider counted is what
@@ -1262,7 +1383,7 @@ impl Agent {
             // leaves the rounds it did finish rather than nothing at all.
             self.persist(session).await;
 
-            if repeats >= self.config.stall_limit {
+            if self.config.stall_limit > 0 && repeats >= self.config.stall_limit {
                 // "The same failure", not "the same call": what is counted is a
                 // round arriving at an outcome it has already reached, which a
                 // reworded retry of one call does as surely as sending it
@@ -1536,6 +1657,24 @@ impl Agent {
         let stop = match joined {
             Ok(stop) => stop,
             Err(error) => {
+                // What reached the screen, held so the turn can write it down:
+                // never retried, it was otherwise in nobody's history but the
+                // person's. Text only, since a call that was being written
+                // when the stream died is neither whole nor answered.
+                if produced_output {
+                    let (message, _, _) = acc.finish();
+                    let text: Vec<ContentBlock> = message
+                        .content
+                        .into_iter()
+                        .filter(
+                            |b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()),
+                        )
+                        .collect();
+                    if !text.is_empty() {
+                        *self.cut_off.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(Message::new(Role::Assistant, text));
+                    }
+                }
                 // By type, not by message: `error.type` is meant to be
                 // something a dashboard can group by, and the message is
                 // already on the log event beside it.
@@ -1664,6 +1803,28 @@ impl Agent {
         // results, or a nudge — and a second one beside it is a shape some of
         // these APIs reject outright.
         append_to_tail(messages, plan)
+    }
+
+    /// Writes down what a failed reply had already shown, marked as cut off.
+    ///
+    /// The person read it, so the model should know it said it, and the
+    /// transcript should hold what was on screen. And the history then ends
+    /// on the model's turn rather than the person's, so the next message
+    /// isn't a second user message in a row.
+    async fn keep_cut_off(&self, session: &mut Session, error: &AgentError) {
+        let Some(mut message) = self
+            .cut_off
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        else {
+            return;
+        };
+        message.content.push(ContentBlock::text(format!(
+            "[This answer was cut off here: {error}]"
+        )));
+        session.push(message);
+        self.persist(session).await;
     }
 
     /// Executes every tool call in an assistant message and returns the results
@@ -2325,7 +2486,11 @@ impl Agent {
         }
 
         info!(drop_count, "compacting session history");
-        let older: Vec<Message> = session.messages[..drop_count].to_vec();
+        let older = fits_to_summarize(
+            session,
+            &session.messages[..drop_count],
+            budget.saturating_sub(overhead),
+        );
         let mut asked = TokenUsage::default();
         let summary = self
             .summarize(&session.model, &session.id, older, &mut asked)
@@ -2439,12 +2604,26 @@ impl Agent {
             messages = messages.len(),
             "handing the turn to a fresh context"
         );
+        // Asked over what fits, for the reason the summary is: a handover is
+        // due exactly when the history no longer fits one request, and the
+        // notes were asked over all of it. Failing, they cost two requests
+        // and the leg went out without them.
+        let room = match self.provider.capabilities(&session.model).await {
+            Ok(caps) => {
+                let window = self.working_window(caps.context_length);
+                window
+                    .saturating_sub(self.reply_reserve(window))
+                    .saturating_sub(self.request_overhead())
+            }
+            Err(_) => u32::MAX,
+        };
+        let asked_over = fits_to_summarize(session, &messages, room);
         let mut asked = TokenUsage::default();
         let notes = self
             .ask_for_json(
                 &session.model,
                 &session.id,
-                messages.clone(),
+                asked_over,
                 Ask {
                     system: crate::relay::NOTES_SYSTEM,
                     instruction: "Write those notes now, as described above.",
@@ -2605,6 +2784,14 @@ impl Agent {
             }
         }
 
+        // No tools offered, so none in the history either, and no pictures
+        // for a model that can't see them: this is the only path a
+        // prompted-tools model has, and many of those are local and can't.
+        let messages = if caps.is_none_or(|caps| caps.vision) {
+            as_prose(&messages)
+        } else {
+            as_prose(&without_images(&messages))
+        };
         let mut request = ChatRequest::new(model, messages).with_response_schema(schema);
         request.system = Some(system.into());
         request.messages.push(Message::user(instruction));
@@ -2711,7 +2898,7 @@ fn summary_schema() -> serde_json::Value {
 /// the summary — the constraint is an improvement on this path and never a
 /// requirement of it. See [`taurus_provider::ChatRequest::response_schema`].
 fn render_summary(text: &str) -> String {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(crate::relay::unfenced(text)) else {
         return text.to_string();
     };
     let Some(object) = parsed.as_object() else {
@@ -2998,6 +3185,83 @@ mod tests {
         );
         assert!(rendered.contains("Still outstanding:"), "{rendered}");
         assert!(rendered.contains("check the work"), "{rendered}");
+    }
+
+    #[test]
+    fn a_history_too_big_to_summarize_keeps_its_newest_part() {
+        let session = Session::new("m");
+        let mut older = Vec::new();
+        for i in 0..20 {
+            older.push(Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    format!("c{i}"),
+                    "read_file",
+                    serde_json::json!({}),
+                )],
+            ));
+            older.push(Message::new(
+                Role::User,
+                vec![ContentBlock::tool_result(
+                    format!("c{i}"),
+                    "x".repeat(4_000),
+                )],
+            ));
+        }
+        let kept = fits_to_summarize(&session, &older, 5_000);
+        assert!(kept.len() < older.len());
+        assert!(kept[0].text().contains("left out"), "{}", kept[0].text());
+        // Never a result whose call was cut away.
+        assert!(!kept[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. })));
+        assert_eq!(kept.last(), older.last());
+
+        // What fits is sent whole.
+        assert_eq!(fits_to_summarize(&session, &older[..2], 5_000), older[..2]);
+    }
+
+    #[test]
+    fn calls_and_results_become_prose_for_a_request_with_no_tools() {
+        let history = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    "c1",
+                    "run_command",
+                    serde_json::json!({"command": "cargo test"}),
+                )],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::tool_result("c1", "Exit code 101")],
+            ),
+        ];
+        let prose = as_prose(&history);
+        let text: String = prose.iter().map(Message::text).collect();
+        assert!(
+            text.contains("run_command") && text.contains("cargo test"),
+            "{text}"
+        );
+        assert!(text.contains("Exit code 101"), "{text}");
+        assert!(!prose.iter().flat_map(|m| &m.content).any(|b| matches!(
+            b,
+            ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+        )));
+    }
+
+    #[test]
+    fn json_in_a_code_fence_is_still_read() {
+        let fenced = "```json\n{\"goal\": \"ship it\", \"done\": [], \"outstanding\": []}\n```";
+        assert!(render_summary(fenced).contains("ship it"));
+        assert!(
+            !render_summary(fenced).contains("```"),
+            "{}",
+            render_summary(fenced)
+        );
+        assert_eq!(crate::relay::unfenced("```\n{}\n```"), "{}");
+        assert_eq!(crate::relay::unfenced("plain"), "plain");
     }
 
     #[test]

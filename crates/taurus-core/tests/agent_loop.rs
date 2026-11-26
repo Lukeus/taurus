@@ -416,6 +416,21 @@ async fn several_tool_calls_return_results_in_the_order_they_were_requested() {
 }
 
 #[tokio::test]
+async fn an_answer_that_failed_partway_is_kept_as_it_was_shown() {
+    let h = harness(vec![ScriptedTurn::transient_failure_after_text(
+        "The answer is",
+    )]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "what is it").await;
+    assert!(outcome.is_err(), "{outcome:?}");
+    let last = session.messages.last().expect("nothing kept");
+    assert_eq!(last.role, Role::Assistant);
+    let text = last.text();
+    assert!(text.contains("The answer is"), "{text}");
+    assert!(text.contains("cut off"), "{text}");
+}
+
+#[tokio::test]
 async fn a_read_listed_after_a_write_reads_what_was_written() {
     let h = harness(vec![
         ScriptedTurn::tool_calls(vec![
@@ -546,10 +561,13 @@ async fn an_unparseable_prompted_call_gets_syntax_guidance_not_a_missing_tool_er
 
 #[tokio::test]
 async fn the_iteration_ceiling_stops_a_model_stuck_in_a_tool_loop() {
-    // Every scripted turn calls a tool, so only the ceiling can end this.
-    let turns = (0..30)
+    // Every round calls a tool, so only the ceiling can end this.
+    let mut turns: Vec<ScriptedTurn> = (0..4)
         .map(|_| ScriptedTurn::tool_call("t", "list_dir", serde_json::json!({})))
         .collect();
+    turns.push(ScriptedTurn::text(
+        "Listed it four times; the config is still unread.",
+    ));
     let config = AgentConfig {
         max_iterations: 4,
         ..Default::default()
@@ -559,8 +577,12 @@ async fn the_iteration_ceiling_stops_a_model_stuck_in_a_tool_loop() {
     let (outcome, events) = run(&h, &mut session, "spin").await;
 
     assert!(matches!(outcome, Err(AgentError::IterationLimit(4))));
-    assert_eq!(h.provider.request_count().await, 4);
+    // Four rounds, then the one that answers the harness's request to sum up.
+    assert_eq!(h.provider.request_count().await, 5);
     assert!(events.iter().any(|e| matches!(e, UiEvent::Error { .. })));
+    let last = session.messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert!(last.text().contains("still unread"), "{}", last.text());
 }
 
 #[tokio::test]
@@ -602,7 +624,8 @@ async fn a_turn_out_of_rounds_can_be_continued_until_the_request_is_out_of_turns
     let (tx, _rx) = mpsc::channel(256);
     let again = h.agent.continue_turn(&mut session, tx).await;
     assert!(matches!(again, Err(AgentError::IterationLimit(2))));
-    assert_eq!(h.provider.request_count().await, 4);
+    // Two rounds and a summing up, each time.
+    assert_eq!(h.provider.request_count().await, 6);
     assert!(session
         .messages
         .iter()
@@ -619,7 +642,7 @@ async fn a_turn_out_of_rounds_can_be_continued_until_the_request_is_out_of_turns
     assert!(matches!(spent, Err(AgentError::Refused(_))), "{spent:?}");
     assert_eq!(
         h.provider.request_count().await,
-        6,
+        9,
         "a refusal asks nothing"
     );
 
@@ -3675,6 +3698,41 @@ async fn a_request_still_too_long_after_compacting_ends_the_turn() {
     assert!(
         matches!(&outcome, Err(AgentError::Provider(e)) if e.is_context_overflow()),
         "tried once, and then the backend's own words: {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_summary_asked_again_without_tools_carries_no_tool_blocks() {
+    // The summarizer answered with a call instead of the JSON, so it is asked
+    // again with no tools offered. A history that still held `tool_use` and
+    // `tool_result` blocks was refused by Anthropic for exactly that.
+    let h = harness_with(
+        vec![
+            ScriptedTurn::tool_call("x", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("SUMMARY"),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        8_000,
+    );
+    let mut session = full_history();
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::Compacted { .. })));
+
+    let seen = h.provider.seen.lock().await;
+    let again = &seen[1];
+    assert!(again.tools.is_empty());
+    let blocks: Vec<&ContentBlock> = again.messages.iter().flat_map(|m| &m.content).collect();
+    assert!(
+        !blocks.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+        )),
+        "{blocks:?}"
     );
 }
 

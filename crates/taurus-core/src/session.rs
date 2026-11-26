@@ -80,9 +80,9 @@ pub const CONTINUE_PROMPT: &str =
 
 /// What continuing a turn that ran out of round trips says.
 ///
-/// It follows the harness's own request to summarize, which nothing answered,
-/// so it says that request is withdrawn rather than leaving the model to
-/// guess which of two instructions in a row is the one in force.
+/// It follows the harness's own request to summarize, and the summary the
+/// model gave, so it says that request is withdrawn rather than leaving the
+/// model to guess whether it is still meant to be wrapping up.
 pub const CEILING_CONTINUE_PROMPT: &str = "You've been given more tool round trips, so don't \
      summarize yet. Continue the task from where you left off.";
 

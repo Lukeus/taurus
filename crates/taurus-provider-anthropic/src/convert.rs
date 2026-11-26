@@ -567,9 +567,13 @@ mod tests {
 /// the model still reads it as JSON, which is what the tool meant by it.
 fn tool_result_content(output: &taurus_provider::ToolOutput) -> Value {
     use taurus_provider::ToolResultBlock;
-    let blocks: Vec<Value> = output
+    // Without empty text, which this API refuses inside a result as it does
+    // anywhere else. An MCP server answering `{"type":"text","text":""}` put
+    // one in the history, and every request after it failed.
+    let mut blocks: Vec<Value> = output
         .as_slice()
         .iter()
+        .filter(|block| !matches!(block, ToolResultBlock::Text { text } if text.trim().is_empty()))
         .map(|block| match block {
             ToolResultBlock::Text { text } => json!({"type": "text", "text": text}),
             ToolResultBlock::Json { value } => {
@@ -585,6 +589,9 @@ fn tool_result_content(output: &taurus_provider::ToolOutput) -> Value {
             }),
         })
         .collect();
+    if blocks.is_empty() {
+        blocks.push(json!({"type": "text", "text": "(no output)"}));
+    }
     Value::Array(blocks)
 }
 
@@ -592,6 +599,28 @@ fn tool_result_content(output: &taurus_provider::ToolOutput) -> Value {
 mod image_tests {
     use super::*;
     use taurus_provider::{ChatRequest, ContentBlock, Message, Role};
+
+    #[test]
+    fn an_empty_text_in_a_result_is_left_out() {
+        use taurus_provider::{ToolOutput, ToolResultBlock};
+        let only_empty = ToolOutput::blocks(vec![ToolResultBlock::Text {
+            text: String::new(),
+        }])
+        .unwrap();
+        assert_eq!(
+            tool_result_content(&only_empty),
+            json!([{"type": "text", "text": "(no output)"}])
+        );
+        let mixed = ToolOutput::blocks(vec![
+            ToolResultBlock::Text { text: " ".into() },
+            ToolResultBlock::Text { text: "ok".into() },
+        ])
+        .unwrap();
+        assert_eq!(
+            tool_result_content(&mixed),
+            json!([{"type": "text", "text": "ok"}])
+        );
+    }
 
     #[test]
     fn a_tool_that_returned_a_picture_sends_it_inside_the_result() {
@@ -694,9 +723,11 @@ mod image_tests {
             std::hint::black_box(request.messages.clone());
         });
         time("build the wire body    ", &mut || {
-            std::hint::black_box(crate::wire::MessagesBody::from_request(&request, None));
+            std::hint::black_box(crate::wire::MessagesBody::from_request(
+                &request, None, None,
+            ));
         });
-        let body = crate::wire::MessagesBody::from_request(&request, None);
+        let body = crate::wire::MessagesBody::from_request(&request, None, None);
         time("serialize the wire body", &mut || {
             std::hint::black_box(serde_json::to_vec(&body).unwrap());
         });

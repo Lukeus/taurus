@@ -549,6 +549,9 @@ impl OpenAiProvider {
         }
 
         let mut body = ChatBody::from_request(&request);
+        if is_openai_itself(&self.base_url) {
+            body = body.for_openai_itself();
+        }
         body.reasoning_effort = self.reasoning_effort.clone();
         body.prompt_cache_key = self.cache_key(&request);
         let response = tokio::select! {

@@ -1043,7 +1043,10 @@ an explanation, not a conversation that just stops:
 
 - **The iteration ceiling**: twenty-five model/tool round trips by default.
   It's a ceiling, not a budget shown to the model, because a limit the model
-  can see is one it can argue with.
+  can see is one it can argue with. When it's reached, the model is asked
+  once more, without running anything, to say what it learned and what's
+  left, so the turn ends on its account of where things stand rather than
+  on a bare notice. That one costs a request.
 
   Set it in **Settings → Behavior → Round trips per message**, or as `max_iterations` in
   `settings.json`, between 1 and 200. Raise it for long refactors that need

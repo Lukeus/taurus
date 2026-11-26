@@ -754,7 +754,13 @@ impl Worktrees {
         });
 
         let scratch = self.scratch_of(&run);
-        std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+        // Closed on the way out, as the check above is: by here the run is
+        // held, saved as running and has a worktree, and returning without
+        // closing it left all three until the next start's tidy.
+        if let Err(e) = std::fs::create_dir_all(&scratch) {
+            let _ = self.close(&run).await;
+            return Err(format!("{}: {e}", scratch.display()));
+        }
         Ok(Opened {
             run,
             root,

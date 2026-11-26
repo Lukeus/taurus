@@ -155,6 +155,19 @@ the backlog, and they're the minority.
   agent drafts, embeddings, and reranking aren't in any transcript, so they
   aren't in any total. A delegate still running when its turn is stopped
   counts only what it spent before the turn stops waiting for it.
+- **Tool output is capped per call, not per round.** Each call's answer is
+  held to a share of the window, with a floor so a small window still gets a
+  useful answer. Six reads side by side on an 8k model can each sit at the
+  floor, and a round's own results are the one part compaction can't cut, so
+  the turn reports a window too small for its latest results. Splitting the
+  share across the round's calls doesn't get under the floors; a second pass
+  that shortens the largest results once a round passes its share would.
+- **A harness notice can follow a user message.** The stall notice and the
+  check asked for after `finish` go in as messages of their own after a round
+  of results, so two user messages can sit side by side. Every hosted API
+  here accepts that and joins them; a strict chat template on a local model
+  might not. Appending each notice to the message before it, as the plan
+  reminder is, would close it.
 - **Every enabled tool goes out with every request.** Nothing filters tools by
   relevance or loads them on demand, and an MCP server's tools are sent whole
   unless **Compact schemas** is on in the MCP panel, which keeps their shape

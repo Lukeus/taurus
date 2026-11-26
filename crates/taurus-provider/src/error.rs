@@ -117,7 +117,16 @@ impl ProviderError {
             // reached the screen, so a stream that went quiet half-way through
             // an answer surfaces rather than starting over.
             Self::Unreachable { .. } | Self::Stalled { .. } | Self::Stream { .. } => true,
-            Self::Api { status, .. } => *status == 429 || *status >= 500,
+            // Not 501 or 505: a server that doesn't implement the route, or
+            // the protocol, says the same on every try. And not a 429 that
+            // is a spent account rather than a busy one (OpenAI's
+            // `insufficient_quota` comes with no Retry-After), which only
+            // cost the user every backoff before the same refusal.
+            Self::Api { status, body, .. } => match status {
+                429 => !out_of_quota(body),
+                501 | 505 => false,
+                s => *s >= 500,
+            },
             _ => false,
         }
     }
@@ -189,6 +198,18 @@ impl ProviderError {
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
+
+/// Whether a 429 is about the account's money rather than its pace.
+fn out_of_quota(body: &str) -> bool {
+    let body = body.to_lowercase();
+    [
+        "insufficient_quota",
+        "exceeded your current quota",
+        "billing",
+    ]
+    .iter()
+    .any(|said| body.contains(said))
+}
 
 /// A response body, as the sentence of it a person needs.
 ///
@@ -287,6 +308,36 @@ mod tests {
         assert!(error.is_transient());
         assert_eq!(error.kind(), "stream");
         assert!(error.to_string().contains("part-way"), "{error}");
+    }
+
+    #[test]
+    fn only_a_failure_that_could_pass_next_time_is_retried() {
+        let api = |status: u16, body: &str| ProviderError::Api {
+            provider: "p".into(),
+            status,
+            body: body.into(),
+            retry_after: None,
+        };
+        for retried in [
+            api(429, "rate limit"),
+            api(500, ""),
+            api(502, ""),
+            api(503, ""),
+            api(529, "overloaded"),
+        ] {
+            assert!(retried.is_transient(), "{retried}");
+        }
+        for not in [
+            api(501, "not implemented"),
+            api(505, ""),
+            api(
+                429,
+                "You exceeded your current quota, please check your plan and billing",
+            ),
+            api(429, r#"{"error":{"code":"insufficient_quota"}}"#),
+        ] {
+            assert!(!not.is_transient(), "{not}");
+        }
     }
 
     #[test]
