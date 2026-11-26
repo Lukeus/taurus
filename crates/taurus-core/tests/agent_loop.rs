@@ -416,6 +416,107 @@ async fn several_tool_calls_return_results_in_the_order_they_were_requested() {
 }
 
 #[tokio::test]
+async fn a_read_listed_after_a_write_reads_what_was_written() {
+    let h = harness(vec![
+        ScriptedTurn::tool_calls(vec![
+            ("r0", "read_file", serde_json::json!({"path": "a.txt"})),
+            (
+                "w",
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "after\n"}),
+            ),
+            ("r1", "read_file", serde_json::json!({"path": "a.txt"})),
+            ("r2", "grep", serde_json::json!({"pattern": "after"})),
+        ]),
+        ScriptedTurn::text("ok"),
+    ]);
+    std::fs::write(h.workspace.join("a.txt"), "before\n").unwrap();
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "write then confirm").await;
+    assert!(outcome.is_ok());
+
+    let text_of = |id: &str| {
+        session
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == id => Some(content.to_text()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no result for {id}"))
+    };
+    assert!(text_of("r0").contains("before"), "{}", text_of("r0"));
+    assert!(text_of("r1").contains("after"), "{}", text_of("r1"));
+    assert!(!text_of("r1").contains("before"), "{}", text_of("r1"));
+    assert!(text_of("r2").contains("a.txt"), "{}", text_of("r2"));
+    assert_eq!(results_in(&session), ["r0", "w", "r1", "r2"]);
+}
+
+#[tokio::test]
+async fn a_call_the_output_limit_cut_off_is_answered_not_run() {
+    let h = harness(vec![
+        ScriptedTurn {
+            events: vec![
+                StreamEvent::ToolUseStart {
+                    id: "whole".into(),
+                    name: "list_dir".into(),
+                },
+                StreamEvent::ToolUseInputDelta {
+                    id: "whole".into(),
+                    json: "{}".into(),
+                },
+                StreamEvent::ToolUseEnd { id: "whole".into() },
+                StreamEvent::ToolUseStart {
+                    id: "cut".into(),
+                    name: "write_file".into(),
+                },
+                StreamEvent::ToolUseInputDelta {
+                    id: "cut".into(),
+                    json: r#"{"path": "big.txt", "content": "aaaa"#.into(),
+                },
+                StreamEvent::ToolUseEnd { id: "cut".into() },
+            ],
+            stop: StopReason::MaxTokens,
+            failure: None,
+            stopped: false,
+        },
+        ScriptedTurn::text("ok"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "write a big file").await;
+    assert!(outcome.is_ok());
+
+    assert!(!h.workspace.join("big.txt").exists());
+    let result = |id: &str| {
+        session
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    ..
+                } if tool_use_id == id => Some((content.to_text(), *is_error)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no result for {id}"))
+    };
+    let (text, failed) = result("cut");
+    assert!(failed, "{text}");
+    assert!(text.contains("output limit"), "{text}");
+    // A call that finished before the limit is whole, and runs.
+    let (text, failed) = result("whole");
+    assert!(!failed, "{text}");
+}
+
+#[tokio::test]
 async fn an_unparseable_prompted_call_gets_syntax_guidance_not_a_missing_tool_error() {
     let h = harness(vec![
         ScriptedTurn::tool_call(
@@ -2304,11 +2405,10 @@ async fn writing_after_the_check_still_owes_a_check() {
 }
 
 #[tokio::test]
-async fn a_write_listed_before_a_check_that_ran_first_still_owes_a_check() {
-    // Later means in the order the calls ran. `check_command` only reads, so it
-    // runs with the round's other reads, ahead of every call that runs one at a
-    // time — and a write the message lists before it lands after it, with
-    // nothing run against it since.
+async fn a_check_listed_after_a_write_checks_it() {
+    // Calls run in the order the message gives them, so a `check_command`
+    // listed after a write reads a run that came after it, and nothing is
+    // owed.
     let (agent, provider, _workspace, _dir, _logs) = recorded(
         vec![
             ScriptedTurn::tool_calls(vec![
@@ -2328,6 +2428,35 @@ async fn a_write_listed_before_a_check_that_ran_first_still_owes_a_check() {
 
     let mut session = Session::new("fake");
     drive(&agent, &mut session, "write then check").await;
+
+    assert_eq!(
+        nudges(&provider.last_request().await.unwrap()),
+        0,
+        "a check that ran after the write was taken for none"
+    );
+}
+
+#[tokio::test]
+async fn a_check_listed_before_a_write_still_owes_one() {
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_calls(vec![
+                ("t1", "check_command", serde_json::json!({})),
+                (
+                    "t2",
+                    "write_file",
+                    serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+                ),
+            ]),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::tool_call("t3", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Checked."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "check then write").await;
 
     assert_eq!(
         nudges(&provider.last_request().await.unwrap()),
@@ -3394,6 +3523,70 @@ async fn repeating_itself_in_an_empty_window_is_not_a_reason_to_hand_over() {
     assert!(
         !events.iter().any(|e| matches!(e, UiEvent::Relayed { .. })),
         "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_the_backend_says_is_too_long_is_compacted_and_sent_again() {
+    // The estimate says it fits a 64,000-token window, and the backend counts
+    // more than that: the case a reopened, uncalibrated conversation is.
+    let too_long = ScriptedTurn {
+        events: Vec::new(),
+        stop: StopReason::EndTurn,
+        failure: Some(ProviderError::Api {
+            provider: "fake".into(),
+            status: 400,
+            body: "prompt is too long: 90000 tokens > 64000 maximum".into(),
+            retry_after: None,
+        }),
+        stopped: false,
+    };
+    let h = harness_with(
+        vec![too_long, ScriptedTurn::text("SUMMARY"), ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        64_000,
+    );
+    let mut session = full_history();
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "{events:?}"
+    );
+    assert_eq!(h.provider.request_count().await, 3);
+    assert!(session
+        .messages
+        .iter()
+        .any(|m| m.text().contains("Summary of the earlier conversation")));
+}
+
+#[tokio::test]
+async fn a_request_still_too_long_after_compacting_ends_the_turn() {
+    let too_long = || ScriptedTurn {
+        events: Vec::new(),
+        stop: StopReason::EndTurn,
+        failure: Some(ProviderError::Api {
+            provider: "fake".into(),
+            status: 400,
+            body: "prompt is too long: 90000 tokens > 64000 maximum".into(),
+            retry_after: None,
+        }),
+        stopped: false,
+    };
+    let h = harness_with(
+        vec![too_long(), ScriptedTurn::text("SUMMARY"), too_long()],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        64_000,
+    );
+    let mut session = full_history();
+    let (outcome, _) = run(&h, &mut session, "Finish the report.").await;
+    assert!(
+        matches!(&outcome, Err(AgentError::Provider(e)) if e.is_context_overflow()),
+        "tried once, and then the backend's own words: {outcome:?}"
     );
 }
 

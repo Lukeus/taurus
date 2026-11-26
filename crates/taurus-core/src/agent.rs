@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::StreamExt;
 use taurus_provider::prompted::MALFORMED_TOOL;
 use taurus_provider::{
     with_unique_tool_ids, ChatRequest, ContentBlock, LeakGuard, Message, Provider, Role, Spend,
@@ -51,6 +51,12 @@ const LONGEST_REQUESTED_WAIT: Duration = Duration::from_secs(120);
 /// background work to stop. Work that honors its cancel stops in well under a
 /// second; this is for a tool that doesn't.
 const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(10);
+
+/// The most of one round's side-by-side calls in flight at once. A model can
+/// ask for forty files in one message, and forty reads, greps or MCP calls at
+/// the same moment run a machine out of file handles or a server out of
+/// patience; eight is past where waiting for one more stops paying.
+const MAX_CONCURRENT_CALLS: usize = 8;
 
 /// Deltas of one kind, gathered but not yet handed on.
 struct Held {
@@ -446,6 +452,13 @@ fn without_images(messages: &[Message]) -> Vec<Message> {
 const IMAGE_OMITTED: &str = "[an image was attached here; this model cannot read images]";
 
 /// What a call that Stop arrived before is answered with.
+/// The answer to a call the reply's output limit cut off. See
+/// [`Agent::execute_one`].
+const CUT_OFF_CALL: &str = "This call was cut off: your reply reached its output limit while you \
+     were still writing it, so it did not run. Make it smaller: write a large file in parts \
+     (write_file for the first part, then edit_file to add the rest), or split the work into \
+     several calls.";
+
 const CANCELED_BEFORE_IT_RAN: &str =
     "Not run: the user pressed Stop before this call was carried out.";
 
@@ -977,11 +990,46 @@ impl Agent {
             }
 
             summarizing = self
-                .compact_if_needed(session, &ui, summarizing, &mut relay, &mut total)
+                .compact_if_needed(session, &ui, summarizing, &mut relay, &mut total, 1.0)
                 .await;
             let _ = ui.send(UiEvent::IterationStarted { iteration }).await;
 
-            let (mut assistant, usage, stop) = self.stream_once(session, &ui).await?;
+            let (mut assistant, usage, stop) = match self.stream_once(session, &ui).await {
+                Ok(answer) => answer,
+                // The estimate runs a request behind what the backend counts,
+                // and on a reopened conversation it starts uncalibrated, so a
+                // request can be sent that doesn't fit. Ending the turn there
+                // left every later one sending the same request. Once per
+                // round: told what it came to, compact to that, and ask again.
+                Err(AgentError::Provider(error)) if error.is_context_overflow() => {
+                    warn!(%error, "the request didn't fit the window; compacting and retrying");
+                    let window = match self.provider.capabilities(&session.model).await {
+                        Ok(caps) => self.working_window(caps.context_length),
+                        Err(_) => return Err(error.into()),
+                    };
+                    // What it came to, or the whole window when it didn't
+                    // say, against what it was estimated at: the budget
+                    // shrinks by however far the estimate was out, so every
+                    // check compaction makes is in the estimate's own units.
+                    let counted = error.overflowing_tokens().unwrap_or(window).max(window);
+                    let estimated = session
+                        .calibrated(session.estimated_tokens())
+                        .saturating_add(self.request_overhead());
+                    let shrink = (estimated as f32 / counted as f32).clamp(0.05, 1.0);
+                    summarizing = self
+                        .compact_if_needed(
+                            session,
+                            &ui,
+                            summarizing,
+                            &mut relay,
+                            &mut total,
+                            shrink,
+                        )
+                        .await;
+                    self.stream_once(session, &ui).await?
+                }
+                Err(error) => return Err(error),
+            };
             total.add(&usage);
             // Before the answer is pushed: what the provider counted is what
             // was sent, and the estimate it is paired with has to be of the
@@ -1115,7 +1163,14 @@ impl Agent {
                 blocks: mut results,
                 anonymous,
             } = self
-                .run_tool_calls(&assistant, &session.model, &ui, pending, spent)
+                .run_tool_calls(
+                    &assistant,
+                    stop == StopReason::MaxTokens,
+                    &session.model,
+                    &ui,
+                    pending,
+                    spent,
+                )
                 .await;
             let delegated = take_spent(spent);
             total.add(&delegated.total());
@@ -1607,12 +1662,19 @@ impl Agent {
     /// Executes every tool call in an assistant message and returns the results
     /// in call order.
     ///
-    /// Read-only calls run concurrently, since a model that asks for six files
-    /// at once should not wait six round trips. Anything with a side effect is
-    /// serialized so the outcome does not depend on scheduling.
+    /// In the order the message gives them. A run of read-only calls side by
+    /// side runs concurrently, since a model that asks for six files at once
+    /// should not wait six round trips, up to [`MAX_CONCURRENT_CALLS`] at a
+    /// time. Anything with a side effect runs alone, after everything listed
+    /// before it and before everything listed after. So `edit_file a.rs` then
+    /// `read_file a.rs` reads the edit, which is what a model that wrote them
+    /// in that order meant; running every read first handed it the file as it
+    /// was, and it took that as its edit having failed, or as proof of one
+    /// that hadn't happened yet.
     async fn run_tool_calls(
         &self,
         assistant: &Message,
+        cut_off: bool,
         model: &str,
         ui: &mpsc::Sender<UiEvent>,
         background: &Arc<Pending>,
@@ -1629,7 +1691,7 @@ impl Agent {
             .await
             .map(|caps| OutputBudget::for_window(self.working_window(caps.context_length)))
             .unwrap_or_else(|_| OutputBudget::unknown());
-        let calls: Vec<(String, String, serde_json::Value)> = assistant
+        let calls: Vec<ToolCall> = assistant
             .tool_uses()
             .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
             .collect();
@@ -1651,39 +1713,25 @@ impl Agent {
                 .await;
         }
 
-        let (concurrent, sequential): (Vec<_>, Vec<_>) = calls
-            .into_iter()
-            .partition(|(_, n, input)| self.runs_concurrently(n, input));
-
         let mut results: Vec<(String, ContentBlock)> = Vec::new();
         let mut anonymous = std::collections::HashSet::new();
 
-        let mut pending: FuturesUnordered<_> = concurrent
-            .into_iter()
-            .map(|(id, name, input)| {
+        for wave in self.waves(calls) {
+            let mut pending = futures::stream::iter(wave.into_iter().map(|(id, name, input)| {
                 let ctx = self.context_for(&id, budget, ui, background, spent);
                 async move {
-                    let outcome = self.execute_one(&name, input, &ctx).await;
+                    let outcome = self.execute_one(&name, input, cut_off, &ctx).await;
                     (id, outcome)
                 }
-            })
-            .collect();
-        while let Some((id, outcome)) = pending.next().await {
-            let (block, describes_the_call) = self.report(&id, outcome, ui).await;
-            if !describes_the_call {
-                anonymous.insert(id.clone());
+            }))
+            .buffer_unordered(MAX_CONCURRENT_CALLS);
+            while let Some((id, outcome)) = pending.next().await {
+                let (block, describes_the_call) = self.report(&id, outcome, ui).await;
+                if !describes_the_call {
+                    anonymous.insert(id.clone());
+                }
+                results.push((id, block));
             }
-            results.push((id, block));
-        }
-
-        for (id, name, input) in sequential {
-            let ctx = self.context_for(&id, budget, ui, background, spent);
-            let outcome = self.execute_one(&name, input, &ctx).await;
-            let (block, describes_the_call) = self.report(&id, outcome, ui).await;
-            if !describes_the_call {
-                anonymous.insert(id.clone());
-            }
-            results.push((id, block));
         }
 
         // Restore the model's original call order: some providers reject
@@ -1783,12 +1831,28 @@ impl Agent {
         })
     }
 
-    /// Whether a call runs alongside the others in its round, ahead of the ones
-    /// that run one at a time. See [`Self::run_tool_calls`].
+    /// Whether a call may run alongside the calls listed next to it. See
+    /// [`Self::run_tool_calls`].
     fn runs_concurrently(&self, name: &str, input: &serde_json::Value) -> bool {
         self.registry
             .get(name)
             .is_some_and(|t| t.runs_concurrently(input))
+    }
+
+    /// A round's calls, in the order they run: each run of calls that may go
+    /// side by side is one wave, and every other call is a wave of its own.
+    fn waves(&self, calls: Vec<ToolCall>) -> Vec<Vec<ToolCall>> {
+        let mut waves: Vec<Vec<ToolCall>> = Vec::new();
+        let mut joining = false;
+        for call in calls {
+            let together = self.runs_concurrently(&call.1, &call.2);
+            match waves.last_mut() {
+                Some(wave) if together && joining => wave.push(call),
+                _ => waves.push(vec![call]),
+            }
+            joining = together;
+        }
+        waves
     }
 
     /// Whether this round ran something that checks the project — a build, a
@@ -1803,10 +1867,8 @@ impl Agent {
     /// A walk rather than a pair of `any`s: a check is the model asking the
     /// project a question, and a tool that names the file it is about to write
     /// is the model changing its answer. The later of the two decides, exactly
-    /// as it would across two rounds. Later means in the order the calls ran,
-    /// which is not the order the message gives them: every concurrent call
-    /// runs first, then the rest one at a time. A write listed before a
-    /// `check_command` still lands after it.
+    /// as it would across two rounds. Later means in the order the message
+    /// gives them, which is the order they run: see [`Self::run_tool_calls`].
     ///
     /// Which leaves out one case on purpose. A command that both checks and
     /// works — a `make` that builds and formats, a test run that updates its
@@ -1819,16 +1881,13 @@ impl Agent {
     /// Whether this round's calls wrote anything, and the commands it ran after
     /// its last write, in the order they would run.
     ///
-    /// The same ordering `checked_with_nothing_written_after` reads, for the
-    /// same reason: a check that ran before the edit it was meant to prove
-    /// didn't prove it.
+    /// In the order the calls ran, for the reason
+    /// `checked_with_nothing_written_after` gives: a check that ran before the
+    /// edit it was meant to prove didn't prove it.
     fn commands_after_last_write(&self, assistant: &Message) -> (bool, Vec<String>) {
-        let (first, then): (Vec<_>, Vec<_>) = assistant
-            .tool_uses()
-            .partition(|(_, name, input)| self.runs_concurrently(name, input));
         let mut wrote = false;
         let mut commands = Vec::new();
-        for (_, name, input) in first.into_iter().chain(then) {
+        for (_, name, input) in assistant.tool_uses() {
             let Some(tool) = self.registry.get(name) else {
                 continue;
             };
@@ -1845,11 +1904,8 @@ impl Agent {
     }
 
     fn checked_with_nothing_written_after(&self, assistant: &Message) -> bool {
-        let (first, then): (Vec<_>, Vec<_>) = assistant
-            .tool_uses()
-            .partition(|(_, name, input)| self.runs_concurrently(name, input));
         let mut checked = false;
-        for (_, name, input) in first.into_iter().chain(then) {
+        for (_, name, input) in assistant.tool_uses() {
             let Some(tool) = self.registry.get(name) else {
                 continue;
             };
@@ -1888,8 +1944,17 @@ impl Agent {
         &self,
         name: &str,
         input: serde_json::Value,
+        cut_off: bool,
         ctx: &ToolContext,
     ) -> taurus_tools::ToolResult {
+        // A reply that hit its output limit while a call was being written
+        // leaves that call's input unparsed, and nothing in it is the call the
+        // model meant. Run, it failed on the schema, and the model, never told
+        // why, wrote the same oversized call again until the stall detector
+        // ended the turn.
+        if cut_off && input.is_null() {
+            return Err(ToolError::InvalidInput(CUT_OFF_CALL.into()));
+        }
         // The prompted fallback surfaces syntax failures under this name. A
         // bare "no such tool" would send the model looking for a different
         // tool instead of fixing its formatting.
@@ -2015,7 +2080,8 @@ impl Agent {
     ///    loses detail, so it only runs if step one did not get under budget.
     ///
     /// A failed summarization is not fatal: the turn proceeds uncompacted and
-    /// the provider reports the overflow if there is one.
+    /// the provider reports the overflow if there is one. That report comes
+    /// back here once, with `shrink` set to how far the estimate was out.
     async fn compact_if_needed(
         &self,
         session: &mut Session,
@@ -2023,13 +2089,16 @@ impl Agent {
         summarizing: Summarizing,
         relay: &mut crate::relay::Relay,
         spent: &mut TokenUsage,
+        shrink: f32,
     ) -> Summarizing {
         let relaying = self.config.context_strategy == crate::relay::ContextStrategy::Relay;
         let Ok(caps) = self.provider.capabilities(&session.model).await else {
             return summarizing;
         };
         let window = self.working_window(caps.context_length);
-        let budget = window.saturating_sub(self.reply_reserve(window));
+        // `shrink` is below one only when a request that was estimated to fit
+        // didn't: the budget is cut by how far out the estimate was.
+        let budget = (window.saturating_sub(self.reply_reserve(window)) as f32 * shrink) as u32;
         // The messages are the part of the prompt that can be shrunk, and they
         // used to be the whole of what was measured — so the system prompt, the
         // tool schemas, and the plan rode along uncounted, and the threshold
@@ -2691,6 +2760,9 @@ enum Summarizing {
 
 /// One round's tool results, and which of the failures said nothing about the
 /// call that produced them.
+/// One call from an assistant message: its id, the tool's name, its input.
+type ToolCall = (String, String, serde_json::Value);
+
 struct RoundResults {
     blocks: Vec<ContentBlock>,
     /// Call ids whose error would have read the same whatever was asked for.

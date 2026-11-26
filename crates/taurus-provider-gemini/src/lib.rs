@@ -506,16 +506,14 @@ impl Provider for GeminiProvider {
 
         send(&tx, StreamEvent::Usage { usage }).await?;
 
-        Ok(if saw_tool_call {
-            StopReason::ToolUse
-        } else {
-            match finish_reason.as_deref() {
-                Some("MAX_TOKENS") => StopReason::MaxTokens,
-                Some("STOP") => StopReason::EndTurn,
-                // SAFETY, RECITATION, and the rest end the turn with nothing
-                // more to say, which is what EndTurn means here.
-                _ => StopReason::EndTurn,
-            }
+        // The limit first: a call cut off by it must not read as whole.
+        Ok(match finish_reason.as_deref() {
+            Some("MAX_TOKENS") => StopReason::MaxTokens,
+            _ if saw_tool_call => StopReason::ToolUse,
+            Some("STOP") => StopReason::EndTurn,
+            // SAFETY, RECITATION, and the rest end the turn with nothing
+            // more to say, which is what EndTurn means here.
+            _ => StopReason::EndTurn,
         })
     }
 }

@@ -123,7 +123,11 @@ the backlog, and they're the minority.
   harness, kept in step with every backend forever, or a count-tokens round
   trip before each request, which is the cost the estimate exists to avoid.
   The threshold covers what's left, and the meter above the composer shows you
-  when it's wrong.
+  when it's wrong. When it's wrong enough that the backend refuses a request
+  as too long, the round compacts to what the backend counted and sends it
+  again, once. That refusal is recognized by its wording, since no two
+  backends share a code for it, so one worded some other way still ends the
+  turn with the backend's own message.
 - **Summaries stay on the conversation's model.** Sub-agents, reviews and
   drafts can each be [routed](configuration.md#sending-jobs-to-other-models)
   to another model; compaction summaries and relay notes can't. That's on
