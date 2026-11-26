@@ -25,4 +25,4 @@ mod tree;
 
 pub use command_line::Programs;
 pub use console::{no_console, CREATE_NO_WINDOW};
-pub use tree::Tree;
+pub use tree::{end_group_now, Tree};

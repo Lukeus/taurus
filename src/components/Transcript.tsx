@@ -24,6 +24,8 @@ import type { Answer, LineRange } from "../lib/api";
 import { KeptWork } from "./KeptWork";
 import { useStore, type Entry } from "../state/store";
 import { hooksFileIn } from "../lib/hooksFile";
+import { isAsking } from "../lib/asking";
+import { prefersReducedMotion } from "../lib/motion";
 import { turnText, useSpeech } from "../state/speech";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -293,6 +295,7 @@ export function Transcript({
   // of a fresh conversation, which is exactly the moment the transcript stops
   // being empty, would take the component down with it.
   const conversation = useStableTurns(entries);
+  const asking = isAsking(entries);
 
   // Which turn a search jump landed on, or -1. Recomputed rather than held:
   // the conversation is still streaming while this is on screen, and a stored
@@ -361,17 +364,27 @@ export function Transcript({
         {follow && adrift && (
           <div className="to-foot-bar">
             <button
-              className={`to-foot${busy ? " live" : ""}`}
+              className={`to-foot${busy ? " live" : ""}${asking ? " asking" : ""}`}
               onClick={() => {
                 // Set here as well as by the scroll it starts, because the effect
                 // that follows the stream reads the ref and a smooth scroll takes
                 // longer than the next token does to arrive.
                 pinned.current = true;
                 setAdrift(false);
-                bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+                bottom.current?.scrollIntoView({
+                  block: "end",
+                  behavior: prefersReducedMotion() ? "auto" : "smooth",
+                });
               }}
             >
-              {busy ? "Jump to the live edge" : "Jump to the end"}
+              {/* A question parked at the foot is the one thing down there
+                  the turn is waiting on, and the dock badge that says so only
+                  fires while the window is in the background. */}
+              {asking
+                ? "Questions are waiting"
+                : busy
+                  ? "Jump to the live edge"
+                  : "Jump to the end"}
               <span className="to-foot-arrow">↓</span>
             </button>
           </div>
@@ -625,14 +638,19 @@ const TurnView = memo(function TurnView({
         ),
       )}
       {working && (
-        <div className="turn-step working" aria-live="polite">
+        // The live region is the word alone. It held the clock too, which
+        // re-renders every second after thirty, so a screen reader read the
+        // time out on every tick of a long turn.
+        <div className="turn-step working">
           {/* The shape of what is running, not a spinner. A spinner says a
               turn is alive; this says what kind of work it is doing, because
               the harness already knows and the reader would otherwise have to
               read the row above to find out. See `Waveform`. */}
           <Waveform mode={waveFor(stopping ? null : busyWith(turn))} bars={8} />
-          <span>{stopping ? "stopping…" : "working…"}</span>
-          <Elapsed />
+          <span role="status">{stopping ? "stopping…" : "working…"}</span>
+          <span aria-hidden="true">
+            <Elapsed />
+          </span>
         </div>
       )}
       {!working && <ReadAloud turn={turn} />}

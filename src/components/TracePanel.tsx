@@ -5,6 +5,7 @@ import type { TraceReport, TraceStep, TurnTrace } from "../lib/api";
 import { onTabKeys } from "../lib/tabs";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
+import { useArmed } from "../lib/armed";
 
 /**
  * Where the time went.
@@ -52,6 +53,8 @@ export function TracePanel({
   const [open, setOpen] = useState<number | null>(null);
   /** Bumped to ask again. The ring fills as the app is used. */
   const [asked, setAsked] = useState(0);
+  // Two presses: what is cleared cannot be read again.
+  const { armed: clearing, arm: armClear, disarm: keepTraces } = useArmed();
 
   /**
    * Which question the report on screen answers.
@@ -326,13 +329,30 @@ export function TracePanel({
           )}
 
           <div className="trace-foot-actions">
-            <button
-              className="quiet"
-              onClick={() => void clear()}
-              data-tip="Forget everything recorded so far, so the next reading is of the next thing you do"
-            >
-              Clear
-            </button>
+            {clearing ? (
+              <>
+                <button
+                  className="danger"
+                  onClick={() => {
+                    keepTraces();
+                    void clear();
+                  }}
+                >
+                  Clear everything recorded
+                </button>
+                <button className="quiet" onClick={keepTraces}>
+                  Keep it
+                </button>
+              </>
+            ) : (
+              <button
+                className="quiet"
+                onClick={() => armClear(true)}
+                data-tip="Forget everything recorded so far, so the next reading is of the next thing you do"
+              >
+                Clear
+              </button>
+            )}
             <button className="quiet" onClick={() => setAsked((n) => n + 1)}>
               Refresh
             </button>

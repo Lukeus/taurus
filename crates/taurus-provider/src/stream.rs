@@ -395,6 +395,16 @@ impl StreamAccumulator {
             serde_json::from_str(&call.json)
                 .ok()
                 .or_else(|| crate::repair::repair_json(&call.json))
+                // `null` is how Gemini and Ollama send a call that takes no
+                // arguments, and a tool's input is an object: handed `null`,
+                // a tool with nothing to ask for refused every call.
+                .map(|value| {
+                    if value.is_null() {
+                        serde_json::json!({})
+                    } else {
+                        value
+                    }
+                })
         };
         match (parsed, self.blocks.get_mut(call.index)) {
             (Some(value), Some(ContentBlock::ToolUse { input, .. })) => *input = value,
@@ -591,6 +601,24 @@ mod tests {
         acc.push(StreamEvent::ToolUseStart {
             id: "t1".into(),
             name: "list_dir".into(),
+        });
+        acc.push(StreamEvent::ToolUseEnd { id: "t1".into() });
+        let (msg, _, bad) = acc.finish();
+        assert!(bad.is_empty());
+        let (_, _, input) = msg.tool_uses().next().unwrap();
+        assert_eq!(input, &serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_null_input_is_an_empty_object() {
+        let mut acc = StreamAccumulator::new();
+        acc.push(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "git_status".into(),
+        });
+        acc.push(StreamEvent::ToolUseInputDelta {
+            id: "t1".into(),
+            json: "null".into(),
         });
         acc.push(StreamEvent::ToolUseEnd { id: "t1".into() });
         let (msg, _, bad) = acc.finish();

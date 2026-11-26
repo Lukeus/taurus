@@ -75,18 +75,19 @@ export function Modal({
       /*
        * Not this one, if something is open on top of it.
        *
-       * The editors render inside the drawer that lists what they edit, so
-       * "on top" is a containment question the DOM can answer — and answering
-       * it that way is order-independent, which a stack of registrations is
-       * not: React runs effects child-first, so two modals mounting in the
-       * same commit register innermost *first*.
+       * Every modal marks its scrim, and the one in front is the last of them
+       * in document order. That holds for both shapes there are: an editor
+       * renders *inside* the drawer that opened it, so it comes after it; and
+       * the window-level prompts (permission, leaving) render after every
+       * drawer, so they come after whatever they arrived on top of. Asking the
+       * DOM rather than keeping a stack of registrations is order-independent,
+       * which matters because React runs effects child-first.
        *
-       * The permission prompt is the one modal that is not nested in anything,
-       * so a drawer open behind it still takes Escape. That closes the drawer
-       * and leaves the prompt exactly where it was, waiting to be answered,
-       * which is the right outcome even if it is not the reasoned one.
+       * Only the front one answers either key. Two of them both treating Tab
+       * as theirs pulled focus back and forth between the panels, and two of
+       * them both taking Escape closed the drawer under the prompt as well.
        */
-      if (scrim.current?.querySelector(".scrim")) return;
+      if (!isFrontmost(scrim.current)) return;
       if (e.key === "Escape" && onClose) {
         e.stopPropagation();
         onClose();
@@ -138,6 +139,7 @@ export function Modal({
     <div
       className={className}
       ref={scrim}
+      data-modal=""
       onPointerDown={(e) => {
         pressed.current = e.target === e.currentTarget;
       }}
@@ -150,6 +152,21 @@ export function Modal({
       {children}
     </div>
   );
+}
+
+/** Whether `el` is the modal in front: the last one in document order. */
+function isFrontmost(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  const all = document.querySelectorAll("[data-modal]");
+  return all[all.length - 1] === el;
+}
+
+/**
+ * Whether any modal is open. For window-wide shortcuts, which must not open a
+ * second layer, or start a conversation, behind a panel that has the keyboard.
+ */
+export function modalOpen(): boolean {
+  return document.querySelector("[data-modal]") !== null;
 }
 
 /**

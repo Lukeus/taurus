@@ -448,10 +448,9 @@ impl ToolContext {
             .as_ref()
             .map(|_| Arc::new(crate::sweep::SweepCache::new()));
         self.checkpoints = recorder;
-        self.jobs = self
-            .jobs
-            .as_ref()
-            .map(|_| Arc::new(crate::jobs::Jobs::new()));
+        // Its own, since its commands run in `root`, and nested under this
+        // one's, so stopping this workspace's commands stops these too.
+        self.jobs = self.jobs.as_ref().map(|jobs| jobs.nested());
         self.protected = None;
         self.touched = None;
         self
@@ -737,6 +736,19 @@ pub trait Tool: Send + Sync {
     /// [`Tool::touches_unpredictably`].
     fn touches(&self, _input: &serde_json::Value) -> Vec<String> {
         Vec::new()
+    }
+
+    /// What a standing grant for this call is pinned to, past the tool's name.
+    ///
+    /// `None`, the default, keys the grant by the name alone: "this tool may
+    /// do its work here". A tool whose calls run very different programs
+    /// says which one this is, so that allowing one doesn't allow the rest:
+    /// `run_skill_script` names the skill, the script, and what the skill's
+    /// files hold, and a script edited since it was allowed is asked about
+    /// again. `Err` says why no grant can be pinned at all, and the call is
+    /// then asked about every time, like a file that decides what runs.
+    async fn grant_key(&self, _input: &serde_json::Value) -> Option<Result<String, &'static str>> {
+        None
     }
 
     /// Whether this call writes files, named in advance or not. For the

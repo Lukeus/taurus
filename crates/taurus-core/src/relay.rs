@@ -275,12 +275,30 @@ looking anything up.";
 /// still the model's notes, so it is kept whole as a single learned line
 /// rather than thrown away. An answer that parses but has nothing in it is no
 /// notes at all.
+/// `text` without a Markdown code fence around it, when it has one.
+///
+/// A backend that doesn't enforce the schema (Anthropic's, here) often wraps
+/// the JSON it was asked for in ```` ```json ````, and the fence alone made it
+/// unreadable: the raw block became the summary, or one "learned" line.
+pub(crate) fn unfenced(text: &str) -> &str {
+    let text = text.trim();
+    let Some(rest) = text.strip_prefix("```") else {
+        return text;
+    };
+    let Some(body) = rest.strip_suffix("```") else {
+        return text;
+    };
+    // Past the language tag, which runs to the end of the first line.
+    body.split_once('\n').map_or(body, |(_, json)| json).trim()
+}
+
 pub(crate) fn parse_notes(text: &str) -> Option<Notes> {
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
-    let Ok(serde_json::Value::Object(object)) = serde_json::from_str::<serde_json::Value>(text)
+    let Ok(serde_json::Value::Object(object)) =
+        serde_json::from_str::<serde_json::Value>(unfenced(text))
     else {
         return Some(Notes {
             learned: vec![text.to_string()],

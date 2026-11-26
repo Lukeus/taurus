@@ -120,6 +120,8 @@ const state = {
   forgetDataset: vi.fn(),
   dismissError: vi.fn(),
   noteError: vi.fn(),
+  noteNotice: vi.fn(),
+  errorIsNotice: false,
   answerPermission: vi.fn(),
   answerQuestions: vi.fn(),
   decideTrust: vi.fn(),
@@ -200,6 +202,7 @@ beforeEach(() => {
   kept = 0;
   document.body.innerHTML = "";
   state.noteError.mockClear();
+  state.noteNotice.mockClear();
   state.openConversation.mockClear();
   state.status.workspace = "/tmp/project";
   state.setWorkspace.mockReset();
@@ -216,15 +219,15 @@ describe("switching workspace", () => {
     await changeWorkspace(host);
 
     expect(steps).toEqual(["flush", "setWorkspace", "keptIn /tmp/project"]);
-    expect(state.noteError).toHaveBeenCalledTimes(1);
-    expect(state.noteError.mock.calls[0][0]).toContain("2 files");
-    expect(state.noteError.mock.calls[0][0]).toContain("project");
+    expect(state.noteNotice).toHaveBeenCalledTimes(1);
+    expect(state.noteNotice.mock.calls[0][0]).toContain("2 files");
+    expect(state.noteNotice.mock.calls[0][0]).toContain("project");
   });
 
   it("says nothing when nothing was kept", async () => {
     const host = await mounted();
     await changeWorkspace(host);
-    expect(state.noteError).not.toHaveBeenCalled();
+    expect(state.noteNotice).not.toHaveBeenCalled();
   });
 
   it("says nothing when the switch was refused and the folder is still open", async () => {
@@ -234,7 +237,7 @@ describe("switching workspace", () => {
     const host = await mounted();
     kept = 1;
     await changeWorkspace(host);
-    expect(state.noteError).not.toHaveBeenCalled();
+    expect(state.noteNotice).not.toHaveBeenCalled();
   });
 });
 

@@ -53,6 +53,9 @@ pub struct Pending {
     /// A child of the turn's own, so Stop reaches the work, and so the turn
     /// can stop it on any other way out without cancelling itself.
     stop: CancellationToken,
+    /// The tasks doing the work, for ending one that doesn't honor `stop`.
+    /// See [`Pending::abort_all`].
+    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 /// Held by one piece of outstanding work until it reports.
@@ -74,6 +77,33 @@ impl Pending {
             state: Mutex::new(State::default()),
             changed: Notify::new(),
             stop: turn.child_token(),
+            tasks: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Keeps hold of the task doing a piece of work.
+    pub fn hold(&self, task: tokio::task::AbortHandle) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+
+    /// Ends every task still out, for a turn whose wait in [`Self::stop_all`]
+    /// ran out.
+    ///
+    /// Work left running after that kept the ended turn's context and its
+    /// record of changes, kept its copy of the workspace open, and kept
+    /// writing a transcript under a conversation that could be deleted by
+    /// then, which it then made again. Ending the task drops its ticket, which
+    /// counts the work as done.
+    pub fn abort_all(&self) {
+        for task in self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+        {
+            task.abort();
         }
     }
 
@@ -178,6 +208,26 @@ mod tests {
             agent: "explorer".into(),
             text: "Status: done.\n\nFound it.".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn work_that_ignores_its_stop_can_still_be_ended() {
+        let pending = Arc::new(Pending::new(&CancellationToken::new()));
+        let ticket = pending.start();
+        let task = tokio::spawn(async move {
+            // Deaf to the stop token, the way a tool that blocks is.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            ticket.deliver(arrival("c1"));
+        });
+        pending.hold(task.abort_handle());
+
+        let waited = tokio::time::timeout(Duration::from_millis(50), pending.stop_all()).await;
+        assert!(waited.is_err(), "it isn't meant to stop on its own");
+        pending.abort_all();
+        tokio::time::timeout(Duration::from_secs(5), pending.stop_all())
+            .await
+            .expect("ended work still counted as out");
+        assert_eq!(pending.running(), 0);
     }
 
     #[tokio::test]

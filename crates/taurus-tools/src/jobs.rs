@@ -184,6 +184,10 @@ pub struct Jobs {
     /// context to do it in.
     jobs: Mutex<BTreeMap<u32, Arc<Job>>>,
     next: AtomicU32,
+    /// The rosters of delegates working in copies of this workspace. Each
+    /// has its own, since its commands run somewhere else, and stopping this
+    /// one stops theirs: a window closing has no other way to reach them.
+    nested: Mutex<Vec<std::sync::Weak<Jobs>>>,
 }
 
 struct Job {
@@ -198,6 +202,9 @@ struct Job {
     /// [`Output::hear`].
     served: Notify,
     stop: CancellationToken,
+    /// The process group to end at once, where there is one. See
+    /// [`Jobs::stop_all`].
+    group: Option<u32>,
     /// The workspace as it stood when this started, until it exits.
     ///
     /// `None` when the caller keeps no checkpoints — a piped run, an example,
@@ -451,6 +458,7 @@ impl Jobs {
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
+            group: child.group(),
             sweep: Mutex::new(before),
             diffed: Mutex::new(None),
             claimed: Mutex::new(HashSet::new()),
@@ -693,10 +701,67 @@ impl Jobs {
     ///
     /// A background command belongs to the workspace it was started in, and
     /// nothing in the OS will tidy one up on the way out.
+    ///
+    /// Each running command's whole tree is ended here and now, not only
+    /// asked to end: the task that would end it runs on the runtime, and a
+    /// process exiting right after this (every caller but one) drops that
+    /// task unrun. So did a delegate's commands, in a roster nothing here
+    /// could reach. See [`Self::nested`].
     pub fn stop_all(&self) {
         for job in self.all() {
             job.stop.cancel();
+            if job.outcome.lock().unwrap().is_some() {
+                continue;
+            }
+            if let Some(group) = job.group {
+                if let Err(trouble) = taurus_process::end_group_now(group) {
+                    tracing::debug!("{trouble}");
+                }
+            }
         }
+        let nested: Vec<Arc<Jobs>> = {
+            let mut nested = self.nested.lock().unwrap();
+            nested.retain(|jobs| jobs.strong_count() > 0);
+            nested.iter().filter_map(std::sync::Weak::upgrade).collect()
+        };
+        for jobs in nested {
+            jobs.stop_all();
+        }
+    }
+
+    /// A roster for a delegate working in a copy, stopped with this one.
+    pub fn nested(&self) -> Arc<Jobs> {
+        let jobs = Arc::new(Jobs::new());
+        self.nested.lock().unwrap().push(Arc::downgrade(&jobs));
+        jobs
+    }
+
+    /// [`Self::stop_all`], and then waits up to `wait` for every command to
+    /// have exited and been read, for a caller about to take the folder away.
+    pub async fn stop_all_within(&self, wait: Duration) {
+        let running: Vec<Arc<Job>> = self
+            .all()
+            .into_iter()
+            .filter(|job| job.outcome.lock().unwrap().is_none())
+            .collect();
+        let mut waits: Vec<_> = running
+            .iter()
+            .map(|job| Box::pin(job.finished.notified()))
+            .collect();
+        // Registered before anything is signaled, so an exit in between
+        // isn't missed.
+        for wait in &mut waits {
+            wait.as_mut().enable();
+        }
+        self.stop_all();
+        let _ = tokio::time::timeout(wait, async {
+            for (job, finished) in running.iter().zip(waits) {
+                if job.outcome.lock().unwrap().is_none() {
+                    finished.await;
+                }
+            }
+        })
+        .await;
     }
 
     /// Ends everything and forgets it, for a workspace being left.
@@ -1101,6 +1166,44 @@ mod tests {
         }
     }
 
+    /// Leaving a window or a shell stops everything and then the process
+    /// goes, runtime and all, with no chance for the task that would have
+    /// ended each tree to run. And a delegate's commands are in a roster of
+    /// their own, which stopping the workspace's has to reach.
+    #[cfg(unix)]
+    #[test]
+    fn leaving_ends_what_a_delegate_left_running_as_the_runtime_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let alive = dir.path().join("alive");
+        let line = leaves_a_grandchild(dir.path(), &started, &alive, false);
+
+        // One thread, so nothing runs outside `block_on`: the shape of a
+        // process whose last act is to stop everything and return, where no
+        // worker is left to pick up the task that would end each tree.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let jobs = Arc::new(Jobs::new());
+        let delegates = jobs.nested();
+        runtime.block_on(async {
+            delegates.adopt(line.clone(), sh(&line), None);
+            assert!(appears(&started).await, "the grandchild never started");
+        });
+
+        jobs.stop_all();
+        drop(runtime);
+
+        for _ in 0..240 {
+            assert!(
+                !alive.exists(),
+                "what the command started outlived the process leaving"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     #[tokio::test]
     async fn a_finished_command_reports_its_output_and_its_code() {
         let jobs = Jobs::new();
@@ -1203,6 +1306,7 @@ mod tests {
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
+            group: None,
             sweep: Mutex::new(None),
             diffed: Mutex::new(None),
             claimed: Mutex::new(HashSet::new()),
@@ -1451,6 +1555,7 @@ mod tests {
             outcome: Mutex::new(None),
             finished: Notify::new(),
             stop: CancellationToken::new(),
+            group: None,
             sweep: Mutex::new(None),
             diffed: Mutex::new(None),
             claimed: Mutex::new(HashSet::new()),

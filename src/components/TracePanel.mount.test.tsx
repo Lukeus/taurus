@@ -259,6 +259,8 @@ describe("the trace panel", () => {
     invoke.mockResolvedValue(report({ spans: 0, turns: 0, recent: [] }));
 
     await ui.click("Clear");
+    expect(invoke, "one press cleared it").not.toHaveBeenCalledWith("clear_traces");
+    await ui.click("Clear everything");
     expect(invoke).toHaveBeenCalledWith("clear_traces");
     expect(ui.text()).toContain("Nothing has been timed yet");
   });
@@ -272,6 +274,7 @@ describe("the trace panel", () => {
     const ui = await mount();
 
     await ui.click("Clear");
+    await ui.click("Clear everything");
 
     expect(ui.text()).toContain("the span ring is busy");
     expect(ui.text()).toContain("Median turn");

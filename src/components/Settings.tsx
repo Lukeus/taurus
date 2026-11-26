@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AllowedRule,
   CustomTheme,
@@ -117,6 +117,12 @@ export function Settings({
   };
   /** True while a close is waiting on what to do with unsaved providers. */
   const [leaving, setLeaving] = useState(false);
+  const keepEditing = useRef<HTMLButtonElement>(null);
+  // Once per appearance, not per render: a re-render while somebody tabs to
+  // Save must not pull focus back.
+  useEffect(() => {
+    if (leaving) keepEditing.current?.focus();
+  }, [leaving]);
   // Rows rather than bare providers, so each card is keyed by something that
   // stays with it. See `Row`.
   const [draft, setDraft] = useState<Row[] | null>(null);
@@ -328,7 +334,15 @@ export function Settings({
                     <button className="danger" onClick={onClose}>
                       Discard
                     </button>
-                    <button onClick={() => setLeaving(false)}>Keep editing</button>
+                    {/* Focused when the prompt appears: it is what Escape
+                        raised, and a keyboard left where it was would see
+                        nothing happen. The safe choice, not Save or Discard. */}
+                    <button
+                      ref={keepEditing}
+                      onClick={() => setLeaving(false)}
+                    >
+                      Keep editing
+                    </button>
                   </div>
                 </div>
               )}

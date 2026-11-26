@@ -133,6 +133,37 @@ impl Host {
         )));
         registry.register(Arc::new(ShowTable));
         registry.register(Arc::new(ShowChart));
+        // Per turn too. A proposal is put to the person watching, and a
+        // delegate in the shared registry could queue one that replaces an
+        // agent with a definition that inherits every tool, checked against a
+        // registry wider than its own, on a card that didn't say a delegate
+        // wrote it.
+        //
+        // Only when the setting is on. The prompt's authoring guidance already
+        // follows this setting, and advertising the tool without it left the
+        // model holding a schema — one of the largest here — that nothing told
+        // it when to use. Same rule the web tools follow: never offer a tool the
+        // prompt cannot explain.
+        let (skills, agents) = {
+            let settings = self.settings.read().await;
+            (
+                settings.skill_synthesis_enabled,
+                settings.agent_synthesis_enabled,
+            )
+        };
+        if skills {
+            registry.register(Arc::new(taurus_skills::ProposeSkill::new(
+                self.catalog.clone(),
+                self.proposals.clone(),
+            )));
+        }
+        if agents {
+            registry.register(Arc::new(taurus_core::ProposeAgent::new(
+                self.agents.clone(),
+                self.registry.clone(),
+                self.agent_proposals.clone(),
+            )));
+        }
         registry.register(Arc::new(ShowSequence));
         registry.register(Arc::new(ShowFlow));
         registry.register(Arc::new(AskUser::new(self.asker.clone())));

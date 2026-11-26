@@ -123,7 +123,11 @@ the backlog, and they're the minority.
   harness, kept in step with every backend forever, or a count-tokens round
   trip before each request, which is the cost the estimate exists to avoid.
   The threshold covers what's left, and the meter above the composer shows you
-  when it's wrong.
+  when it's wrong. When it's wrong enough that the backend refuses a request
+  as too long, the round compacts to what the backend counted and sends it
+  again, once. That refusal is recognized by its wording, since no two
+  backends share a code for it, so one worded some other way still ends the
+  turn with the backend's own message.
 - **Summaries stay on the conversation's model.** Sub-agents, reviews and
   drafts can each be [routed](configuration.md#sending-jobs-to-other-models)
   to another model; compaction summaries and relay notes can't. That's on
@@ -151,6 +155,19 @@ the backlog, and they're the minority.
   agent drafts, embeddings, and reranking aren't in any transcript, so they
   aren't in any total. A delegate still running when its turn is stopped
   counts only what it spent before the turn stops waiting for it.
+- **Tool output is capped per call, not per round.** Each call's answer is
+  held to a share of the window, with a floor so a small window still gets a
+  useful answer. Six reads side by side on an 8k model can each sit at the
+  floor, and a round's own results are the one part compaction can't cut, so
+  the turn reports a window too small for its latest results. Splitting the
+  share across the round's calls doesn't get under the floors; a second pass
+  that shortens the largest results once a round passes its share would.
+- **A harness notice can follow a user message.** The stall notice and the
+  check asked for after `finish` go in as messages of their own after a round
+  of results, so two user messages can sit side by side. Every hosted API
+  here accepts that and joins them; a strict chat template on a local model
+  might not. Appending each notice to the message before it, as the plan
+  reminder is, would close it.
 - **Every enabled tool goes out with every request.** Nothing filters tools by
   relevance or loads them on demand, and an MCP server's tools are sent whole
   unless **Compact schemas** is on in the MCP panel, which keeps their shape
@@ -500,6 +517,15 @@ the backlog, and they're the minority.
   build appended to may already hold a torn fragment and a whole record on one
   line, and that line is dropped on load like any other it can't parse. Getting
   the record back would mean guessing where the fragment stops, and nothing does.
+- **A conversation open in two places is saved by the first one to write.**
+  When the CLI resumes a conversation the app has open, or two windows hold
+  one, each appends from where it loaded. So a transcript with lines a window
+  didn't write is left to whoever wrote them, and that window stops saving to
+  it rather than splicing two continuations into one history that loads as
+  neither. What it says after that is in the window and not on disk, and the
+  only sign is a line in the log. Reopening the conversation picks up the
+  saved half. Saving it as a conversation of its own instead would keep both,
+  and it's a change to how a log is named.
 - **A cut command's output can be swept away while the transcript still points
   at it.** When a stream outruns what the model's window has room for, the
   whole of it is written to `~/.taurus/output/<workspace-key>/`, and the gap
@@ -1452,6 +1478,21 @@ the backlog, and they're the minority.
   alternative is a shell parser, and a parser that is wrong lets something
   through, where a tokenizer that gives up asks. See
   [Permissions](safety.md#permissions).
+- **A hook manager configured by a file in the repository isn't protected.**
+  The files that decide what runs are git's: `.git/hooks`, its settings, and
+  wherever `core.hooksPath` points, husky's `.husky` included. A tool that
+  reads its own file and then runs what it says, like `.pre-commit-config.yaml`
+  or `lefthook.yml`, isn't on the list, so a grant for `write_file` can change
+  what the next commit runs through it. Adding them is a list of names, and
+  each one widens what an ordinary edit gets asked about. `core.hooksPath` is
+  read from the repository's settings and yours, without following
+  `include.path` or `includeIf`, so a value only an included file sets isn't
+  seen. See [Permissions](safety.md#permissions).
+- **A skill script's grant is asked again after any edit to its skill.** It's
+  pinned to what the whole skill folder holds, `SKILL.md` included, because a
+  script reads what's beside it. So fixing a typo in a skill's instructions
+  asks about its scripts once more. Pinning to only the files a script reads
+  would need knowing what it reads, which nothing here can.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.**
   Any tool call that draws a view is left out of the folded run header.
   That's what stops a table getting filed under "6 steps · 11s" behind a
@@ -1926,9 +1967,18 @@ the backlog, and they're the minority.
   terminal's own Ctrl-C reaches the whole tree without anything in this code
   having to run first, which is worth more than a group would be. So its
   timeout kills the shell alone. Making it a tree would be the same small
-  change as above. It hasn't been made, because it doesn't have the safety
-  argument the hook timeout has: a hook is a guard whose whole promise is
-  that it stopped something.
+  change as above. It hasn't been made, but it has a safety argument now. The
+  look at the files that decide what runs happens when the command's own
+  process exits, so a granted `python3 x.py` that forks, lets the parent go,
+  and writes `.git/config` a second later writes after the look has read the
+  set and found nothing. On macOS the sandbox allows `.git/config` on purpose,
+  so there the look was the only guard on it; on Windows, or on Linux without
+  `bwrap`, that's true of `.git/hooks` as well. Ending what's left in the
+  group before the look would close the plain fork, at the cost of a Ctrl-C
+  that has to go through Taurus. A child that calls `setsid` leaves the group
+  either way, and only a sandbox follows it, which on macOS and Linux it
+  does. Reading the set once more at the next tool call is the other way in,
+  and it's a change to how the look holds its reading.
 - **The built-in voice is the operating system's.** It sounds different on
   each platform, and on Linux it's `espeak-ng`, which is robotic. One neural
   voice downloaded on first use, the way the speech model is, would sound the

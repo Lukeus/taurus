@@ -549,6 +549,9 @@ impl OpenAiProvider {
         }
 
         let mut body = ChatBody::from_request(&request);
+        if is_openai_itself(&self.base_url) {
+            body = body.for_openai_itself();
+        }
         body.reasoning_effort = self.reasoning_effort.clone();
         body.prompt_cache_key = self.cache_key(&request);
         let response = tokio::select! {
@@ -627,9 +630,11 @@ impl OpenAiProvider {
                 finish_reason = Some(reason);
             }
 
-            let Some(delta) = choice.delta else { continue };
+            let Some(mut delta) = choice.delta else {
+                continue;
+            };
 
-            if let Some(content) = delta.content.filter(|c| !c.is_empty()) {
+            if let Some(content) = delta.content.take().filter(|c| !c.is_empty()) {
                 match scanner.as_mut() {
                     Some(scanner) => {
                         for event in scanner.feed(&content) {
@@ -641,7 +646,7 @@ impl OpenAiProvider {
             }
 
             // Some servers expose reasoning models' scratchpad here.
-            if let Some(reasoning) = delta.reasoning_content.filter(|r| !r.is_empty()) {
+            if let Some(reasoning) = delta.reasoning() {
                 send(&tx, StreamEvent::ThinkingDelta { text: reasoning }).await?;
             }
 
@@ -703,14 +708,13 @@ impl OpenAiProvider {
 
         send(&tx, StreamEvent::Usage { usage }).await?;
 
-        Ok(if saw_tool_call {
-            StopReason::ToolUse
-        } else {
-            match finish_reason.as_deref() {
-                Some("length") => StopReason::MaxTokens,
-                Some("tool_calls") => StopReason::ToolUse,
-                _ => StopReason::EndTurn,
-            }
+        // The limit first: a call that was being written when it hit is cut
+        // off, and saying `ToolUse` for it would have it run as if whole.
+        Ok(match finish_reason.as_deref() {
+            Some("length") => StopReason::MaxTokens,
+            _ if saw_tool_call => StopReason::ToolUse,
+            Some("tool_calls") => StopReason::ToolUse,
+            _ => StopReason::EndTurn,
         })
     }
 
@@ -862,10 +866,11 @@ impl OpenAiProvider {
                 provider: self.id.clone(),
                 message: message.clone(),
             }),
-            _ if saw_tool_call => Ok(StopReason::ToolUse),
+            // Before the calls, for the reason the chat route gives.
             Some(Ending::Incomplete(Some(reason))) if reason == "max_output_tokens" => {
                 Ok(StopReason::MaxTokens)
             }
+            _ if saw_tool_call => Ok(StopReason::ToolUse),
             Some(_) => Ok(StopReason::EndTurn),
             // Ended by a stop sequence on purpose.
             None if stopped => Ok(StopReason::EndTurn),
@@ -989,6 +994,12 @@ mod tests {
 
     /// The `Message` a chat stream folds into, with whatever came up malformed.
     async fn folded(body: &str) -> (Message, Vec<String>) {
+        let (message, bad, _) = folded_with_stop(body).await;
+        (message, bad)
+    }
+
+    /// [`folded`], with how the stream said it ended.
+    async fn folded_with_stop(body: &str) -> (Message, Vec<String>, StopReason) {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .respond_with(
@@ -1014,9 +1025,42 @@ mod tests {
         while let Some(event) = rx.recv().await {
             acc.push(event);
         }
-        turn.await.expect("the task").expect("the turn");
+        let stop = turn.await.expect("the task").expect("the turn");
         let (message, _, bad) = acc.finish();
-        (message, bad)
+        (message, bad, stop)
+    }
+
+    #[tokio::test]
+    async fn a_chunk_naming_its_reasoning_both_ways_is_still_read() {
+        let (message, _) = folded(concat!(
+            r#"data: {"choices":[{"delta":{"reasoning":null,"reasoning_content":"hmm","content":null}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"reasoning":"so","reasoning_content":null,"content":"ok"},"finish_reason":"stop"}]}"#,
+            "\n\ndata: [DONE]\n\n",
+        ))
+        .await;
+        assert_eq!(message.text(), "ok");
+        let thought: String = message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                taurus_provider::ContentBlock::Thinking { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thought, "hmmso");
+    }
+
+    #[tokio::test]
+    async fn a_call_the_output_limit_cut_off_ends_on_the_limit() {
+        let (message, bad, stop) = folded_with_stop(concat!(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"write_file","arguments":"{\"content\": \"aaa"}}]},"finish_reason":"length"}]}"#,
+            "\n\ndata: [DONE]\n\n",
+        ))
+        .await;
+        assert_eq!(stop, StopReason::MaxTokens);
+        assert_eq!(bad, ["c1"]);
+        assert!(message.has_tool_use());
     }
 
     #[tokio::test]

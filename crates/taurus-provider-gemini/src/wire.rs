@@ -24,6 +24,17 @@ pub struct GenerationConfig {
     pub max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stop_sequences: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_config: Option<ThinkingConfig>,
+}
+
+/// Gemini returns a thinking model's thought summaries only when asked, and
+/// without them the `thought: true` parts the stream knows how to show never
+/// arrive.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingConfig {
+    pub include_thoughts: bool,
 }
 
 impl GenerationConfig {
@@ -31,15 +42,21 @@ impl GenerationConfig {
         self.temperature.is_none()
             && self.max_output_tokens.is_none()
             && self.stop_sequences.is_empty()
+            && self.thinking_config.is_none()
     }
 }
 
 impl GenerateBody {
-    pub fn from_request(request: &ChatRequest) -> Self {
+    /// `thoughts` asks for thought summaries, and is only for a model whose
+    /// own entry says it thinks: one that doesn't can refuse the setting.
+    pub fn from_request(request: &ChatRequest, thoughts: bool) -> Self {
         let config = GenerationConfig {
             temperature: request.temperature,
             max_output_tokens: request.max_tokens,
             stop_sequences: request.stop_sequences.clone(),
+            thinking_config: thoughts.then_some(ThinkingConfig {
+                include_thoughts: true,
+            }),
         };
         Self {
             contents: crate::convert::contents_to_wire(request),
@@ -75,6 +92,9 @@ pub struct ModelEntry {
     /// offered and discovered at the first turn.
     #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub supported_generation_methods: Vec<String>,
+    /// Whether the model thinks before it answers. Absent from older entries.
+    #[serde(default)]
+    pub thinking: Option<bool>,
 }
 
 impl ModelEntry {
@@ -277,8 +297,24 @@ mod tests {
     #[test]
     fn generation_config_is_omitted_when_nothing_was_set() {
         let request = ChatRequest::new("g", vec![taurus_provider::Message::user("hi")]);
-        let json = serde_json::to_value(GenerateBody::from_request(&request)).unwrap();
+        let json = serde_json::to_value(GenerateBody::from_request(&request, false)).unwrap();
         assert!(json.get("generationConfig").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_thinking_model_is_asked_for_its_thoughts() {
+        let request = ChatRequest::new("g", vec![taurus_provider::Message::user("hi")]);
+        let json = serde_json::to_value(GenerateBody::from_request(&request, true)).unwrap();
+        assert_eq!(
+            json["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            serde_json::json!(true),
+            "{json}"
+        );
+        let entry: ModelEntry =
+            serde_json::from_str(r#"{"name":"models/gemini-2.5-pro","thinking":true}"#).unwrap();
+        assert_eq!(entry.thinking, Some(true));
+        let older: ModelEntry = serde_json::from_str(r#"{"name":"models/x"}"#).unwrap();
+        assert_eq!(older.thinking, None);
     }
 
     #[test]
@@ -286,7 +322,7 @@ mod tests {
         // Everything else in this workspace is snake_case; this API is not.
         let request =
             ChatRequest::new("g", vec![taurus_provider::Message::user("hi")]).with_system("S");
-        let json = serde_json::to_value(GenerateBody::from_request(&request)).unwrap();
+        let json = serde_json::to_value(GenerateBody::from_request(&request, false)).unwrap();
         assert!(json.get("systemInstruction").is_some(), "{json}");
         assert!(json.get("system_instruction").is_none());
     }

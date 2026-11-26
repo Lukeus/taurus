@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Modal } from "./Modal";
+import { Modal, modalOpen } from "./Modal";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -161,6 +161,55 @@ describe("a modal", () => {
     press("Escape");
     expect(closedInner).toBe(1);
     expect(closedOuter, "the drawer underneath answered for the editor").toBe(0);
+  });
+
+  it("lets a prompt that arrives over a drawer have the keyboard to itself", () => {
+    /*
+     * The permission prompt is not nested in the drawer it arrives over: it is
+     * a later sibling. Both used to answer — Escape closed the drawer under
+     * the prompt, and Tab was pulled back and forth between the two panels.
+     */
+    let closedDrawer = 0;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(
+        <>
+          <Modal onClose={() => closedDrawer++}>
+            <aside>
+              <button>drawer</button>
+            </aside>
+          </Modal>
+          <Modal>
+            <div className="dialog">
+              <button>allow</button>
+              <button>deny</button>
+            </div>
+          </Modal>
+        </>,
+      );
+    });
+    cleanup.push(() => {
+      act(() => root.unmount());
+      host.remove();
+    });
+    const [, allow, deny] = [...host.querySelectorAll("button")];
+
+    press("Escape");
+    expect(closedDrawer, "Escape closed the drawer under the prompt").toBe(0);
+
+    press("Tab");
+    expect(document.activeElement).toBe(allow);
+    deny.focus();
+    press("Tab");
+    expect(document.activeElement, "Tab left the prompt").toBe(allow);
+  });
+
+  it("says whether any modal is open, for the window's shortcuts", () => {
+    expect(modalOpen()).toBe(false);
+    mount(() => {});
+    expect(modalOpen()).toBe(true);
   });
 
   it("wraps Tab inside the panel rather than letting it reach the page", () => {
