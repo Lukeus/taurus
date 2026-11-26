@@ -416,6 +416,9 @@ interface Store {
    */
   datasets: Dataset[];
   error: string | null;
+  /** The banner's message is information, not a failure: shown neutral, as a
+   *  status rather than an alert. */
+  errorIsNotice: boolean;
 
   init: () => Promise<void>;
   startSession: (providerId: string, model: string) => Promise<void>;
@@ -675,6 +678,8 @@ interface Store {
    * this is the door for the parts of the app that do their own IO.
    */
   noteError: (message: string) => void;
+  /** The same banner for something worth saying that is not a failure. */
+  noteNotice: (message: string) => void;
   dismissError: () => void;
 }
 
@@ -877,6 +882,7 @@ export const useStore = create<Store>((set, get) => ({
   agentProposals: [],
   datasets: [],
   error: null,
+  errorIsNotice: false,
 
   init: async () => {
     if (initialized) return;
@@ -1956,7 +1962,8 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  noteError: (message) => set({ error: message }),
+  noteError: (message) => set({ error: message, errorIsNotice: false }),
+  noteNotice: (message) => set({ error: message, errorIsNotice: true }),
   dismissError: () => set({ error: null }),
 }));
 

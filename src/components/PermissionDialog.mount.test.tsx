@@ -199,6 +199,18 @@ describe("the scope sentence", () => {
     const { host } = mount(SCOPED);
     const footnote = host.querySelector(".dialog-footnote")!;
     expect(footnote.querySelector("code")?.textContent).toBe("edit_file");
+    expect(footnote.textContent).toBe(
+      "Always here — allow edit_file in this workspace." +
+        "Always everywhere — allow edit_file in every workspace.",
+    );
+  });
+
+  it("keeps the plain sentence when only the narrower grant is offered", () => {
+    const { host } = mount({
+      ...SCOPED,
+      always_global_scope: null,
+    } as unknown as PermissionRequest);
+    const footnote = host.querySelector(".dialog-footnote")!;
     expect(footnote.textContent).toBe("Always allow edit_file in this workspace.");
   });
 

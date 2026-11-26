@@ -520,7 +520,7 @@ export const Rail = memo(function Rail({
         */}
         <Section
           name="agent"
-          label="Agent"
+          label="Library"
           sections={sections}
           pad="pt-1"
           tip="What the model can do in this workspace, and what it already knows"
@@ -623,7 +623,7 @@ export const Rail = memo(function Rail({
 
         <Section
           name="activity"
-          label="Activity"
+          label="Usage"
           sections={sections}
           pad="pt-2.5"
           tip="What the turns so far have cost — tokens on one side, seconds on the other"

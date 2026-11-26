@@ -12,6 +12,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
+import { modalOpen } from "./components/Modal";
+import { isAsking } from "./lib/asking";
 import { ListPaneIcon } from "./components/icons";
 import { useGlide } from "./lib/motion";
 import { FileLinks } from "./lib/links";
@@ -233,6 +235,8 @@ export default function App() {
       opening: s.opening,
       wrote: s.wrote,
       noteError: s.noteError,
+      noteNotice: s.noteNotice,
+      errorIsNotice: s.errorIsNotice,
       busy: s.busy,
       running: s.running,
       unattended: s.unattended,
@@ -547,6 +551,7 @@ export default function App() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
+      if (modalOpen()) return;
       e.preventDefault();
       setTerminalOpen((open) => !open);
     };
@@ -556,6 +561,7 @@ export default function App() {
       if (e.key.toLowerCase() !== "r" || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (target?.closest(".xterm")) return;
+      if (modalOpen()) return;
       e.preventDefault();
       setSwitcherOpen(true);
     };
@@ -592,6 +598,10 @@ export default function App() {
    */
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      // Not behind a panel that has the keyboard: ⌘N under the permission
+      // prompt started a conversation nobody could see, and ⌘K over Settings
+      // opened a second layer underneath it.
+      if (modalOpen()) return;
       if (isChord(e, "k") || (isChord(e, "p") && e.shiftKey)) {
         e.preventDefault();
         setPaletteOpen(true);
@@ -863,7 +873,7 @@ export default function App() {
     await store.setWorkspace(chosen);
     const left = keptIn(from);
     if (left > 0 && from && useStore.getState().status?.workspace !== from) {
-      store.noteError(
+      store.noteNotice(
         `Your unsaved version of ${left === 1 ? "a file" : `${left} files`} is kept for when ${basename(from)} is open again, until this window closes.`,
       );
     }
@@ -948,6 +958,7 @@ export default function App() {
    * cannot run teaches that it does not exist, and one that says why teaches
    * what it needs.
    */
+  const hasData = store.datasets.length > 0;
   const actions = useMemo<Action[]>(
     () => [
       {
@@ -1026,10 +1037,33 @@ export default function App() {
       },
       {
         id: "workspace",
-        label: "Open another folder",
+        label: "Open another workspace…",
         group: "Do",
-        keywords: "workspace project directory switch",
+        keywords: "workspace folder project directory switch",
         run: () => void latest.current?.pickWorkspace(),
+      },
+      // The centre tabs, which the palette's list of panels left out.
+      {
+        id: "pane-conversation",
+        label: "Conversation",
+        group: "Panels",
+        keywords: "transcript chat messages",
+        run: () => setPane("conversation"),
+      },
+      {
+        id: "pane-notes",
+        label: "Notes",
+        group: "Panels",
+        keywords: "notebook markdown write project global",
+        run: () => setPane("notes"),
+      },
+      {
+        id: "pane-data",
+        label: "Data",
+        group: "Panels",
+        keywords: "dataset query sql table csv",
+        unavailable: hasData ? undefined : "No dataset in this conversation yet",
+        run: () => setPane("data"),
       },
       {
         id: "terminal",
@@ -1160,7 +1194,7 @@ export default function App() {
     // start a conversation against the model list as it stood before the
     // models arrived, or paint with the custom theme that was in force then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked, railShut, toggleRail],
+    [store.busy, store.session, theme, readAloud, speaking, recentFolders, workspace, switchBlocked, railShut, toggleRail, hasData],
   );
 
   /**
@@ -1188,8 +1222,16 @@ export default function App() {
    * — which is what the effect above repaints from.
    */
   const chooseTheme = async (next: Theme) => {
+    const was = theme;
     applyTheme(next, custom);
-    await api.setTheme(next);
+    // Every caller fires and forgets, so a failed write looked applied and
+    // then reverted on the next status. Put the screen back and say so.
+    try {
+      await api.setTheme(next);
+    } catch (e) {
+      applyTheme(was ?? "system", custom);
+      store.noteError(`Could not save the theme: ${String(e)}`);
+    }
   };
   latest.current = { pickWorkspace, switchWorkspace, chooseTheme };
 
@@ -1906,7 +1948,7 @@ export default function App() {
                     ready={!!store.session}
                     health={health(store.status?.providers.length, providerId, models)}
                     onPickWorkspace={pickWorkspace}
-                    onSettings={() => setSettingsOpen(true)}
+                    onSettings={() => openSettingsAt("models")}
                   />
                 }
               />
@@ -2061,13 +2103,19 @@ export default function App() {
             // An alert, like the conflict banner: the trust banner and the
             // composer's notices are announced, and this one, the banner that
             // reports failures, wasn't.
-            <div className="banner error" role="alert">
+            // A notice (something kept, not something failed) is a status
+            // in neutral colours: red for good news teaches the reader that
+            // red does not mean anything.
+            <div
+              className={`banner ${store.errorIsNotice ? "info" : "error"}`}
+              role={store.errorIsNotice ? "status" : "alert"}
+            >
               {/* A slow pulse on a dot, and nothing else. The motion spec is
                   explicit about this one: no shake, no flash — a banner that
                   flinches trains the reader to stop reading banners. The pulse
                   is there so an error that arrives while you are looking
                   somewhere else is catchable out of the corner of an eye. */}
-              <span className="banner-dot" />
+              {!store.errorIsNotice && <span className="banner-dot" />}
               {store.error}
               <div className="spacer" />
               <button onClick={store.dismissError}>Dismiss</button>
@@ -2160,22 +2208,6 @@ export default function App() {
             </>
           )}
         </div>
-
-        {store.permission && (
-          <PermissionDialog
-            request={store.permission}
-            askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
-            onDecide={store.answerPermission}
-          />
-        )}
-
-        {store.leaving && (
-          <LeavingDialog
-            rules={store.leaving}
-            onGrant={store.grantLeaving}
-            onClose={store.dismissLeaving}
-          />
-        )}
 
         {/* Renders nothing. Mounted here because it is about the window rather
             than about anything in it. */}
@@ -2286,6 +2318,25 @@ export default function App() {
             />
           )}
         </Suspense>
+
+        {/* After every drawer and picker, so a request that arrives while one
+            is open paints over it, and `Modal` counts it as the one in front:
+            the scrims share a z-index, so document order is what decides. */}
+        {store.permission && (
+          <PermissionDialog
+            request={store.permission}
+            askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
+            onDecide={store.answerPermission}
+          />
+        )}
+
+        {store.leaving && (
+          <LeavingDialog
+            rules={store.leaving}
+            onGrant={store.grantLeaving}
+            onClose={store.dismissLeaving}
+          />
+        )}
 
         {/* Last, so it paints over the drawers and dialogs above it without
             needing a z-index that has to be kept ahead of theirs. One layer for
@@ -2431,7 +2482,7 @@ export function mcpCounts(
  * Taurus works in and every change is undoable — but only offers setup when
  * setup is what is missing.
  */
-function FirstRun({
+export function FirstRun({
   workspace,
   ready,
   health,
@@ -2444,26 +2495,39 @@ function FirstRun({
   onPickWorkspace: () => void;
   onSettings: () => void;
 }) {
+  // The one step that is blocking, so the hero leads with it. Both buttons
+  // used to be offered side by side whatever was missing, with the provider's
+  // state only in the faint line underneath — so somebody with a folder open
+  // and no model could not tell which of the two was the problem.
+  const needsWorkspace = !workspace;
+  const needsModel = health.state === "none" || health.state === "unreachable";
+  const heading = needsWorkspace
+    ? "Point Taurus at a workspace"
+    : needsModel
+      ? health.state === "unreachable"
+        ? `${health.id} is not answering`
+        : "Connect a model to start"
+      : ready
+        ? `Ready in ${basename(workspace)}`
+        : `Opening ${basename(workspace)}…`;
+  const modelFirst = !needsWorkspace && needsModel;
   return (
     <div className="hero">
       <div className="hero-mark">t</div>
       <div className="hero-copy">
-        <h1>
-          {ready && workspace
-            ? `Ready in ${basename(workspace)}`
-            : "Point Taurus at a folder"}
-        </h1>
+        <h1>{heading}</h1>
         <p>
-          It reads and edits files there, runs commands with your approval, and
-          remembers every change so any turn can be undone.
+          {modelFirst
+            ? "Taurus needs a model to talk to: a local Ollama, anything OpenAI-compatible, Anthropic, or Gemini. Add one in Settings › Models."
+            : "A workspace is the folder Taurus works in. It reads and edits files there, runs commands with your approval, and remembers every change so any turn can be undone."}
         </p>
       </div>
       <div className="hero-actions">
-        <button className="primary" onClick={onPickWorkspace}>
-          {ready ? "Change workspace" : "Choose a workspace"}
+        <button className={modelFirst ? undefined : "primary"} onClick={onPickWorkspace}>
+          {workspace ? "Change workspace" : "Choose a workspace"}
         </button>
-        <button onClick={onSettings}>
-          {ready ? "Providers" : "Connect a model"}
+        <button className={modelFirst ? "primary" : undefined} onClick={onSettings}>
+          {needsModel ? "Connect a model" : "Models"}
         </button>
       </div>
       <div className="hero-status">
@@ -2783,14 +2847,7 @@ function Attention() {
  * definition the newest thing in the transcript — the harness runs one call at
  * a time and this one is blocking it.
  */
-export function isAsking(entries: Entry[]): boolean {
-  const last = entries[entries.length - 1];
-  return (
-    last?.kind === "tool" &&
-    last.status === "running" &&
-    last.view?.type === "questions"
-  );
-}
+export { isAsking } from "./lib/asking";
 
 /**
  * The last thing worth reporting from a turn in flight.

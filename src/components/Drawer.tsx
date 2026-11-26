@@ -61,7 +61,12 @@ export function Drawer({
 }) {
   return (
     <Modal onClose={onClose}>
-      <aside className={panel ? `drawer ${panel}` : "drawer"}>
+      <aside
+        className={panel ? `drawer ${panel}` : "drawer"}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <DrawerHead title={title} onClose={onClose}>
           {actions}
         </DrawerHead>

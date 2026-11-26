@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { KeyStatus } from "../../lib/api";
 import { Field } from "./Field";
+import { useArmed } from "../../lib/armed";
 
 /** What stands in for the key box where there is nothing to type into. */
 export const KEY_NONE = "settings-key-none py-2 text-12-5 text-faint italic";
@@ -45,6 +46,9 @@ export function ApiKeyField({
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Two presses, like every other delete: a removed key is gone from the
+  // keychain, and getting it back means finding it again at the provider.
+  const { armed, arm, disarm } = useArmed();
 
   if (!available) {
     return (
@@ -110,11 +114,26 @@ export function ApiKeyField({
         >
           Store
         </button>
-        {stored && (
-          <button className="danger" disabled={busy} onClick={() => run(onClear)}>
-            Remove
-          </button>
-        )}
+        {stored &&
+          (armed ? (
+            <>
+              <button
+                className="danger"
+                disabled={busy}
+                onClick={() => {
+                  disarm();
+                  run(onClear);
+                }}
+              >
+                Remove the key
+              </button>
+              <button onClick={disarm}>Keep it</button>
+            </>
+          ) : (
+            <button className="danger" disabled={busy} onClick={() => arm(true)}>
+              Remove
+            </button>
+          ))}
       </div>
       {error && <div className="settings-key-error text-12 text-danger">{error}</div>}
     </Field>
