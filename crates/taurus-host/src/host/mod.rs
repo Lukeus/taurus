@@ -323,6 +323,15 @@ pub struct Host {
     /// `update_plan` calls and the person's edits (see [`Host::restore_plan`]),
     /// and a second copy on disk could disagree with the calls that made it.
     plans: RwLock<std::collections::HashMap<String, PlanBoard>>,
+    /// The conversations that are planning: reading and writing a plan, with
+    /// nothing that changes anything offered until the person approves it.
+    /// See [`crate::planning`].
+    ///
+    /// Held here and not on the plan board because it is about what the next
+    /// turn may do, which is the host's to decide, and the board is about what
+    /// the model wrote. Kept in memory only for now: a conversation reopened
+    /// after a restart is back to doing, as it would be after approving.
+    planning: RwLock<HashSet<String>>,
     /// The language servers for this workspace, and what they were built
     /// from. See [`Host::refresh_lsp`].
     ///
@@ -451,6 +460,7 @@ impl Host {
             proposals,
             agent_proposals,
             plans: RwLock::new(std::collections::HashMap::new()),
+            planning: RwLock::new(HashSet::new()),
             lsp: std::sync::Mutex::new(None),
         }
     }

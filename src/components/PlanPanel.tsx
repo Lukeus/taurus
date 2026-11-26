@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { isComposing } from "../lib/keys";
 
 import type { PlanEdited, Step } from "../lib/api";
 import type { PlanView } from "../state/store";
+import { CommentBox } from "./CommentBox";
 
 /** Mirrors `MAX_STEPS` and `MAX_STEP_CHARS` in `taurus_tools::builtin::plan`. */
 const MAX_STEPS = 12;
@@ -46,20 +47,55 @@ const MAX_STEP_CHARS = 120;
  * they are. `yours` names the steps the person wrote, which the model has to
  * keep — the backend refuses a list from it that drops one — so they carry a
  * word saying so. Without `onEdit` the panel only reads.
+ *
+ * While the conversation is planning, the plan is a proposal waiting on the
+ * person, and the panel says so: it opens on its own, each open step takes a
+ * comment where its status would be — every one would only say "queued" — and
+ * the foot has **Approve**. A comment goes with the next message, the way one
+ * on a diff does, and keeps the conversation planning; approving is what ends
+ * it. See `taurus_host::planning`.
  */
 export function PlanPanel({
   view,
   yours = [],
   onEdit,
+  planning = false,
+  busy = false,
+  onApprove,
+  onComment,
+  commented,
 }: {
   view: PlanView;
   yours?: string[];
   onEdit?: (seen: Step[], steps: Step[]) => Promise<PlanEdited | null>;
+  /** The conversation is planning: this plan is waiting to be approved. */
+  planning?: boolean;
+  /** A turn is running, so there is nothing settled to approve yet. */
+  busy?: boolean;
+  onApprove?: () => void;
+  /** Leave a comment on one step, to go with the next message. */
+  onComment?: (step: Step, text: string) => void;
+  /** Whether a step already has a comment waiting, to mark it. */
+  commented?: (step: Step) => boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(planning);
   const [editing, setEditing] = useState<Step[] | null>(null);
+  /** The step with its comment box open, by position. One at a time. */
+  const [writing, setWriting] = useState<number | null>(null);
   const { steps } = view;
-  const { done, live, foot } = summarize(steps);
+  const summary = summarize(steps);
+  const { done, foot } = summary;
+  const approvable = planning && !!onApprove && done < steps.length;
+  // Nothing is in progress in a plan waiting for approval, by design, and
+  // "No step in progress." would read as something having stalled.
+  const live = !approvable ? summary.live : busy ? "Planning…" : "Waiting for your approval";
+
+  // A plan that turns up while planning is the thing the person was waiting
+  // for, so it is shown rather than summarized. Only ever opens: closing it
+  // again is theirs to do.
+  useEffect(() => {
+    if (approvable) setOpen(true);
+  }, [approvable]);
 
   return (
     <section className={`plan-panel${open ? " open" : ""}`}>
@@ -104,34 +140,77 @@ export function PlanPanel({
         <div className="plan-body">
           <ol className="plan-list">
             {steps.map((step, i) => (
-              <li key={i} className={`plan-step ${step.state}`}>
-                {/* The mark is a shape, and a shape cannot be read aloud. The
-                    status beside it is the same state in words. */}
-                <span className="plan-mark" aria-hidden="true">
-                  {step.state === "done" ? "✓" : ""}
-                </span>
-                <span className="plan-text">
-                  {step.text}
-                  {yours.includes(step.text.trim()) && (
-                    <span className="plan-yours micro">added by you</span>
+              <Fragment key={i}>
+                <li
+                  className={`plan-step ${step.state}${commented?.(step) ? " commented" : ""}`}
+                >
+                  {/* The mark is a shape, and a shape cannot be read aloud. The
+                      status beside it is the same state in words. */}
+                  <span className="plan-mark" aria-hidden="true">
+                    {step.state === "done" ? "✓" : ""}
+                  </span>
+                  <span className="plan-text">
+                    {step.text}
+                    {yours.includes(step.text.trim()) && (
+                      <span className="plan-yours micro">added by you</span>
+                    )}
+                    {/* What the model said would prove the step, which is what
+                        it's asked to run before calling the work done. */}
+                    {step.check && (
+                      <span className="plan-check block font-mono text-11-5 text-faint wrap-anywhere">
+                        check: {step.check}
+                      </span>
+                    )}
+                  </span>
+                  {/* A finished step is history, and a comment on it would be
+                      about work there is no taking back. */}
+                  {onComment && step.state !== "done" ? (
+                    <button
+                      type="button"
+                      className="plan-edit plan-comment"
+                      aria-label={`Comment on step ${i + 1}`}
+                      onClick={() => setWriting(i)}
+                    >
+                      {commented?.(step) ? "commented" : "Comment"}
+                    </button>
+                  ) : (
+                    <span className="plan-status">{STATUS[step.state]}</span>
                   )}
-                  {/* What the model said would prove the step, which is what
-                      it's asked to run before calling the work done. */}
-                  {step.check && (
-                    <span className="plan-check block font-mono text-11-5 text-faint wrap-anywhere">
-                      check: {step.check}
-                    </span>
-                  )}
-                </span>
-                <span className="plan-status">{STATUS[step.state]}</span>
-              </li>
+                </li>
+                {onComment && writing === i && (
+                  <li className="plan-comment-box">
+                    <CommentBox
+                      onSave={(text) => {
+                        onComment(step, text);
+                        setWriting(null);
+                      }}
+                      onCancel={() => setWriting(null)}
+                    />
+                  </li>
+                )}
+              </Fragment>
             ))}
           </ol>
           <div className="plan-foot">
-            <span>{foot}</span>
+            <span>
+              {approvable
+                ? "Nothing changes until you approve. Comments go with your next message."
+                : foot}
+            </span>
             {onEdit && (
               <button type="button" className="plan-edit" onClick={() => setEditing(steps)}>
                 Edit
+              </button>
+            )}
+            {approvable && (
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                data-tip={busy ? "The plan is still being written" : undefined}
+                onClick={onApprove}
+              >
+                Approve
               </button>
             )}
           </div>

@@ -66,11 +66,24 @@ impl Host {
         // rather than living in the shared registry. Children get the shared
         // registry, which has no spawn tool — that is the depth cap.
         let mut registry = self.registry.read().await.clone();
+        let planning = self.is_planning(turn.session_id).await;
         // The roster is snapshotted here, so a turn sees the set of agents it
         // started with even if a file is saved while it runs. Each read is
         // bound before the next await, so no guard is held across one — see
         // `Self::rosters`.
-        let roster = Arc::new(self.agents.read().await.to_vec());
+        //
+        // While planning, only the agents that read, and children whose tools
+        // come from a copy of the registry with every writer taken out. See
+        // `crate::planning` for why it takes both.
+        let (roster, children) = if planning {
+            let readers = crate::planning::readers(&self.agents.read().await.to_vec(), &registry);
+            let mut copy = registry.clone();
+            crate::planning::read_only(&mut copy);
+            (readers, Arc::new(RwLock::new(copy)))
+        } else {
+            (self.agents.read().await.to_vec(), self.registry.clone())
+        };
+        let roster = Arc::new(roster);
         let concurrent = self.settings.read().await.max_concurrent_agents as usize;
         let models = self.agent_models.read().await.clone();
         let logs = SubagentLogs::new(self.workspace().await, turn.session_id);
@@ -80,22 +93,26 @@ impl Host {
             generation: super::providers::generation_of(&built),
             built,
         });
-        registry.register(Arc::new(
-            SpawnSubagent::new(provider.clone(), self.registry.clone(), model, concurrent)
-                .with_defaults(base.clone())
-                .with_roster(roster, models)
-                // Every child's conversation is kept, under this one's. The parent
-                // transcript still records a delegation as one call and one answer
-                // — that is what delegating is for — but the work behind that
-                // answer is no longer thrown away with the tool result.
-                .with_recorder(Arc::new(logs))
-                // A delegate that writes can have a copy of the workspace, so
-                // it can run beside others and in the background.
-                .with_isolation(self.worktrees.clone())
-                // A delegation can name its model, which is how one task is
-                // tried on several: see `/best-of`.
-                .with_models(book),
-        ));
+        // With nobody left to delegate to, there is no spawn tool: a tool whose
+        // every call is refused is a turn spent learning that.
+        if !roster.is_empty() {
+            registry.register(Arc::new(
+                SpawnSubagent::new(provider.clone(), children, model, concurrent)
+                    .with_defaults(base.clone())
+                    .with_roster(roster, models)
+                    // Every child's conversation is kept, under this one's. The parent
+                    // transcript still records a delegation as one call and one answer
+                    // — that is what delegating is for — but the work behind that
+                    // answer is no longer thrown away with the tool result.
+                    .with_recorder(Arc::new(logs))
+                    // A delegate that writes can have a copy of the workspace, so
+                    // it can run beside others and in the background.
+                    .with_isolation(self.worktrees.clone())
+                    // A delegation can name its model, which is how one task is
+                    // tried on several: see `/best-of`.
+                    .with_models(book),
+            ));
+        }
 
         // Registered per turn, alongside the spawn tool and for the same
         // reason: these address the person watching this conversation, and a
@@ -194,6 +211,15 @@ impl Host {
             &mut registry,
             &self.settings.read().await.disabled_tools.clone(),
         );
+        // Last, so it applies to everything above: the shared tools, the
+        // per-turn ones, and whatever a plugin or MCP server added.
+        if planning {
+            let removed = crate::planning::read_only(&mut registry);
+            info!(
+                tools = removed.len(),
+                "planning: tools that change things withheld"
+            );
+        }
 
         let workspace = self.workspace.read().await.clone();
         let skill_section = self.catalog.read().await.prompt_section();
@@ -242,6 +268,44 @@ impl Host {
         // The same board the tool writes to, so what the model wrote on the
         // last iteration is what it reads on the next one.
         .with_plan(plan)
+        .with_planning(planning)
+    }
+
+    /// The steps of a conversation's plan as they stand: what a frontend
+    /// shows the person when a planning turn ends, to approve or not.
+    pub async fn plan_steps(&self, session_id: &str) -> Vec<Step> {
+        self.plan_board(session_id).await.steps()
+    }
+
+    /// Whether a conversation is planning. See [`crate::planning`].
+    pub async fn is_planning(&self, session_id: &str) -> bool {
+        self.planning.read().await.contains(session_id)
+    }
+
+    /// Starts or stops planning in a conversation, from its next turn.
+    ///
+    /// Never mid-turn: the turn running now was built with the tools it has,
+    /// and keeps them. Approving a plan is this with `false`, followed by the
+    /// message that says so.
+    ///
+    /// Starting drops whatever plan the conversation had. Planning is asking
+    /// for a plan to approve, and an unfinished one carried in from earlier
+    /// work would otherwise stand in for it: the model wouldn't be asked for
+    /// the plan it described in prose, and a frontend would offer the old
+    /// steps for approval as though they answered the new request.
+    pub async fn set_planning(&self, session_id: &str, on: bool) {
+        let started = {
+            let mut planning = self.planning.write().await;
+            if on {
+                planning.insert(session_id.to_string())
+            } else {
+                planning.remove(session_id);
+                false
+            }
+        };
+        if started {
+            self.forget_plan(session_id).await;
+        }
     }
 
     /// Refuses a turn in a conversation whose files are set aside because

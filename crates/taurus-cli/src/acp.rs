@@ -23,6 +23,12 @@
 //! - **Sessions.** Each one is an ordinary Taurus conversation, transcript and
 //!   all, so `taurus sessions` lists it and the app can open it. `session/load`
 //!   isn't offered yet.
+//! - **Modes.** Two session modes: `default`, and `plan`, which is Taurus's
+//!   planning — the model reads and writes a plan with nothing that changes
+//!   anything offered to it (see `taurus_host::planning`). `session/set_mode`
+//!   switches between them from the next turn. ACP has no approve button, so
+//!   approving is switching back to `default` and saying so in the next
+//!   prompt; the editor's own mode picker is the whole interface.
 //! - **The editor's MCP servers** aren't started; Taurus's own are.
 //!
 //! The protocol is written out here rather than taken from a crate: it's a
@@ -52,6 +58,43 @@ const PROTOCOL_VERSION: i64 = 1;
 /// A tool's output is cut to this in what the editor is sent. The model gets
 /// the whole of it; the editor's card is for a person to glance at.
 const MAX_SHOWN_OUTPUT: usize = 4_000;
+
+/// The session modes offered, by id. `plan` is Taurus's planning.
+const DEFAULT_MODE: &str = "default";
+const PLAN_MODE: &str = "plan";
+
+/// The modes a session has, with the one it's in, as ACP's `SessionModeState`.
+///
+/// Sent with every new session, which is what makes an editor show its mode
+/// picker at all.
+fn modes(planning: bool) -> Value {
+    json!({
+        "currentModeId": if planning { PLAN_MODE } else { DEFAULT_MODE },
+        "availableModes": [
+            {
+                "id": DEFAULT_MODE,
+                "name": "Default",
+                "description": "Reads, edits and runs commands, asking you first where Taurus would."
+            },
+            {
+                "id": PLAN_MODE,
+                "name": "Plan",
+                "description": "Reads and writes a plan, with nothing that changes anything available. Switch back to Default to carry it out."
+            }
+        ]
+    })
+}
+
+/// Whether a mode id is planning, or why it isn't a mode.
+fn planning_for(mode: &str) -> Result<bool, String> {
+    match mode {
+        DEFAULT_MODE => Ok(false),
+        PLAN_MODE => Ok(true),
+        other => Err(format!(
+            "no mode '{other}'. Available: {DEFAULT_MODE}, {PLAN_MODE}"
+        )),
+    }
+}
 
 /// JSON-RPC's codes for the errors this sends.
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -528,6 +571,7 @@ impl Server {
             "authenticate" => Ok(json!({})),
             "session/new" => self.new_session(&params).await,
             "session/prompt" => self.prompt(&params).await,
+            "session/set_mode" => self.set_mode(&params).await,
             other => Err((METHOD_NOT_FOUND, format!("{other} isn't supported"))),
         }
     }
@@ -582,7 +626,22 @@ impl Server {
             .lock()
             .unwrap()
             .insert(id.clone(), conversation);
-        Ok(json!({ "sessionId": id }))
+        Ok(json!({ "sessionId": id, "modes": modes(false) }))
+    }
+
+    /// Switches a session between doing and planning, from its next turn.
+    ///
+    /// Not held behind the conversation's turn lock: a mode is often switched
+    /// while a turn runs, and the turn running keeps the tools it was built
+    /// with either way.
+    async fn set_mode(&self, params: &Value) -> Result<Value, (i64, String)> {
+        let (id, _) = self.conversation(params)?;
+        let mode = params["modeId"]
+            .as_str()
+            .ok_or((INVALID_PARAMS, "no modeId".to_string()))?;
+        let planning = planning_for(mode).map_err(|why| (INVALID_PARAMS, why))?;
+        self.host.set_planning(&id, planning).await;
+        Ok(json!({}))
     }
 
     /// Makes `cwd` the host's workspace, and holds it there until the guard
@@ -789,6 +848,28 @@ mod tests {
             decision(&json!({"outcome": {"outcome": "cancelled"}})),
             PermissionDecision::Deny
         );
+    }
+
+    #[test]
+    fn a_session_offers_doing_and_planning_and_starts_doing() {
+        let offered = modes(false);
+        assert_eq!(offered["currentModeId"], DEFAULT_MODE);
+        let ids: Vec<&str> = offered["availableModes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [DEFAULT_MODE, PLAN_MODE]);
+        assert_eq!(modes(true)["currentModeId"], PLAN_MODE);
+    }
+
+    #[test]
+    fn a_mode_id_is_planning_or_refused() {
+        assert_eq!(planning_for("plan"), Ok(true));
+        assert_eq!(planning_for("default"), Ok(false));
+        let refused = planning_for("yolo").unwrap_err();
+        assert!(refused.contains("default, plan"), "{refused}");
     }
 
     #[test]

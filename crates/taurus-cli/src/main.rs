@@ -354,6 +354,12 @@ pub struct RunArgs {
     /// Also stream the model's reasoning, when it produces any.
     #[arg(short, long, conflicts_with = "quiet")]
     pub verbose: bool,
+
+    /// Plan first: the model reads and writes a plan, with nothing that
+    /// changes anything available to it, and you approve the plan before any
+    /// of it is carried out. Without a terminal it plans and stops.
+    #[arg(long)]
+    pub plan: bool,
 }
 
 /// What the agent may do without being asked.
@@ -435,6 +441,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                 format,
                 args.quiet,
                 args.verbose,
+                args.plan,
             )
             .await
         }
@@ -583,6 +590,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                         Some(&Some(fork)),
                         &prompt,
                         Format::Human,
+                        false,
                         false,
                         false,
                     )
