@@ -39,10 +39,20 @@ pub struct MessagesBody {
 }
 
 impl MessagesBody {
-    pub fn from_request(request: &ChatRequest, thinking: Option<serde_json::Value>) -> Self {
+    /// `cap` is the model's own output limit, when its models entry gave one:
+    /// the default above is more than some models will write, and a request
+    /// past a model's limit is a 400 on every turn, so nothing asks for more.
+    pub fn from_request(
+        request: &ChatRequest,
+        thinking: Option<serde_json::Value>,
+        cap: Option<u32>,
+    ) -> Self {
+        let wanted = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
         Self {
             model: request.model.clone(),
-            max_tokens: request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+            max_tokens: cap
+                .filter(|cap| *cap > 0)
+                .map_or(wanted, |cap| wanted.min(cap)),
             messages: crate::convert::messages_to_wire(request),
             stream: true,
             system: crate::convert::system_to_wire(request.system.as_deref()),
@@ -70,6 +80,9 @@ pub struct ModelEntry {
     /// budget sixteen times too small.
     #[serde(default)]
     pub max_input_tokens: Option<u32>,
+    /// The most the model will write in one reply.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub capabilities: Option<serde_json::Value>,
 }
@@ -291,10 +304,20 @@ mod tests {
     fn thinking_is_omitted_from_the_body_unless_asked_for() {
         // The only value valid on every model this API has served.
         let request = ChatRequest::new("claude-opus-5", vec![taurus_provider::Message::user("hi")]);
-        let body = MessagesBody::from_request(&request, None);
+        let body = MessagesBody::from_request(&request, None, None);
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("thinking").is_none(), "{json}");
         assert_eq!(json["max_tokens"], DEFAULT_MAX_TOKENS);
+
+        // A model that writes less than the default is asked for no more than
+        // it can, whatever was asked for.
+        let json =
+            serde_json::to_value(MessagesBody::from_request(&request, None, Some(8_192))).unwrap();
+        assert_eq!(json["max_tokens"], 8_192);
+        let entry: ModelEntry =
+            serde_json::from_str(r#"{"id":"m","max_input_tokens":200000,"max_tokens":8192}"#)
+                .unwrap();
+        assert_eq!(entry.max_tokens, Some(8_192));
     }
 
     #[test]
@@ -302,7 +325,7 @@ mod tests {
         let mut request =
             ChatRequest::new("claude-opus-5", vec![taurus_provider::Message::user("hi")]);
         request.max_tokens = Some(1024);
-        let body = MessagesBody::from_request(&request, None);
+        let body = MessagesBody::from_request(&request, None, None);
         assert_eq!(body.max_tokens, 1024);
     }
 }

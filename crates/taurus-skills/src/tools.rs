@@ -145,6 +145,67 @@ pub struct RunSkillScript {
     catalog: SharedCatalog,
 }
 
+/// The most files and bytes [`skill_digest`] reads before giving up. A skill
+/// is a page of instructions and a few scripts; one past these is carrying
+/// something else, and is asked about every time instead.
+const DIGEST_MAX_FILES: usize = 512;
+const DIGEST_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const DIGEST_MAX_DEPTH: usize = 16;
+
+/// A short fingerprint of every file under `dir`, and of `script` wherever it
+/// is: names and contents, in a fixed order. `None` past the limits above, or
+/// when something can't be read.
+///
+/// Links are followed, so a script that is a link elsewhere is pinned to what
+/// it leads to. Sixteen hex digits: long enough that nobody makes a second
+/// folder that reads the same, short enough to read back in `permissions.json`.
+fn skill_digest(dir: &std::path::Path, script: &std::path::Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
+
+    fn walk(dir: &Path, depth: usize, into: &mut Vec<PathBuf>) -> Option<()> {
+        if depth > DIGEST_MAX_DEPTH {
+            return None;
+        }
+        for entry in std::fs::read_dir(dir).ok()? {
+            let path = entry.ok()?.path();
+            if into.len() >= DIGEST_MAX_FILES {
+                return None;
+            }
+            let meta = std::fs::metadata(&path).ok()?;
+            if meta.is_dir() {
+                walk(&path, depth + 1, into)?;
+            } else {
+                into.push(path);
+            }
+        }
+        Some(())
+    }
+
+    let mut files = Vec::new();
+    walk(dir, 0, &mut files)?;
+    if !files.iter().any(|f| f == script) {
+        files.push(script.to_path_buf());
+    }
+    files.sort();
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    for file in &files {
+        let bytes = std::fs::read(file).ok()?;
+        total += bytes.len() as u64;
+        if total > DIGEST_MAX_BYTES {
+            return None;
+        }
+        let name = file.strip_prefix(dir).unwrap_or(file).to_string_lossy();
+        hasher.update((name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    let digest = hasher.finalize();
+    Some(digest[..8].iter().map(|b| format!("{b:02x}")).collect())
+}
+
 impl RunSkillScript {
     pub fn new(catalog: SharedCatalog) -> Self {
         Self { catalog }
@@ -174,6 +235,39 @@ impl Tool for RunSkillScript {
     /// it names the files it will write no more than a shell command does.
     fn touches_unpredictably(&self) -> bool {
         true
+    }
+
+    /// The skill, the script, and what the skill's folder holds.
+    ///
+    /// Keyed by name alone, one "always" covered every script in every skill,
+    /// and a project's skill folders are files a grant for `write_file` can
+    /// change: allow one script, then edit it, and the edit ran unasked. The
+    /// whole folder rather than the one script, because a script reads what's
+    /// beside it (`import helpers`, `source ./lib.sh`) and `SKILL.md` says which
+    /// file the script is.
+    async fn grant_key(&self, input: &serde_json::Value) -> Option<Result<String, &'static str>> {
+        let skill = input.get("skill")?.as_str()?;
+        let script = input.get("script")?.as_str()?;
+        let (dir, path) = {
+            let catalog = self.catalog.read().await;
+            let found = catalog.get(skill)?;
+            // A call naming a script the skill doesn't have is refused before
+            // anything runs, so there is nothing to pin.
+            let listed = found
+                .frontmatter
+                .scripts
+                .iter()
+                .find(|s| s.path == script)?;
+            (found.dir.clone(), found.resource_path(&listed.path))
+        };
+        let digest = tokio::task::spawn_blocking(move || skill_digest(&dir, &path))
+            .await
+            .ok()
+            .flatten();
+        Some(match digest {
+            Some(digest) => Ok(format!("{skill}/{script}@{digest}")),
+            None => Err("runs a skill whose files are too many or too large to pin a grant to"),
+        })
     }
 
     fn preview(&self, input: &serde_json::Value) -> String {
@@ -1003,6 +1097,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_grant_is_pinned_to_the_script_and_what_its_skill_holds() {
+        let f = fixture(&[
+            (
+                "greeter",
+                "scripts:\n  - path: hello.sh\n    interpreter: sh\n    description: greets\n",
+            ),
+            (
+                "other",
+                "scripts:\n  - path: hello.sh\n    interpreter: sh\n    description: greets\n",
+            ),
+        ]);
+        write_script(f.skills.path(), "greeter", "hello.sh", "echo hi\n");
+        write_script(f.skills.path(), "other", "hello.sh", "echo hi\n");
+        let tool = RunSkillScript::new(f.catalog.clone());
+        let key = |skill: &str| {
+            let tool = &tool;
+            let input = serde_json::json!({"skill": skill, "script": "hello.sh"});
+            async move { tool.grant_key(&input).await.unwrap().unwrap() }
+        };
+
+        let first = key("greeter").await;
+        assert!(first.starts_with("greeter/hello.sh@"), "{first}");
+        assert_eq!(key("greeter").await, first, "the same files key the same");
+        assert_ne!(key("other").await, first, "another skill is another grant");
+
+        // Editing the script, or a file beside it, is a script nobody allowed.
+        write_script(f.skills.path(), "greeter", "hello.sh", "echo changed\n");
+        let edited = key("greeter").await;
+        assert_ne!(edited, first);
+        std::fs::write(f.skills.path().join("greeter/helpers.sh"), "x").unwrap();
+        assert_ne!(key("greeter").await, edited);
+
+        // Nothing to pin for a call that names nothing this session has.
+        for input in [
+            serde_json::json!({"skill": "missing", "script": "hello.sh"}),
+            serde_json::json!({"skill": "greeter", "script": "nope.sh"}),
+        ] {
+            assert!(tool.grant_key(&input).await.is_none(), "{input}");
+        }
+    }
+
+    #[tokio::test]
     async fn run_skill_script_runs_a_script_discovered_in_the_scripts_directory() {
         // The path of a discovered script always contains a forward slash,
         // because that is how the catalog writes logical paths. Joining it onto
@@ -1357,24 +1493,38 @@ mod tests {
         let root = f.ctx.workspace.clone();
         std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
         std::fs::create_dir_all(root.join(".taurus")).unwrap();
-        std::fs::write(
-            root.join(".taurus/permissions.json"),
-            r#"{"allowed": ["run_skill_script"]}"#,
-        )
-        .unwrap();
-        let home = TempDir::new().unwrap();
-        let engine = PermissionEngine::new(&root, home.path(), Box::new(taurus_tools::DenyAll));
-        let ctx = ToolContext::new(&root, Arc::new(engine), CancellationToken::new());
-        let mut registry = taurus_tools::ToolRegistry::new();
-        registry.register(Arc::new(RunSkillScript::new(f.catalog.clone())));
-        let text = registry
-            .execute(
-                "run_skill_script",
-                serde_json::json!({"skill": "alpha", "script": "run.sh"}),
-                &ctx,
-            )
+        let input = serde_json::json!({"skill": "alpha", "script": "run.sh"});
+        let run = |rule: String| {
+            let (root, catalog, input) = (root.clone(), f.catalog.clone(), input.clone());
+            async move {
+                std::fs::write(
+                    root.join(".taurus/permissions.json"),
+                    serde_json::json!({"allowed": [rule]}).to_string(),
+                )
+                .unwrap();
+                let home = TempDir::new().unwrap();
+                let engine =
+                    PermissionEngine::new(&root, home.path(), Box::new(taurus_tools::DenyAll));
+                let ctx = ToolContext::new(&root, Arc::new(engine), CancellationToken::new());
+                let mut registry = taurus_tools::ToolRegistry::new();
+                registry.register(Arc::new(RunSkillScript::new(catalog)));
+                registry
+                    .execute("run_skill_script", input, &ctx)
+                    .await
+                    .map_or_else(|e| e.to_string(), |o| o.to_string())
+            }
+        };
+        // A grant by the tool's name alone, as one was kept before, no longer
+        // reaches a script: it's asked about, and nobody here says yes.
+        let text = run("run_skill_script".to_string()).await;
+        assert!(text.contains("permission denied"), "{text}");
+
+        let pinned = RunSkillScript::new(f.catalog.clone())
+            .grant_key(&input)
             .await
-            .map_or_else(|e| e.to_string(), |o| o.to_string());
+            .unwrap()
+            .unwrap();
+        let text = run(format!("run_skill_script:{pinned}")).await;
         assert!(text.contains("hook=1"), "{text}");
         assert!(text.contains("plain=0"), "{text}");
         assert!(!root.join(".git/hooks/x").exists(), "{text}");

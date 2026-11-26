@@ -107,6 +107,12 @@ impl Tree {
     /// A tree that had already exited reports itself as a failure here, with
     /// what `kill` said, so the message says what was asked rather than
     /// claiming something is wrong.
+    /// The process group this tree is, for ending it from somewhere that
+    /// can't wait. See [`end_group_now`].
+    pub fn group(&self) -> Option<u32> {
+        self.group
+    }
+
     pub async fn end(&mut self) -> Result<(), String> {
         let group = kill_group(self.group).await;
         // The leader as well, which the signal to its group has nearly always
@@ -165,6 +171,12 @@ impl Tree {
     /// to walk, no parent that has to still be alive, and nothing to start
     /// first. A job whose processes have all exited already is ended without
     /// complaint.
+    /// Always `None`: a Job Object ends with the last handle to it, which is
+    /// this process's, so a tree here can't outlive the app that started it.
+    pub fn group(&self) -> Option<u32> {
+        None
+    }
+
     pub async fn end(&mut self) -> Result<(), String> {
         self.child
             .start_kill()
@@ -251,6 +263,46 @@ fn kill_command(pid: u32) -> Option<(&'static str, Vec<String>)> {
     }
     // `--` is load-bearing. See above.
     Some(("kill", vec!["-KILL".into(), "--".into(), format!("-{pid}")]))
+}
+
+/// Ends the group `group` leads, without an async context to do it from.
+///
+/// For a process on its way out: a window's close handler, or the last lines
+/// of a CLI before it returns. [`Tree::end`] runs on the runtime, and a
+/// runtime being dropped drops the tasks that would have run it, so a tree
+/// left to be ended that way lost only its leader to `kill_on_drop`, and
+/// whatever the leader started (`npm run dev` and its `node`) kept running
+/// with nobody left to reach it. The same `kill` [`Tree::end`] uses, waited
+/// for here.
+#[cfg(unix)]
+pub fn end_group_now(group: u32) -> Result<(), String> {
+    let Some((program, args)) = kill_command(group) else {
+        return Err(format!(
+            "{group} does not name a process group, so nothing was signaled"
+        ));
+    };
+    let out = std::process::Command::new(program)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "{program} {} exited {:?}: {}",
+        args.join(" "),
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    ))
+}
+
+/// Nothing to do on Windows. See the Windows [`Tree::group`].
+#[cfg(not(unix))]
+pub fn end_group_now(_group: u32) -> Result<(), String> {
+    Ok(())
 }
 
 /// Signals the group `group` leads, and says what went wrong if anything did.

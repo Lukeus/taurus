@@ -416,6 +416,122 @@ async fn several_tool_calls_return_results_in_the_order_they_were_requested() {
 }
 
 #[tokio::test]
+async fn an_answer_that_failed_partway_is_kept_as_it_was_shown() {
+    let h = harness(vec![ScriptedTurn::transient_failure_after_text(
+        "The answer is",
+    )]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "what is it").await;
+    assert!(outcome.is_err(), "{outcome:?}");
+    let last = session.messages.last().expect("nothing kept");
+    assert_eq!(last.role, Role::Assistant);
+    let text = last.text();
+    assert!(text.contains("The answer is"), "{text}");
+    assert!(text.contains("cut off"), "{text}");
+}
+
+#[tokio::test]
+async fn a_read_listed_after_a_write_reads_what_was_written() {
+    let h = harness(vec![
+        ScriptedTurn::tool_calls(vec![
+            ("r0", "read_file", serde_json::json!({"path": "a.txt"})),
+            (
+                "w",
+                "write_file",
+                serde_json::json!({"path": "a.txt", "content": "after\n"}),
+            ),
+            ("r1", "read_file", serde_json::json!({"path": "a.txt"})),
+            ("r2", "grep", serde_json::json!({"pattern": "after"})),
+        ]),
+        ScriptedTurn::text("ok"),
+    ]);
+    std::fs::write(h.workspace.join("a.txt"), "before\n").unwrap();
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "write then confirm").await;
+    assert!(outcome.is_ok());
+
+    let text_of = |id: &str| {
+        session
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == id => Some(content.to_text()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no result for {id}"))
+    };
+    assert!(text_of("r0").contains("before"), "{}", text_of("r0"));
+    assert!(text_of("r1").contains("after"), "{}", text_of("r1"));
+    assert!(!text_of("r1").contains("before"), "{}", text_of("r1"));
+    assert!(text_of("r2").contains("a.txt"), "{}", text_of("r2"));
+    assert_eq!(results_in(&session), ["r0", "w", "r1", "r2"]);
+}
+
+#[tokio::test]
+async fn a_call_the_output_limit_cut_off_is_answered_not_run() {
+    let h = harness(vec![
+        ScriptedTurn {
+            events: vec![
+                StreamEvent::ToolUseStart {
+                    id: "whole".into(),
+                    name: "list_dir".into(),
+                },
+                StreamEvent::ToolUseInputDelta {
+                    id: "whole".into(),
+                    json: "{}".into(),
+                },
+                StreamEvent::ToolUseEnd { id: "whole".into() },
+                StreamEvent::ToolUseStart {
+                    id: "cut".into(),
+                    name: "write_file".into(),
+                },
+                StreamEvent::ToolUseInputDelta {
+                    id: "cut".into(),
+                    json: r#"{"path": "big.txt", "content": "aaaa"#.into(),
+                },
+                StreamEvent::ToolUseEnd { id: "cut".into() },
+            ],
+            stop: StopReason::MaxTokens,
+            failure: None,
+            stopped: false,
+        },
+        ScriptedTurn::text("ok"),
+    ]);
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "write a big file").await;
+    assert!(outcome.is_ok());
+
+    assert!(!h.workspace.join("big.txt").exists());
+    let result = |id: &str| {
+        session
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    ..
+                } if tool_use_id == id => Some((content.to_text(), *is_error)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no result for {id}"))
+    };
+    let (text, failed) = result("cut");
+    assert!(failed, "{text}");
+    assert!(text.contains("output limit"), "{text}");
+    // A call that finished before the limit is whole, and runs.
+    let (text, failed) = result("whole");
+    assert!(!failed, "{text}");
+}
+
+#[tokio::test]
 async fn an_unparseable_prompted_call_gets_syntax_guidance_not_a_missing_tool_error() {
     let h = harness(vec![
         ScriptedTurn::tool_call(
@@ -445,10 +561,13 @@ async fn an_unparseable_prompted_call_gets_syntax_guidance_not_a_missing_tool_er
 
 #[tokio::test]
 async fn the_iteration_ceiling_stops_a_model_stuck_in_a_tool_loop() {
-    // Every scripted turn calls a tool, so only the ceiling can end this.
-    let turns = (0..30)
+    // Every round calls a tool, so only the ceiling can end this.
+    let mut turns: Vec<ScriptedTurn> = (0..4)
         .map(|_| ScriptedTurn::tool_call("t", "list_dir", serde_json::json!({})))
         .collect();
+    turns.push(ScriptedTurn::text(
+        "Listed it four times; the config is still unread.",
+    ));
     let config = AgentConfig {
         max_iterations: 4,
         ..Default::default()
@@ -458,8 +577,12 @@ async fn the_iteration_ceiling_stops_a_model_stuck_in_a_tool_loop() {
     let (outcome, events) = run(&h, &mut session, "spin").await;
 
     assert!(matches!(outcome, Err(AgentError::IterationLimit(4))));
-    assert_eq!(h.provider.request_count().await, 4);
+    // Four rounds, then the one that answers the harness's request to sum up.
+    assert_eq!(h.provider.request_count().await, 5);
     assert!(events.iter().any(|e| matches!(e, UiEvent::Error { .. })));
+    let last = session.messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert!(last.text().contains("still unread"), "{}", last.text());
 }
 
 #[tokio::test]
@@ -501,7 +624,8 @@ async fn a_turn_out_of_rounds_can_be_continued_until_the_request_is_out_of_turns
     let (tx, _rx) = mpsc::channel(256);
     let again = h.agent.continue_turn(&mut session, tx).await;
     assert!(matches!(again, Err(AgentError::IterationLimit(2))));
-    assert_eq!(h.provider.request_count().await, 4);
+    // Two rounds and a summing up, each time.
+    assert_eq!(h.provider.request_count().await, 6);
     assert!(session
         .messages
         .iter()
@@ -518,7 +642,7 @@ async fn a_turn_out_of_rounds_can_be_continued_until_the_request_is_out_of_turns
     assert!(matches!(spent, Err(AgentError::Refused(_))), "{spent:?}");
     assert_eq!(
         h.provider.request_count().await,
-        6,
+        9,
         "a refusal asks nothing"
     );
 
@@ -2304,11 +2428,10 @@ async fn writing_after_the_check_still_owes_a_check() {
 }
 
 #[tokio::test]
-async fn a_write_listed_before_a_check_that_ran_first_still_owes_a_check() {
-    // Later means in the order the calls ran. `check_command` only reads, so it
-    // runs with the round's other reads, ahead of every call that runs one at a
-    // time — and a write the message lists before it lands after it, with
-    // nothing run against it since.
+async fn a_check_listed_after_a_write_checks_it() {
+    // Calls run in the order the message gives them, so a `check_command`
+    // listed after a write reads a run that came after it, and nothing is
+    // owed.
     let (agent, provider, _workspace, _dir, _logs) = recorded(
         vec![
             ScriptedTurn::tool_calls(vec![
@@ -2328,6 +2451,35 @@ async fn a_write_listed_before_a_check_that_ran_first_still_owes_a_check() {
 
     let mut session = Session::new("fake");
     drive(&agent, &mut session, "write then check").await;
+
+    assert_eq!(
+        nudges(&provider.last_request().await.unwrap()),
+        0,
+        "a check that ran after the write was taken for none"
+    );
+}
+
+#[tokio::test]
+async fn a_check_listed_before_a_write_still_owes_one() {
+    let (agent, provider, _workspace, _dir, _logs) = recorded(
+        vec![
+            ScriptedTurn::tool_calls(vec![
+                ("t1", "check_command", serde_json::json!({})),
+                (
+                    "t2",
+                    "write_file",
+                    serde_json::json!({"path": "a.rs", "content": "fn main() {}"}),
+                ),
+            ]),
+            ScriptedTurn::text("Done."),
+            ScriptedTurn::tool_call("t3", "run_command", serde_json::json!({"command": "true"})),
+            ScriptedTurn::text("Checked."),
+        ],
+        AgentConfig::default(),
+    );
+
+    let mut session = Session::new("fake");
+    drive(&agent, &mut session, "check then write").await;
 
     assert_eq!(
         nudges(&provider.last_request().await.unwrap()),
@@ -3050,6 +3202,90 @@ async fn a_tail_that_really_is_too_big_still_says_so() {
 }
 
 #[tokio::test]
+async fn the_kept_tail_is_sized_in_the_units_it_is_counted_in() {
+    // Code-heavy: the backend counts well over twice the estimate. The tail
+    // kept verbatim is meant to be half the budget once calibrated; sized at
+    // half the budget *before* calibrating, it came to more than the whole
+    // budget after, and the turn said its recent messages were too large to
+    // summarize around.
+    const DENSITY: f32 = 2.4;
+    let system_prompt = "x".repeat(4_000);
+    let h = harness_on(
+        FakeProvider::dense(
+            vec![ScriptedTurn::text("SUMMARY"), ScriptedTurn::text("Done.")],
+            32_768,
+            DENSITY,
+        ),
+        Box::new(AllowAll),
+        AgentConfig {
+            system_prompt: system_prompt.clone(),
+            ..Default::default()
+        },
+    );
+    // Large enough that the tail is bounded by its tokens, not its count.
+    let mut session = Session::new("fake");
+    for i in 0..30 {
+        session.push(Message::user(format!("message {i} {}", "y".repeat(12_000))));
+    }
+    let overhead = fixed_part(&system_prompt);
+    let estimated = session.estimated_tokens();
+    session.record_request((estimated as f32 * DENSITY) as u32 + overhead, overhead);
+
+    let (outcome, events) = run(&h, &mut session, "continue").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let complaints: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Error { message } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(complaints.is_empty(), "{complaints:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_configured_reply_limit_is_held_to_what_the_window_leaves() {
+    let h = harness_with(
+        vec![ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            max_tokens: Some(64_000),
+            ..Default::default()
+        },
+        8_192,
+    );
+    let mut session = Session::new("fake");
+    let (outcome, _) = run(&h, &mut session, "hi").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    // A quarter of the window, the most `reply_reserve` holds back.
+    assert_eq!(
+        h.provider.last_request().await.unwrap().max_tokens,
+        Some(2_048)
+    );
+
+    let h = harness_with(
+        vec![ScriptedTurn::text("Done.")],
+        Box::new(AllowAll),
+        AgentConfig {
+            max_tokens: Some(1_000),
+            ..Default::default()
+        },
+        8_192,
+    );
+    run(&h, &mut session, "hi").await.0.unwrap();
+    assert_eq!(
+        h.provider.last_request().await.unwrap().max_tokens,
+        Some(1_000)
+    );
+}
+
+#[tokio::test]
 async fn a_turn_whose_own_reads_fill_the_window_trims_inside_the_tail() {
     // A first turn: one question, then four reads of a large file, every one
     // of them recent. The trim pass used to leave the recent tail alone and
@@ -3394,6 +3630,109 @@ async fn repeating_itself_in_an_empty_window_is_not_a_reason_to_hand_over() {
     assert!(
         !events.iter().any(|e| matches!(e, UiEvent::Relayed { .. })),
         "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_the_backend_says_is_too_long_is_compacted_and_sent_again() {
+    // The estimate says it fits a 64,000-token window, and the backend counts
+    // more than that: the case a reopened, uncalibrated conversation is.
+    let too_long = ScriptedTurn {
+        events: Vec::new(),
+        stop: StopReason::EndTurn,
+        failure: Some(ProviderError::Api {
+            provider: "fake".into(),
+            status: 400,
+            body: "prompt is too long: 90000 tokens > 64000 maximum".into(),
+            retry_after: None,
+        }),
+        stopped: false,
+    };
+    let h = harness_with(
+        vec![
+            too_long,
+            ScriptedTurn::text("SUMMARY"),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        64_000,
+    );
+    let mut session = full_history();
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "{events:?}"
+    );
+    assert_eq!(h.provider.request_count().await, 3);
+    assert!(session
+        .messages
+        .iter()
+        .any(|m| m.text().contains("Summary of the earlier conversation")));
+}
+
+#[tokio::test]
+async fn a_request_still_too_long_after_compacting_ends_the_turn() {
+    let too_long = || ScriptedTurn {
+        events: Vec::new(),
+        stop: StopReason::EndTurn,
+        failure: Some(ProviderError::Api {
+            provider: "fake".into(),
+            status: 400,
+            body: "prompt is too long: 90000 tokens > 64000 maximum".into(),
+            retry_after: None,
+        }),
+        stopped: false,
+    };
+    let h = harness_with(
+        vec![too_long(), ScriptedTurn::text("SUMMARY"), too_long()],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        64_000,
+    );
+    let mut session = full_history();
+    let (outcome, _) = run(&h, &mut session, "Finish the report.").await;
+    assert!(
+        matches!(&outcome, Err(AgentError::Provider(e)) if e.is_context_overflow()),
+        "tried once, and then the backend's own words: {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_summary_asked_again_without_tools_carries_no_tool_blocks() {
+    // The summarizer answered with a call instead of the JSON, so it is asked
+    // again with no tools offered. A history that still held `tool_use` and
+    // `tool_result` blocks was refused by Anthropic for exactly that.
+    let h = harness_with(
+        vec![
+            ScriptedTurn::tool_call("x", "list_dir", serde_json::json!({})),
+            ScriptedTurn::text("SUMMARY"),
+            ScriptedTurn::text("Done."),
+        ],
+        Box::new(AllowAll),
+        AgentConfig::default(),
+        8_000,
+    );
+    let mut session = full_history();
+    let (outcome, events) = run(&h, &mut session, "Finish the report.").await;
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::Compacted { .. })));
+
+    let seen = h.provider.seen.lock().await;
+    let again = &seen[1];
+    assert!(again.tools.is_empty());
+    let blocks: Vec<&ContentBlock> = again.messages.iter().flat_map(|m| &m.content).collect();
+    assert!(
+        !blocks.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+        )),
+        "{blocks:?}"
     );
 }
 

@@ -1146,11 +1146,17 @@ async fn reload_registers_the_skill_tools_alongside_the_builtins() {
     host.reload().await;
 
     let tools = host.tool_names().await;
-    for expected in ["read_file", "run_command", "load_skill", "propose_skill"] {
+    for expected in ["read_file", "run_command", "load_skill"] {
         assert!(tools.iter().any(|t| t == expected), "missing {expected}");
     }
     // The spawn tool is deliberately absent here; it is added per turn.
     assert!(!tools.iter().any(|t| t == taurus_core::SPAWN_TOOL));
+    // So is the proposal tool, which a delegate must not reach.
+    assert!(!tools.iter().any(|t| t == taurus_skills::PROPOSE_TOOL));
+    assert!(turn_tools(&host)
+        .await
+        .iter()
+        .any(|t| t == taurus_skills::PROPOSE_TOOL));
 }
 
 #[tokio::test]
@@ -1170,7 +1176,7 @@ async fn the_agent_proposal_tool_follows_its_own_setting() {
     let (host, _home) = host(&workspace);
     host.reload().await;
 
-    let tools = host.tool_names().await;
+    let tools = turn_tools(&host).await;
     assert!(!tools.iter().any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
     assert!(
         tools.iter().any(|t| t == taurus_skills::PROPOSE_TOOL),
@@ -1185,22 +1191,19 @@ async fn toggling_agent_synthesis_adds_and_removes_the_tool_without_a_reload() {
     let dir = TempDir::new().unwrap();
     let (host, _home) = host(&dir.path().canonicalize().unwrap());
     host.reload().await;
-    assert!(host
-        .tool_names()
+    assert!(turn_tools(&host)
         .await
         .iter()
         .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
 
     host.set_agent_synthesis(false).await.unwrap();
-    assert!(!host
-        .tool_names()
+    assert!(!turn_tools(&host)
         .await
         .iter()
         .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
 
     host.set_agent_synthesis(true).await.unwrap();
-    assert!(host
-        .tool_names()
+    assert!(turn_tools(&host)
         .await
         .iter()
         .any(|t| t == taurus_core::PROPOSE_AGENT_TOOL));
@@ -1222,7 +1225,7 @@ async fn the_proposal_tool_is_not_advertised_when_synthesis_is_off() {
     let (host, _home) = host(&workspace);
     host.reload().await;
 
-    let tools = host.tool_names().await;
+    let tools = turn_tools(&host).await;
     assert!(!tools.iter().any(|t| t == taurus_skills::PROPOSE_TOOL));
     // The rest of the skill tools are about using skills, not writing them.
     assert!(tools.iter().any(|t| t == "load_skill"));
@@ -1233,22 +1236,19 @@ async fn toggling_synthesis_adds_and_removes_the_tool_without_a_reload() {
     let dir = TempDir::new().unwrap();
     let (host, _home) = host(&dir.path().canonicalize().unwrap());
     host.reload().await;
-    assert!(host
-        .tool_names()
+    assert!(turn_tools(&host)
         .await
         .iter()
         .any(|t| t == taurus_skills::PROPOSE_TOOL));
 
     host.set_skill_synthesis(false).await.unwrap();
-    assert!(!host
-        .tool_names()
+    assert!(!turn_tools(&host)
         .await
         .iter()
         .any(|t| t == taurus_skills::PROPOSE_TOOL));
 
     host.set_skill_synthesis(true).await.unwrap();
-    assert!(host
-        .tool_names()
+    assert!(turn_tools(&host)
         .await
         .iter()
         .any(|t| t == taurus_skills::PROPOSE_TOOL));

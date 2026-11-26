@@ -97,6 +97,11 @@ pub struct SpawnInput {
 /// whichever folder it's called in.
 const PARENT_INDEX_TOOL: &str = "search_code";
 
+/// How long a delegate's copy waits for its background commands to be gone
+/// before it's closed. The same order as a command's own stop: past it, the
+/// copy is closed anyway, and a removal that fails leaves it to the next tidy.
+const COPY_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Where a delegate's conversation is kept.
 ///
 /// The parent's transcript records one delegation — a call, and the paragraph
@@ -479,10 +484,11 @@ impl Tool for SpawnSubagent {
         let mut child = ctx.clone();
         child.cancel = pending.stop_token();
         ctx.report_detached().await;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let text = launch.run(input.prompt, child).await;
             ticket.deliver(Arrival { call, agent, text });
         });
+        pending.hold(task.abort_handle());
 
         Ok(format!(
             "Started {} in the background. Keep working: its report arrives on its own when it \
@@ -683,27 +689,49 @@ impl Launch {
         // the cap is on children running, not children asked for. Said when
         // it has to wait, so a card waiting on a slot isn't mistaken for one
         // that has stalled.
+        //
+        // Each wait gives way to Stop. A delegate queued behind a slow sibling
+        // otherwise held the parent's call until a slot came free, then
+        // started, opened a transcript and only then saw it was stopped, by
+        // which time a background one had used the turn's whole wait for
+        // background work and was left running on its own. Stopped while
+        // waiting, it doesn't run at all, and still tidies up below.
+        let mut stopped_waiting = false;
         let _permit = match self.permits.clone().try_acquire_owned() {
-            Ok(permit) => Ok(permit),
+            Ok(permit) => Some(permit),
             Err(_) => {
                 ctx.report_activity(DelegateStep::Queued { at: now_ms() })
                     .await;
-                self.permits.clone().acquire_owned().await
+                tokio::select! {
+                    permit = self.permits.clone().acquire_owned() => permit.ok(),
+                    () = ctx.cancel.cancelled() => {
+                        stopped_waiting = true;
+                        None
+                    }
+                }
             }
         };
         // After the permit, so a writer queued for a slot isn't also holding
         // the workspace against the others.
         let _alone = match &self.alone {
-            Some(alone) => Some(alone.clone().lock_owned().await),
-            None => None,
+            Some(alone) if !stopped_waiting => tokio::select! {
+                held = alone.clone().lock_owned() => Some(held),
+                () = ctx.cancel.cancelled() => {
+                    stopped_waiting = true;
+                    None
+                }
+            },
+            _ => None,
         };
-        ctx.report_activity(DelegateStep::Started {
-            agent: self.name.clone(),
-            model: self.model.clone(),
-            max_rounds: self.config.max_iterations,
-            at: now_ms(),
-        })
-        .await;
+        if !stopped_waiting {
+            ctx.report_activity(DelegateStep::Started {
+                agent: self.name.clone(),
+                model: self.model.clone(),
+                max_rounds: self.config.max_iterations,
+                at: now_ms(),
+            })
+            .await;
+        }
 
         // Before the agent, because opening a recorder needs the id of the
         // conversation it is recording.
@@ -729,7 +757,8 @@ impl Launch {
         );
 
         let agent = match &self.recorder {
-            Some(recorder) => match recorder
+            // Nothing to record for a delegate that never ran.
+            Some(recorder) if !stopped_waiting => match recorder
                 .open(&self.name, &session, ctx.call_id.as_deref())
                 .await
             {
@@ -742,7 +771,7 @@ impl Launch {
                 }
                 None => agent,
             },
-            None => agent,
+            _ => agent,
         };
 
         info!(kind = %self.name, model = %self.model, "spawning sub-agent");
@@ -768,9 +797,18 @@ impl Launch {
             tools
         });
 
-        let outcome = agent
-            .run_turn(&mut session, Message::user(&prompt), tx)
-            .await;
+        let outcome = if stopped_waiting {
+            drop(tx);
+            Ok(crate::agent::TurnOutcome {
+                stop_reason: taurus_provider::StopReason::Canceled,
+                usage: Default::default(),
+                iterations: 0,
+            })
+        } else {
+            agent
+                .run_turn(&mut session, Message::user(&prompt), tx)
+                .await
+        };
         let tools_used = collector.await.unwrap_or_default();
         // The child's whole conversation, its own compaction included, onto
         // the parent's bill. Its transcript is kept apart from the parent's
@@ -789,8 +827,11 @@ impl Launch {
         if let Some((isolation, opened)) = &self.isolated {
             // A dev server it left running would hold the folder open, and
             // there would be nobody left to read it or stop it.
+            // Waited for, with a limit: closing snapshots the copy and then
+            // removes it, and a command still dying writes into the snapshot
+            // and holds the folder open against the removal.
             if let Some(jobs) = own_jobs {
-                jobs.stop_all();
+                jobs.stop_all_within(COPY_STOP_WAIT).await;
             }
             // What's in the copy is the record of what it changed: a command's
             // writes the sweep missed are in it too.
@@ -1285,6 +1326,45 @@ mod tests {
             progress.steps.lock().await.get(1),
             Some(DelegateStep::Started { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn stop_reaches_a_delegation_still_waiting_for_a_slot() {
+        let (tool, ctx, _dir) = fixture(vec![finish(
+            "f1",
+            serde_json::json!({ "disposition": "done", "summary": "Done." }),
+        )]);
+        let _held = tool.permits.clone().acquire_many_owned(2).await.unwrap();
+        let progress = Arc::new(SpyProgress::default());
+        let ctx = ctx.with_progress(progress.clone());
+        let cancel = ctx.cancel.clone();
+        let run = tokio::spawn(async move {
+            tool.execute(
+                serde_json::json!({
+                    "agent_type": "explorer",
+                    "prompt": "Find where the server's port is configured."
+                }),
+                &ctx,
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+        // Answered while both slots are still held, and without starting.
+        let answered = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("Stop didn't reach a delegation waiting for a slot")
+            .unwrap();
+        let _ = answered;
+        assert!(
+            !progress
+                .steps
+                .lock()
+                .await
+                .iter()
+                .any(|step| matches!(step, DelegateStep::Started { .. })),
+            "a stopped delegation still started"
+        );
     }
 
     #[tokio::test]

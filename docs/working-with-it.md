@@ -1043,7 +1043,10 @@ an explanation, not a conversation that just stops:
 
 - **The iteration ceiling**: twenty-five model/tool round trips by default.
   It's a ceiling, not a budget shown to the model, because a limit the model
-  can see is one it can argue with.
+  can see is one it can argue with. When it's reached, the model is asked
+  once more, without running anything, to say what it learned and what's
+  left, so the turn ends on its account of where things stand rather than
+  on a bare notice. That one costs a request.
 
   Set it in **Settings → Behavior → Round trips per message**, or as `max_iterations` in
   `settings.json`, between 1 and 200. Raise it for long refactors that need
@@ -1207,12 +1210,13 @@ the build.
 
 Checking means a command that ran with nothing written after it: the model
 asked the project a question and got an answer, with no edit since. Order
-decides, and it's the order the calls ran. Calls that only read run first,
-side by side. A delegation counts as one of those only when its agent can't
-write. Everything else runs one at a time, in the order the message
-lists it. So a round that ran the tests and then edited still owes a check,
-as if the edit had come in its own round. A write listed before a
-`check_command` still lands after it.
+decides, and calls run in the order the message lists them. Calls that only
+read and sit next to each other run side by side, eight at a time. A
+delegation counts as one of those only when its agent can't write. Everything
+else runs on its own, after what's listed before it. So a round that ran the
+tests and then edited still owes a check, as if the edit had come in its own
+round, and a `read_file` listed after an `edit_file` of the same file reads
+the edit.
 
 The word doing the work is *since*. Picture a rule that treated any round
 that wrote anything as leaving the debt standing, on the theory that a command
@@ -2646,7 +2650,7 @@ cyan band sweeping down it. A write gets a peach bar filling the gutter, the
 write head. Everything else gets a traveling hairline that doesn't imply a
 fraction, because nothing here knows how far through a call is. Several read
 rows can move at once, since calls that only read run side by side. A write
-or a command runs on its own, after them.
+or a command runs on its own, in its place in the list.
 
 **The strip above the composer has three states**, and they differ in shape,
 not only in color:

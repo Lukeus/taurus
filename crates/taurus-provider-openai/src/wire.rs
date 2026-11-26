@@ -14,6 +14,12 @@ pub struct ChatBody {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// The same limit under the name api.openai.com wants. It refuses
+    /// `max_tokens` on its reasoning models outright, and the servers that copy
+    /// its shape mostly know only the old name, so exactly one of the two is
+    /// set. See [`ChatBody::for_openai_itself`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
     /// Ask for a final usage frame; servers that do not know this option
@@ -37,11 +43,18 @@ impl ChatBody {
             tools: crate::convert::tools_to_wire(&request.tools),
             temperature: request.temperature,
             max_tokens: request.max_tokens,
+            max_completion_tokens: None,
             stop: request.stop_sequences.clone(),
             stream_options: serde_json::json!({ "include_usage": true }),
             reasoning_effort: None,
             prompt_cache_key: None,
         }
+    }
+
+    /// Spells the reply limit the way OpenAI's own API reads it.
+    pub fn for_openai_itself(mut self) -> Self {
+        self.max_completion_tokens = self.max_tokens.take();
+        self
     }
 }
 
@@ -80,10 +93,27 @@ pub struct Delta {
     #[serde(default)]
     pub content: Option<String>,
     /// Non-standard but widely used by reasoning-model servers.
-    #[serde(default, alias = "reasoning")]
+    #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// The same, under the name other servers use. Its own field rather than
+    /// an alias: serde refuses a chunk carrying both names as a duplicate,
+    /// and a server that writes out every field (`"reasoning": null` beside
+    /// `"reasoning_content": "…"`) had every chunk skipped, its text and tool
+    /// calls with it. See [`Delta::reasoning`].
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default, deserialize_with = "taurus_provider::null_as_default")]
     pub tool_calls: Vec<ToolCallDelta>,
+}
+
+impl Delta {
+    /// The reasoning in this chunk, under whichever name it came.
+    pub fn reasoning(&mut self) -> Option<String> {
+        self.reasoning_content
+            .take()
+            .filter(|r| !r.is_empty())
+            .or_else(|| self.reasoning.take().filter(|r| !r.is_empty()))
+    }
 }
 
 #[derive(Debug, Deserialize)]

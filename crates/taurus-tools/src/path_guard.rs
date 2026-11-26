@@ -218,8 +218,27 @@ pub fn decides_what_runs(root: &Path, path: &Path) -> bool {
                     .is_some_and(|name| name == "config" || name == "config.worktree")
                 || rest.iter().any(|name| name == "hooks")
         });
-    // What `~/.gitconfig` says, git does in every repository.
-    if git || whole.last().is_some_and(|name| name == ".gitconfig") {
+    // What `~/.gitconfig` says, git does in every repository, and the same
+    // goes for the file git reads beside it, `~/.config/git/config` (or
+    // `$XDG_CONFIG_HOME/git/config`). Matched by its last names rather than by
+    // where the home is, the way `.gitconfig` is, so `cd ~/.config/git && cp x
+    // config` lands on it however the `~` was read.
+    if git
+        || whole.last().is_some_and(|name| name == ".gitconfig")
+        || whole.ends_with(&["git".to_string(), "config".to_string()])
+            && (whole.len() >= 3 && whole[whole.len() - 3] == ".config"
+                || xdg_git_config().is_some_and(|xdg| folded(&xdg) == whole))
+    {
+        return true;
+    }
+
+    // Where `core.hooksPath` sends git instead of `.git/hooks`: husky's
+    // `.husky`, a team's `githooks`. Written there, a file runs on the next
+    // commit as surely as one in `.git/hooks` does.
+    if configured_hook_dirs(root)
+        .iter()
+        .any(|dir| whole.starts_with(&folded(dir)))
+    {
         return true;
     }
 
@@ -233,16 +252,141 @@ pub fn decides_what_runs(root: &Path, path: &Path) -> bool {
         .any(|(at, _)| match &near[at + 1..] {
             [] => false,
             [first, ..] if first == "plugins" => true,
-            [file] => [
-                "permissions.json",
-                "hooks.json",
-                "mcp.json",
-                "providers.json",
-                "search.json",
-            ]
-            .contains(&file.as_str()),
+            [file] => crate::protected::TAURUS_FILES.contains(&file.as_str()),
             _ => false,
         })
+}
+
+/// `$XDG_CONFIG_HOME/git/config`, when that variable is set.
+fn xdg_git_config() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir).join("git").join("config"))
+}
+
+/// The person's home, for a `~` in git's settings.
+fn user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Every folder a `core.hooksPath` names for the repository `root` is in.
+///
+/// Every value found, in the repository's `config` and `config.worktree` and in
+/// the person's own git settings, not only the one git would settle on: a
+/// value that loses today wins once a file above it drops its own, and a file
+/// that decides what runs is worth asking about either way. A relative value is
+/// taken from the top of the working tree, which is where git runs hooks from.
+///
+/// husky sets `core.hooksPath` to `.husky/_`, whose scripts run the ones a
+/// project writes in `.husky` itself, so a folder named `_` brings its parent.
+///
+/// Best effort, like the rest of this: `include.path` and `includeIf` aren't
+/// followed, and a value is read the way a person writes it, not with every
+/// escape git allows. Each folder comes back as written and with its symlinks
+/// followed, so either spelling of a path under it matches.
+pub(crate) fn configured_hook_dirs(root: &Path) -> Vec<PathBuf> {
+    let home = user_home();
+    let dot_git = crate::protected::dot_git(root);
+    let top = dot_git.as_deref().and_then(Path::parent);
+    let mut files: Vec<PathBuf> = Vec::new();
+    for dir in crate::protected::git_dirs(root) {
+        files.push(dir.join("config"));
+        files.push(dir.join("config.worktree"));
+    }
+    if let Some(home) = &home {
+        files.push(home.join(".gitconfig"));
+        files.push(home.join(".config").join("git").join("config"));
+    }
+    files.extend(xdg_git_config());
+
+    let mut dirs = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for value in hooks_path_values(&text) {
+            let named = if let Some(rest) = value.strip_prefix("~/").or(value.strip_prefix("~\\")) {
+                match &home {
+                    Some(home) => home.join(rest),
+                    None => continue,
+                }
+            } else if Path::new(&value).is_absolute() {
+                PathBuf::from(&value)
+            } else {
+                match top {
+                    Some(top) => top.join(&value),
+                    // Nowhere for a relative path to start from.
+                    None => continue,
+                }
+            };
+            let lexical = lexically_normalize(&named);
+            let mut found = vec![lexical.clone()];
+            if lexical.file_name().is_some_and(|name| name == "_") {
+                if let Some(parent) = lexical.parent() {
+                    found.push(parent.to_path_buf());
+                }
+            }
+            for dir in found {
+                // A value of `/` or `.` would make every path one; git reads
+                // hooks from the folder itself, so a path of no names is not
+                // a folder anything here can protect by prefix.
+                if dir.components().all(|c| !matches!(c, Component::Normal(_))) {
+                    continue;
+                }
+                if let Some(real) = canonical_where_it_can(&dir) {
+                    if !dirs.contains(&real) {
+                        dirs.push(real);
+                    }
+                }
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+        }
+    }
+    dirs
+}
+
+/// The `hooksPath` values in a git settings file's `[core]` sections.
+fn hooks_path_values(text: &str) -> Vec<String> {
+    let mut in_core = false;
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header.split(']').next().unwrap_or_default().trim();
+            // `[core]`, in any case; `[core "x"]` is a different section.
+            in_core = name.eq_ignore_ascii_case("core");
+            // `[core] hooksPath = x`, on the header's own line.
+            let rest = header.split_once(']').map_or("", |(_, rest)| rest.trim());
+            if in_core && !rest.is_empty() {
+                values.extend(hooks_path_value(rest));
+            }
+            continue;
+        }
+        if in_core {
+            values.extend(hooks_path_value(line));
+        }
+    }
+    values
+}
+
+/// The value of one `hooksPath = x` line, unquoted and without a comment.
+fn hooks_path_value(line: &str) -> Option<String> {
+    let (key, value) = line.split_once('=')?;
+    if !key.trim().eq_ignore_ascii_case("hookspath") {
+        return None;
+    }
+    let value = value.trim();
+    let value = if let Some(quoted) = value.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or_default()
+    } else {
+        value.split(['#', ';']).next().unwrap_or_default().trim()
+    };
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// Whether a word on a command line could name a file [`decides_what_runs`] is
@@ -734,6 +878,7 @@ mod tests {
             ".taurus/mcp.json",
             ".taurus/providers.json",
             ".taurus/search.json",
+            ".taurus/settings.json",
             ".taurus/plugins/x/plugin.json",
             ".git/hooks/pre-commit",
             ".git/hooks",
@@ -751,6 +896,9 @@ mod tests {
             ".g\u{200c}it/hooks/x",
             "sub/../.git/hooks/x",
             "./.taurus/hooks.json",
+            // git's own settings beside `~/.gitconfig`, however `~` was read.
+            "~/.config/git/config",
+            ".CONFIG/Git/config",
         ] {
             let path = resolve(&root, candidate).unwrap();
             assert!(decides_what_runs(&root, &path), "{candidate}");
@@ -766,10 +914,73 @@ mod tests {
             ".taurus/skills/x/SKILL.md",
             "permissions.json",
             "sub/hooks.json",
+            "git/config",
+            ".config/gitx/config",
         ] {
             let path = resolve(&root, candidate).unwrap();
             assert!(!decides_what_runs(&root, &path), "{candidate}");
         }
+    }
+
+    #[test]
+    fn a_hooks_path_is_read_the_way_people_write_it() {
+        let text = "[user]\n\thooksPath = not/this\n\
+                    [core \"x\"]\n\thooksPath = nor/this\n\
+                    [Core]\n\tHooksPath = .husky/_ # husky\n\
+                    [core] hookspath = \"with space\"\n";
+        assert_eq!(hooks_path_values(text), [".husky/_", "with space"]);
+        assert!(hooks_path_values("[core]\n\thooksPath =\n").is_empty());
+    }
+
+    #[test]
+    fn a_configured_hooks_folder_decides_what_runs() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".husky/_")).unwrap();
+        std::fs::create_dir_all(root.join("tools/githooks")).unwrap();
+        std::fs::write(root.join(".git/config"), "[core]\n\thooksPath = .husky/_\n").unwrap();
+        std::fs::write(
+            root.join(".git/config.worktree"),
+            "[core]\n\thooksPath = tools/githooks\n",
+        )
+        .unwrap();
+        // From a folder inside the repository, as a workspace can be opened.
+        std::fs::create_dir_all(root.join("packages/app")).unwrap();
+        let app = root.join("packages/app");
+        for (base, candidate) in [
+            (&root, ".husky/_/pre-commit"),
+            // husky's `_` runs what's written beside it.
+            (&root, ".husky/pre-commit"),
+            (&root, ".HUSKY/pre-commit"),
+            (&root, "tools/githooks/pre-push"),
+            (&app, "../../.husky/pre-commit"),
+        ] {
+            let path = lexically_normalize(&base.join(candidate));
+            assert!(decides_what_runs(base, &path), "{candidate}");
+        }
+        for candidate in [".huskyx/pre-commit", "tools/x", "src/main.rs"] {
+            let path = resolve(&root, candidate).unwrap();
+            assert!(!decides_what_runs(&root, &path), "{candidate}");
+        }
+        // And a command naming one is asked about like `.git/hooks` is.
+        assert!(word_names_what_runs(&root, &root, ".husky/pre-commit"));
+        assert!(word_names_what_runs(
+            &root,
+            &root.join(".husky"),
+            "pre-commit"
+        ));
+    }
+
+    #[test]
+    fn a_hooks_path_of_no_names_protects_nothing_by_prefix() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        // `/` has no names in it, and nothing should read as "every path".
+        std::fs::write(root.join(".git/config"), "[core]\n\thooksPath = /\n").unwrap();
+        let path = resolve(&root, "src/main.rs").unwrap();
+        assert!(!decides_what_runs(&root, &path));
     }
 
     #[cfg(unix)]

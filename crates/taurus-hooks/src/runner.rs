@@ -136,12 +136,32 @@ impl HookPayload {
 
     /// Every program a `run_command` call runs, which is what `matches.commands`
     /// is keyed by. A hook on `git` is about `cd x && git push` too.
-    fn programs(&self) -> Vec<String> {
-        self.input
+    ///
+    /// Each by its bare name, so a guard on `git` is about `/usr/bin/git` and
+    /// `Git` (which runs git on a file system that ignores case) as well. And
+    /// `None` for a line whose programs can't all be named from its words,
+    /// like `env git push` or `sh -c 'git push'`: a guard can't tell whether
+    /// that is about it, and a guard that quietly stopped applying would be
+    /// the one failure this crate never chooses.
+    fn programs(&self) -> Option<Vec<String>> {
+        let Some(command) = self
+            .input
             .as_ref()
             .and_then(|input| input.get("command")?.as_str())
-            .map(|command| taurus_process::Programs::of(command).names)
-            .unwrap_or_default()
+        else {
+            return Some(Vec::new());
+        };
+        let programs = taurus_process::Programs::of(command);
+        if programs.beyond.is_some() {
+            return None;
+        }
+        Some(
+            programs
+                .names
+                .iter()
+                .map(|name| taurus_process::command_line::bare_name(name))
+                .collect(),
+        )
     }
 }
 
@@ -400,9 +420,14 @@ fn applies(hook: &Hook, filter: &Filter, payload: &HookPayload) -> bool {
     }
 
     if !matches.commands.is_empty() {
-        let programs = payload.programs();
-        if !matches.commands.iter().any(|c| programs.contains(c)) {
-            return false;
+        // A line nothing can name every program of is one every command
+        // guard is asked about. See `HookPayload::programs`.
+        if let Some(programs) = payload.programs() {
+            let wanted =
+                |c: &String| programs.contains(&taurus_process::command_line::bare_name(c));
+            if !matches.commands.iter().any(wanted) {
+                return false;
+            }
         }
     }
 
@@ -1613,6 +1638,30 @@ mod tests {
             .await
             .denied
             .is_none());
+
+        // However git is spelled, and wherever a line hides what it runs.
+        for line in [
+            "/usr/bin/git push --force",
+            "Git push",
+            "cd x && GIT.EXE push",
+            "env git push --force",
+            "sh -c 'git push'",
+            "x=$(git push)",
+        ] {
+            let call = HookPayload::new(HookEvent::PreToolUse, dir.path()).with_call(
+                "run_command",
+                serde_json::json!({ "command": line }),
+                vec![],
+            );
+            assert!(
+                runner
+                    .run(&call, &CancellationToken::new())
+                    .await
+                    .denied
+                    .is_some(),
+                "a guard on git didn't see {line:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -117,9 +117,75 @@ impl ProviderError {
             // reached the screen, so a stream that went quiet half-way through
             // an answer surfaces rather than starting over.
             Self::Unreachable { .. } | Self::Stalled { .. } | Self::Stream { .. } => true,
-            Self::Api { status, .. } => *status == 429 || *status >= 500,
+            // Not 501 or 505: a server that doesn't implement the route, or
+            // the protocol, says the same on every try. And not a 429 that
+            // is a spent account rather than a busy one (OpenAI's
+            // `insufficient_quota` comes with no Retry-After), which only
+            // cost the user every backoff before the same refusal.
+            Self::Api { status, body, .. } => match status {
+                429 => !out_of_quota(body),
+                501 | 505 => false,
+                s => *s >= 500,
+            },
             _ => false,
         }
+    }
+
+    /// Whether the backend refused the request for being longer than its
+    /// window.
+    ///
+    /// Read from the words, because no two backends agree on a code for it:
+    /// Anthropic's "prompt is too long", OpenAI's `context_length_exceeded` and
+    /// "maximum context length", Gemini's "exceeds the maximum number of tokens
+    /// allowed", llama.cpp's "exceeds the available context size". Only on a
+    /// refusal of the request itself (400, 413), where a phrase like these
+    /// can't be about anything else. Not transient: the same request fails the
+    /// same way, and what helps is a shorter one.
+    pub fn is_context_overflow(&self) -> bool {
+        const SAID: &[&str] = &[
+            "prompt is too long",
+            "context_length_exceeded",
+            "maximum context length",
+            "context length",
+            "context window",
+            "context size",
+            "maximum number of tokens allowed",
+            "input is too long",
+            "too many input tokens",
+        ];
+        match self {
+            Self::Api {
+                status: 400 | 413,
+                body,
+                ..
+            } => {
+                let body = body.to_lowercase();
+                SAID.iter().any(|said| body.contains(said))
+            }
+            _ => false,
+        }
+    }
+
+    /// How many tokens an overflowing request came to, when the refusal says.
+    ///
+    /// The largest count in the message, since each backend states the
+    /// request's size beside the limit it went over and the size is the larger
+    /// one: "215000 tokens > 200000 maximum", "maximum context length is 128000
+    /// tokens. However, your messages resulted in 130000". OpenAI's figure can
+    /// include the reply it was asked to leave room for, which overstates the
+    /// prompt, and an overstatement only makes the next request smaller.
+    pub fn overflowing_tokens(&self) -> Option<u32> {
+        if !self.is_context_overflow() {
+            return None;
+        }
+        let Self::Api { body, .. } = self else {
+            return None;
+        };
+        body.split(|c: char| !(c.is_ascii_digit() || c == ','))
+            .filter_map(|run| run.replace(',', "").parse::<u32>().ok())
+            // Not a year, a status, or an id's stray digits.
+            .filter(|n| (1_000..=100_000_000).contains(n))
+            .max()
     }
 
     /// How long the backend asked to be left alone before the next attempt.
@@ -132,6 +198,18 @@ impl ProviderError {
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
+
+/// Whether a 429 is about the account's money rather than its pace.
+fn out_of_quota(body: &str) -> bool {
+    let body = body.to_lowercase();
+    [
+        "insufficient_quota",
+        "exceeded your current quota",
+        "billing",
+    ]
+    .iter()
+    .any(|said| body.contains(said))
+}
 
 /// A response body, as the sentence of it a person needs.
 ///
@@ -230,6 +308,78 @@ mod tests {
         assert!(error.is_transient());
         assert_eq!(error.kind(), "stream");
         assert!(error.to_string().contains("part-way"), "{error}");
+    }
+
+    #[test]
+    fn only_a_failure_that_could_pass_next_time_is_retried() {
+        let api = |status: u16, body: &str| ProviderError::Api {
+            provider: "p".into(),
+            status,
+            body: body.into(),
+            retry_after: None,
+        };
+        for retried in [
+            api(429, "rate limit"),
+            api(500, ""),
+            api(502, ""),
+            api(503, ""),
+            api(529, "overloaded"),
+        ] {
+            assert!(retried.is_transient(), "{retried}");
+        }
+        for not in [
+            api(501, "not implemented"),
+            api(505, ""),
+            api(
+                429,
+                "You exceeded your current quota, please check your plan and billing",
+            ),
+            api(429, r#"{"error":{"code":"insufficient_quota"}}"#),
+        ] {
+            assert!(!not.is_transient(), "{not}");
+        }
+    }
+
+    #[test]
+    fn a_request_too_long_for_the_window_is_told_apart() {
+        let api = |status: u16, body: &str| ProviderError::Api {
+            provider: "p".into(),
+            status,
+            body: body.into(),
+            retry_after: None,
+        };
+        for (body, tokens) in [
+            (
+                "prompt is too long: 215000 tokens > 200000 maximum",
+                Some(215_000),
+            ),
+            (
+                "This model's maximum context length is 128000 tokens. However, your messages \
+                 resulted in 130,512 tokens.",
+                Some(130_512),
+            ),
+            (
+                "The input token count (1100000) exceeds the maximum number of tokens allowed \
+                 (1048576).",
+                Some(1_100_000),
+            ),
+            (
+                "the request exceeds the available context size, try increasing it",
+                None,
+            ),
+        ] {
+            let error = api(400, body);
+            assert!(error.is_context_overflow(), "{body}");
+            assert!(!error.is_transient(), "{body}");
+            assert_eq!(error.overflowing_tokens(), tokens, "{body}");
+        }
+        for error in [
+            api(429, "too many input tokens per minute"),
+            api(400, "messages.1.content: tool_use ids must be unique"),
+            api(500, "prompt is too long"),
+        ] {
+            assert!(!error.is_context_overflow(), "{error}");
+        }
     }
 
     #[test]

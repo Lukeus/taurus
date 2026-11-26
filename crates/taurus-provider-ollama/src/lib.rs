@@ -447,13 +447,11 @@ impl Provider for OllamaProvider {
 
         send(&tx, StreamEvent::Usage { usage }).await?;
 
-        Ok(if saw_tool_call {
-            StopReason::ToolUse
-        } else {
-            match done_reason.as_deref() {
-                Some("length") => StopReason::MaxTokens,
-                _ => StopReason::EndTurn,
-            }
+        // The limit first: a call cut off by it must not read as whole.
+        Ok(match done_reason.as_deref() {
+            Some("length") => StopReason::MaxTokens,
+            _ if saw_tool_call => StopReason::ToolUse,
+            _ => StopReason::EndTurn,
         })
     }
 }

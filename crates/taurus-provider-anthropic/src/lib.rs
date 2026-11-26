@@ -143,6 +143,9 @@ pub struct AnthropicProvider {
     /// trip to the API — and a rate-limit slot — in front of every model call
     /// in a turn, to re-learn a number that cannot change while the turn runs.
     probed: Arc<RwLock<HashMap<String, Capabilities>>>,
+    /// Each model's output limit, from the same probe. See
+    /// [`MessagesBody::from_request`].
+    output_caps: Arc<RwLock<HashMap<String, u32>>>,
 }
 
 impl AnthropicProvider {
@@ -162,6 +165,7 @@ impl AnthropicProvider {
             thinking: Thinking::default(),
             models: Vec::new(),
             probed: Arc::new(RwLock::new(HashMap::new())),
+            output_caps: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -323,6 +327,12 @@ impl Provider for AnthropicProvider {
         }
 
         let probed = self.probe(model).await;
+        if let Some(cap) = probed.as_ref().and_then(|m| m.max_tokens) {
+            self.output_caps
+                .write()
+                .await
+                .insert(model.to_string(), cap);
+        }
         let capabilities = Capabilities {
             // Not probed, because it is not in question: every Claude model
             // this API serves calls tools natively, and a prompted fallback
@@ -375,7 +385,8 @@ impl Provider for AnthropicProvider {
         tx: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StopReason> {
-        let body = MessagesBody::from_request(&request, self.thinking.to_wire());
+        let cap = self.output_caps.read().await.get(&request.model).copied();
+        let body = MessagesBody::from_request(&request, self.thinking.to_wire(), cap);
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(StopReason::Canceled),
@@ -1109,7 +1120,7 @@ mod tests {
     #[test]
     fn the_request_body_carries_a_ceiling_because_the_api_requires_one() {
         let request = ChatRequest::new("claude-opus-5", vec![Message::user("hi")]);
-        let body = MessagesBody::from_request(&request, None);
+        let body = MessagesBody::from_request(&request, None, None);
         assert!(body.max_tokens > 0);
     }
 

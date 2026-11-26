@@ -315,25 +315,9 @@ impl Host {
         self.edit_global_setting(|s| s.skill_synthesis_enabled = Some(enabled))
             .await?;
 
-        // The tool follows the setting rather than waiting for a reload, so
-        // turning synthesis off stops paying for its schema on the next request
-        // instead of the next restart. Rebuilding the whole registry here would
-        // also drop every MCP connection, which a checkbox has no business
-        // doing.
-        let resolved = self.settings.read().await.clone();
-        let mut registry = self.registry.write().await;
-        registry.remove(taurus_skills::PROPOSE_TOOL);
-        if resolved.skill_synthesis_enabled
-            && !resolved
-                .disabled_tools
-                .iter()
-                .any(|d| d == taurus_skills::PROPOSE_TOOL)
-        {
-            registry.register(Arc::new(taurus_skills::ProposeSkill::new(
-                self.catalog.clone(),
-                self.proposals.clone(),
-            )));
-        }
+        // Nothing to rebuild: the tool is added per turn from this setting,
+        // so the next request follows it, and no MCP connection is dropped
+        // for a checkbox.
         Ok(())
     }
 
@@ -367,21 +351,7 @@ impl Host {
         self.edit_global_setting(|s| s.agent_synthesis_enabled = Some(enabled))
             .await?;
 
-        let resolved = self.settings.read().await.clone();
-        let mut registry = self.registry.write().await;
-        registry.remove(taurus_core::PROPOSE_AGENT_TOOL);
-        if resolved.agent_synthesis_enabled
-            && !resolved
-                .disabled_tools
-                .iter()
-                .any(|d| d == taurus_core::PROPOSE_AGENT_TOOL)
-        {
-            registry.register(Arc::new(ProposeAgent::new(
-                self.agents.clone(),
-                self.registry.clone(),
-                self.agent_proposals.clone(),
-            )));
-        }
+        // Added per turn from this setting, like `propose_skill`.
         Ok(())
     }
 
