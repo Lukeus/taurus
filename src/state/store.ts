@@ -184,6 +184,12 @@ export type Entry =
       plan?: PlanView;
       /** What that edit added and took off, by step text. */
       edit?: { added: string[]; removed: string[] };
+      /**
+       * Planning started here. The backend drops the conversation's plan at
+       * this point, so `pinnedPlan` stops looking at it: no plan from before
+       * is offered for approval as though it answered what comes next.
+       */
+      planning?: boolean;
     };
 
 /** Shared rather than a fresh `[]`, so a selector reading no comments is stable. */
@@ -481,7 +487,21 @@ interface Store {
     continuing?: boolean,
     /** Take this conversation's waiting comments with it. Off for a retry. */
     commenting?: boolean,
-  ) => Promise<void>;
+    /** This message approves the plan. See `approvePlan`. */
+    approving?: boolean,
+  ) => Promise<boolean>;
+  /**
+   * A message `send` took from the box and then couldn't start, waiting to be
+   * put back where it was typed.
+   *
+   * Only the comments' path can do this: composing them is a round trip, and
+   * the window can move to another conversation, or another send can start a
+   * turn, while it is out. The box has been cleared by then, so without this
+   * what was typed would be gone. The window puts it back — into the box, or
+   * parked as that conversation's draft — and calls `takeReturned`.
+   */
+  returned: { sessionId: string; text: string; images: Attachment[] } | null;
+  takeReturned: () => void;
   /**
    * Sends the last message again, for a turn that died before answering.
    *
@@ -848,6 +868,7 @@ export const useStore = create<Store>((set, get) => ({
   queued: null,
   remarks: {},
   planning: {},
+  returned: null,
   sent: null,
   interrupted: null,
   permission: null,
@@ -1209,6 +1230,12 @@ export const useStore = create<Store>((set, get) => ({
       // than thrown at a click handler in the rail.
       return set({ error: String(e) });
     }
+    // What was waiting on it goes with it, as the backend's copy did.
+    set((s) => {
+      const { [sessionId]: _planning, ...planning } = s.planning;
+      const { [sessionId]: _remarks, ...remarks } = s.remarks;
+      return { planning, remarks };
+    });
 
     if (open?.id !== sessionId) return get().reload();
 
@@ -1307,7 +1334,14 @@ export const useStore = create<Store>((set, get) => ({
     return result;
   },
 
-  send: async (text, images = [], onScreen = null, continuing = false, commenting = true) => {
+  send: async (
+    text,
+    images = [],
+    onScreen = null,
+    continuing = false,
+    commenting = true,
+    approving = false,
+  ) => {
     const { session, busy } = get();
     // Waiting comments go with whatever is sent next — except a continuation,
     // which carries no message, and a retry, whose text already holds the
@@ -1319,7 +1353,7 @@ export const useStore = create<Store>((set, get) => ({
     // Text is still required with an image attached. "What is wrong with this?"
     // is a question; a bare screenshot is a guess about what was wanted.
     // Comments are the exception: they say what they want on their own.
-    if (!session || (!text.trim() && remarks.length === 0)) return;
+    if (!session || (!text.trim() && remarks.length === 0)) return false;
 
     // Held rather than refused. The composer stays typeable through a turn on
     // purpose — thinking of the next thing while the model works is most of
@@ -1330,21 +1364,39 @@ export const useStore = create<Store>((set, get) => ({
     // are, and whichever send actually starts the next turn takes them.
     if (busy) {
       if (text.trim()) set({ queued: { text, images, onScreen } });
-      return;
+      return false;
     }
 
     if (remarks.length > 0) {
+      const typed = text;
+      let composed: string | null = null;
       try {
-        text = await api.composeMessage(text, remarks);
+        composed = await api.composeMessage(typed, remarks);
       } catch (e) {
         set({ error: String(e) });
-        return;
       }
-      // Something else may have started a turn, or moved to another
-      // conversation, while that was asked. Either way this send is not the
-      // one that goes, and the comments are left for the one that is.
-      if (get().busy || get().session?.id !== session.id) return;
-      set((s) => ({ remarks: { ...s.remarks, [session.id]: NO_REMARKS } }));
+      // Refused, or something else started a turn or moved the window to
+      // another conversation while that was asked. Either way this send is
+      // not the one that goes: the comments stay for the one that is, and
+      // what was typed goes back where it was typed.
+      const here = get().session?.id === session.id;
+      if (composed === null || get().busy || !here) {
+        if (here && get().busy && typed.trim()) {
+          set({ queued: { text: typed, images, onScreen } });
+        } else if (typed.trim() || images.length > 0) {
+          set({ returned: { sessionId: session.id, text: typed, images } });
+        }
+        return false;
+      }
+      text = composed;
+      // Only the ones composed into it: a comment added while that was out
+      // has not been sent, and goes with the next message instead.
+      set((s) => ({
+        remarks: {
+          ...s.remarks,
+          [session.id]: (s.remarks[session.id] ?? NO_REMARKS).filter((r) => !remarks.includes(r)),
+        },
+      }));
     }
 
     set((s) => ({
@@ -1381,7 +1433,7 @@ export const useStore = create<Store>((set, get) => ({
 
     let died = false;
     try {
-      await api.sendMessage(session.id, text, stream.push, images, onScreen, continuing);
+      await api.sendMessage(session.id, text, stream.push, images, onScreen, continuing, approving);
     } catch (e) {
       died = true;
       // Before the notice, so it reads after whatever the turn had already
@@ -1408,13 +1460,19 @@ export const useStore = create<Store>((set, get) => ({
     } finally {
       stream.flush();
       speech.endTurn();
+      // Whether planning ended depends on how far the turn got: the backend
+      // ends it as the turn is built. So it is asked, not assumed.
+      if (approving) {
+        const still = await api.isPlanning(session.id).catch(() => true);
+        set((s) => ({ planning: { ...s.planning, [session.id]: still } }));
+      }
       // Everything past here is about the conversation on screen — the
       // composer, the open bubble, a message typed ahead. A turn can now be
       // left running while the window moves to another conversation, and this
       // is the moment that turn ends: none of it belongs to whatever is being
       // shown instead. Its own state is put back when it is reopened, by
       // `attach`.
-      if (get().session?.id !== session.id) return;
+      if (get().session?.id !== session.id) return true;
       // Read before the `set` below clears it. A turn the user stopped is not
       // a turn that finished, and the difference decides the drain.
       const stopped = get().stopping;
@@ -1455,7 +1513,11 @@ export const useStore = create<Store>((set, get) => ({
       // a round trip and a directory scan later, at the one moment there is
       // nothing left to watch.
     }
+    // A turn was started, however it went: the message is in the transcript.
+    return true;
   },
+
+  takeReturned: () => set({ returned: null }),
 
   retry: async () => {
     const { sent, busy } = get();
@@ -1517,13 +1579,21 @@ export const useStore = create<Store>((set, get) => ({
   unqueue: () => set({ queued: null }),
 
   setPlanning: async (sessionId, planning) => {
+    const was = !!get().planning[sessionId];
     try {
       await api.setPlanning(sessionId, planning);
     } catch (e) {
       set({ error: String(e) });
       return;
     }
-    set((s) => ({ planning: { ...s.planning, [sessionId]: planning } }));
+    set((s) => ({
+      planning: { ...s.planning, [sessionId]: planning },
+      // A line where it changed, in the conversation it changed in.
+      entries:
+        was !== planning && s.session?.id === sessionId
+          ? [...s.entries, planningNotice(planning)]
+          : s.entries,
+    }));
   },
 
   approvePlan: async () => {
@@ -1531,16 +1601,23 @@ export const useStore = create<Store>((set, get) => ({
     if (!session || busy) return;
     let text: string;
     try {
-      text = await api.approvePlan(session.id);
+      text = await api.planApproval();
     } catch (e) {
       set({ error: String(e) });
       return;
     }
-    set((s) => ({ planning: { ...s.planning, [session.id]: false } }));
-    // The backend has stopped planning either way; what is left is the
-    // message, and it belongs to the conversation that approved it.
     if (get().session?.id !== session.id) return;
-    await get().send(text);
+    // Planning ends with the turn this starts, in the backend, or not at all:
+    // a send that doesn't start one leaves the conversation planning, so the
+    // next message anyone types isn't handed every tool with nothing approved.
+    // The pill says so from the moment the turn begins.
+    set((s) => ({ planning: { ...s.planning, [session.id]: false } }));
+    const started = await get().send(text, [], null, false, true, true);
+    if (started) return;
+    set((s) => ({ planning: { ...s.planning, [session.id]: true } }));
+    // Nobody typed the approval, so it isn't handed back to the box: Approve
+    // is, by planning being on again.
+    if (get().returned?.text === text) get().takeReturned();
   },
 
   addRemark: (sessionId, remark) =>
@@ -2353,6 +2430,26 @@ function switchNotice(moved: {
  * reason `switchNotice` is: so a turn that refused its own tools says why,
  * whether you watched it happen or read it back a week later.
  */
+/** The line drawn where a conversation starts or stops planning. */
+export function planningNotice(on: boolean): Entry {
+  return on
+    ? {
+        kind: "notice",
+        id: nextId(),
+        tone: "info",
+        text: "Planning. The next turn reads and writes a plan, with nothing that changes anything offered to it, and waits for you to approve it.",
+        rule: { label: "Planning", note: "changes nothing until you approve" },
+        planning: true,
+      }
+    : {
+        kind: "notice",
+        id: nextId(),
+        tone: "info",
+        text: "Back to doing. The next turn has its tools again.",
+        rule: { label: "Doing", note: "tools back" },
+      };
+}
+
 export function unattendedNotice(mark: Pick<UnattendedMark, "on">): Entry {
   return mark.on
     ? {
@@ -2808,7 +2905,10 @@ export function pinnedPlan(entries: Entry[]): PlanView | null {
   let plan: PlanView | null = null;
   let at = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
-    const found = planOf(entries[i]);
+    // Planning started here, and dropped whatever plan came before it.
+    const entry = entries[i];
+    if (entry.kind === "notice" && entry.planning) break;
+    const found = planOf(entry);
     if (found) {
       plan = found;
       at = i;

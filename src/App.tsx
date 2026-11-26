@@ -239,6 +239,8 @@ export default function App() {
       stopping: s.stopping,
       resuming: s.resuming,
       queued: s.queued,
+      returned: s.returned,
+      takeReturned: s.takeReturned,
       interrupted: s.interrupted,
       error: s.error,
       permission: s.permission,
@@ -1523,6 +1525,31 @@ export default function App() {
       return { ...all, [key]: held };
     });
   }, []);
+
+  // A message the store took from the box and couldn't start — see
+  // `returned` — goes back where it was typed: into the box if that
+  // conversation is still on screen, and otherwise onto its parked draft,
+  // ahead of anything already there, for when it is opened again.
+  const returned = store.returned;
+  const takeReturned = store.takeReturned;
+  useEffect(() => {
+    if (!returned) return;
+    takeReturned();
+    if (returned.sessionId === sessionKey) {
+      setDraft({ text: returned.text });
+      return;
+    }
+    setParked((all) => {
+      const was = all[returned.sessionId];
+      return {
+        ...all,
+        [returned.sessionId]: {
+          text: was?.text.trim() ? `${returned.text}\n\n${was.text}` : returned.text,
+          images: [...returned.images, ...(was?.images ?? [])],
+        },
+      };
+    });
+  }, [returned, takeReturned, sessionKey]);
 
   /** Whichever dataset the pane is actually showing — see `DataPane`, which
    *  falls back to the first rather than being open on nothing. */

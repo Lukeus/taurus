@@ -68,6 +68,7 @@ beforeEach(() => {
     stopping: false,
     queued: null,
     remarks: {},
+    returned: null,
     sent: null,
     error: null,
   });
@@ -211,5 +212,44 @@ describe("comments waiting on a conversation", () => {
     useStore.getState().addRemark("open", { ...ON_LINE, text: "second" });
     useStore.getState().removeRemark("open", 0);
     expect(useStore.getState().remarks.open.map((r) => r.text)).toEqual(["second"]);
+  });
+
+  it("hand a typed message back when the window moves on while composing", async () => {
+    let compose!: (text: string) => void;
+    invoke.mockImplementation((command: string) =>
+      command === "compose_message"
+        ? new Promise<string>((resolve) => (compose = resolve))
+        : idle(command),
+    );
+    useStore.getState().addRemark("open", ON_LINE);
+
+    const sending = useStore.getState().send("looks close");
+    useStore.setState({ session: { ...OPEN, id: "elsewhere" } });
+    compose(COMPOSED);
+
+    expect(await sending).toBe(false);
+    expect(sends()).toEqual([]);
+    // Back to the conversation it was typed in, and the comments with it.
+    expect(useStore.getState().returned).toEqual({ sessionId: "open", text: "looks close", images: [] });
+    expect(useStore.getState().remarks.open).toEqual([ON_LINE]);
+  });
+
+  it("keep one added while the message was being composed", async () => {
+    let compose!: (text: string) => void;
+    invoke.mockImplementation((command: string) =>
+      command === "compose_message"
+        ? new Promise<string>((resolve) => (compose = resolve))
+        : idle(command),
+    );
+    const later: Remark = { ...ON_LINE, text: "and this one" };
+    useStore.getState().addRemark("open", ON_LINE);
+
+    const sending = useStore.getState().send("looks close");
+    useStore.getState().addRemark("open", later);
+    compose(COMPOSED);
+    await sending;
+
+    expect(sentText()).toEqual([COMPOSED]);
+    expect(useStore.getState().remarks.open).toEqual([later]);
   });
 });

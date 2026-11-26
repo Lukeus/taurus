@@ -1375,6 +1375,7 @@ A plan waiting for your approval takes comments too, one per step: see
 same message, as `- Plan step "Cache the build in OUT_DIR"`, and the
 conversation keeps planning until you approve.
 
+### Committing a turn
 
 Below the diffs, in a workspace that's a git repository, is the offer to keep
 it:

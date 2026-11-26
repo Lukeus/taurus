@@ -478,6 +478,11 @@ export function sendMessage(
    * or the request is out of turns.
    */
   continueInterrupted = false,
+  /**
+   * This message approves the conversation's plan. Planning ends as the turn
+   * is built, so a send that never gets that far leaves it planning.
+   */
+  approvePlan = false,
 ): Promise<void> {
   const channel = new Channel<UiEvent>();
   channel.onmessage = onEvent;
@@ -487,6 +492,7 @@ export function sendMessage(
     images,
     onScreen,
     continueInterrupted,
+    approvePlan,
     onEvent: channel,
   });
 }
@@ -513,11 +519,14 @@ export const setPlanning = (sessionId: string, planning: boolean) =>
   invoke<void>("set_planning", { sessionId, planning });
 
 /**
- * Stops planning and answers the message that approves the plan, to be sent
- * as the person's own. The words are the backend's, so the CLI and the app
+ * The message that approves a plan, to be sent as the person's own with
+ * `approvePlan` set. The words are the backend's, so the CLI and the app
  * approve a plan in the same sentence.
  */
-export const approvePlan = (sessionId: string) => invoke<string>("approve_plan", { sessionId });
+export const planApproval = () => invoke<string>("plan_approval");
+
+/** Whether the backend has a conversation planning. */
+export const isPlanning = (sessionId: string) => invoke<boolean>("is_planning", { sessionId });
 
 /**
  * Which conversations have a turn running in them.

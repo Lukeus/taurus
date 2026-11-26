@@ -671,7 +671,7 @@ export function Composer({
             <button
               className="primary composer-send"
               onClick={submit}
-              disabled={!ready || (!text.trim() && commenting === 0)}
+              disabled={!ready || (!text.trim() && (commenting === 0 || busy))}
             >
               Send
             </button>

@@ -5251,3 +5251,32 @@ async fn a_planning_turn_cannot_delegate_to_an_agent_that_writes() {
     assert!(refusal.contains("no sub-agent type 'coder'"), "{refusal}");
     assert!(crate::sessions::list_subagents("conversation1").is_empty());
 }
+
+#[tokio::test]
+async fn starting_to_plan_drops_the_plan_from_before() {
+    let step = |text: &str| taurus_tools::view::Step {
+        text: text.into(),
+        state: Default::default(),
+        active_form: None,
+        check: None,
+    };
+    // An unfinished plan carries into the next message, and planning would
+    // otherwise find it there: the model not asked for a plan, and the old
+    // steps offered for approval as though they answered the new request.
+    let dir = TempDir::new().unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    let (host, _home) = host(&workspace);
+    let board = host.plan_board("s1").await;
+    board.set(vec![step("Rename the widget")]);
+
+    host.set_planning("s1", true).await;
+    assert!(host.plan_steps("s1").await.is_empty());
+
+    // Only on starting: a plan written while planning survives the
+    // conversation being told again that it's planning.
+    host.plan_board("s1")
+        .await
+        .set(vec![step("Read the widget")]);
+    host.set_planning("s1", true).await;
+    assert_eq!(host.plan_steps("s1").await.len(), 1);
+}

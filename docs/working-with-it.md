@@ -450,6 +450,10 @@ box, and the plans-first switch under it](screenshots/planning.png)
   with it. Approve waits while a turn is running, since the plan it would
   approve is still being written.
 
+Switching to planning draws a **Planning** line in the transcript and drops
+any plan the conversation already had, so an unfinished one from earlier work
+is never offered for approval as though it answered the new request.
+
 Each step's check is on the panel, so approving the plan approves how it will
 be proved too. Switching the pill during a turn applies from the next one: the
 turn running keeps the tools it started with.
@@ -471,6 +475,9 @@ Carry out this plan? [y] yes  [N] no, or type what to change:
 - **Anything else you type** goes to the model as feedback. It revises the
   plan, still planning, and you're asked again.
 - **Enter, or `n`**, stops. Nothing was changed.
+
+If the model needs an answer before it can plan, it asks instead of writing a
+plan, and you're asked for a reply. Answering keeps it planning; Enter stops.
 
 Without a terminal, or with `--json`, it plans and stops, and prints the
 `taurus run --resume` line that carries the plan out.

@@ -287,12 +287,24 @@ impl Host {
     /// Never mid-turn: the turn running now was built with the tools it has,
     /// and keeps them. Approving a plan is this with `false`, followed by the
     /// message that says so.
+    ///
+    /// Starting drops whatever plan the conversation had. Planning is asking
+    /// for a plan to approve, and an unfinished one carried in from earlier
+    /// work would otherwise stand in for it: the model wouldn't be asked for
+    /// the plan it described in prose, and a frontend would offer the old
+    /// steps for approval as though they answered the new request.
     pub async fn set_planning(&self, session_id: &str, on: bool) {
-        let mut planning = self.planning.write().await;
-        if on {
-            planning.insert(session_id.to_string());
-        } else {
-            planning.remove(session_id);
+        let started = {
+            let mut planning = self.planning.write().await;
+            if on {
+                planning.insert(session_id.to_string())
+            } else {
+                planning.remove(session_id);
+                false
+            }
+        };
+        if started {
+            self.forget_plan(session_id).await;
         }
     }
 

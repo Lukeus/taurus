@@ -415,6 +415,9 @@ pub fn compose_message(text: String, remarks: Vec<taurus_host::Remark>) -> CmdRe
 ///
 /// A `Channel` rather than a global event: delivery is ordered and scoped to
 /// this call, so two sessions streaming at once cannot interleave in the UI.
+// Each argument is a named field of the call the window makes, which is why
+// there are as many as the call has options rather than a struct of them.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
@@ -429,6 +432,12 @@ pub async fn send_message(
     // sending `text`. See `taurus_core::Agent::continue_turn`, which refuses
     // when there's nothing to continue or the request is out of turns.
     continue_interrupted: Option<bool>,
+    // This message approves the conversation's plan: planning ends as this
+    // turn is built, and not before. Done here rather than by a call ahead of
+    // the send so that a send that never starts a turn — refused, or overtaken
+    // — leaves the conversation planning, rather than handing the next message
+    // every tool with nothing approved.
+    approve_plan: Option<bool>,
     on_event: Channel<UiEvent>,
 ) -> CmdResult<()> {
     let entry = state.session(&session_id)?;
@@ -523,6 +532,11 @@ pub async fn send_message(
     // before it started.
     let cancel = CancellationToken::new();
     *entry.cancel.lock().await = cancel.clone();
+
+    if approve_plan.unwrap_or(false) {
+        state.host.set_planning(&session_id, false).await;
+        info!(session = %session_id, "plan approved");
+    }
 
     let agent = state
         .host
@@ -768,19 +782,24 @@ pub async fn set_planning(
     Ok(())
 }
 
-/// Approves a conversation's plan: stops planning, and answers the message
-/// that says so, for the window to send as the person's own.
+/// Whether a conversation is planning, as the host holds it.
+///
+/// Asked by the window after a turn that was meant to approve a plan, because
+/// whether planning ended depends on how far that turn got — see
+/// `send_message`'s `approve_plan`.
+#[tauri::command]
+pub async fn is_planning(state: State<'_, Arc<AppState>>, session_id: String) -> CmdResult<bool> {
+    Ok(state.host.is_planning(&session_id).await)
+}
+
+/// The message that approves a plan, for the window to send as the person's
+/// own with `approve_plan` set.
 ///
 /// The words are the host's, so a plan approved here and one approved with
 /// `taurus run --plan` read the same in a transcript.
 #[tauri::command]
-pub async fn approve_plan(
-    state: State<'_, Arc<AppState>>,
-    session_id: String,
-) -> CmdResult<String> {
-    state.host.set_planning(&session_id, false).await;
-    info!(session = %session_id, "plan approved");
-    Ok(taurus_host::planning::APPROVED.to_string())
+pub fn plan_approval() -> String {
+    taurus_host::planning::APPROVED.to_string()
 }
 
 /// Sets whether a conversation runs with nobody to answer it.
@@ -909,6 +928,10 @@ pub async fn delete_session(state: State<'_, Arc<AppState>>, session_id: String)
     })
     .await?;
     state.host.forget_plan(&session_id).await;
+    // Here and not in `close_session`, which runs on every switch between
+    // conversations: planning outlives looking away, and the window's copy of
+    // it would otherwise say a conversation was planning when it wasn't.
+    state.host.set_planning(&session_id, false).await;
     info!(session = %session_id, "session deleted");
     Ok(())
 }

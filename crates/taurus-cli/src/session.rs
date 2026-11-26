@@ -231,14 +231,42 @@ pub async fn run_once(
 
     // Asked only after a planning turn that finished. One that failed or was
     // interrupted has left a plan nobody should be asked to approve.
+    let asking = runtime.interactive && format == Format::Human;
     while plan && ok {
         let steps = runtime.host.plan_steps(&session.id).await;
-        if steps.is_empty() {
+        // No plan usually means a question: the planning nudge tells the model
+        // to ask one rather than guess. With somebody here, they answer it and
+        // the conversation goes on planning; without, there is nothing to do.
+        if steps.is_empty() && !asking {
             eprintln!(
                 "taurus: no plan was written, so there's nothing to approve. Nothing was changed."
             );
             ok = false;
             break;
+        }
+        if steps.is_empty() {
+            let reply = ask_line("\nNo plan yet. Reply, or press Enter to stop: ").await?;
+            if reply.trim().is_empty() {
+                eprintln!("Stopped. Nothing was changed.");
+                break;
+            }
+            let cancel = CancellationToken::new();
+            let _interrupts = install_interrupt_handler(cancel.clone());
+            ok = turn(
+                runtime,
+                &provider_id,
+                provider.clone(),
+                &model,
+                &mut session,
+                &mut log,
+                reply.trim(),
+                format,
+                quiet,
+                verbose,
+                cancel,
+            )
+            .await?;
+            continue;
         }
         if format == Format::Human {
             println!("\nPlan:");
@@ -253,7 +281,7 @@ pub async fn run_once(
         }
         // Nobody to ask: the plan is the result. Picking it up later is
         // resuming the conversation, which is no longer planning.
-        if !runtime.interactive || format == Format::Json {
+        if !asking {
             eprintln!(
                 "Planned only; nothing was changed. To carry it out:\n  taurus run --resume {} \"{}\"",
                 session.id,
@@ -319,16 +347,21 @@ enum PlanAnswer {
 /// An empty answer stops, as `[y/N]` promises: carrying out a plan is the one
 /// choice here that changes files, and it should never be what Enter does.
 async fn ask_about_plan() -> Result<PlanAnswer, String> {
-    eprint!("\nCarry out this plan? [y] yes  [N] no, or type what to change: ");
+    let read = ask_line("\nCarry out this plan? [y] yes  [N] no, or type what to change: ").await?;
+    Ok(read_plan_answer(&read))
+}
+
+/// Asks on stderr and reads one line from stdin, off the async runtime.
+async fn ask_line(question: &'static str) -> Result<String, String> {
+    eprint!("{question}");
     let _ = std::io::stderr().flush();
-    let read = tokio::task::spawn_blocking(|| {
+    tokio::task::spawn_blocking(|| {
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf).map(|_| buf)
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-    Ok(read_plan_answer(&read))
+    .map_err(|e| e.to_string())
 }
 
 fn read_plan_answer(line: &str) -> PlanAnswer {

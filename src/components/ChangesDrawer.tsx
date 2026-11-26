@@ -1024,26 +1024,6 @@ export function TurnDetail({
   );
 }
 
-/**
- * What committing `turn` now would carry in with it, or leave stranded.
- *
- * Each commit is offered on its own, which is what makes committing turn 5
- * while turn 4 is still only in the working tree possible — and, until this,
- * silent. Two different things go wrong depending on whether the turns share a
- * file, and they need two different sentences:
- *
- * - **They share one.** `git commit -- <paths>` commits what those paths hold
- *   *now*, so the earlier turn's edits to a shared file go into this commit
- *   wearing this turn's message. That is the sharper of the two, because the
- *   commit is wrong about its own contents rather than merely out of order.
- * - **They do not.** The earlier work stays in the tree, uncommitted, now
- *   sitting underneath a commit it is not in. Nothing is lost; the history just
- *   no longer reads in the order it happened.
- *
- * Computed here rather than in the backend because the drawer already holds
- * every turn and which commit each is in — the listing carries it. Exported for
- * its own test.
- */
 /** A comment on one line of one turn's diff. */
 export function remarkOn(turn: number, path: string, line: DiffLine, text: string): Remark {
   return {
@@ -1069,6 +1049,26 @@ export function sameLine(remark: Remark, turn: number, path: string, line: DiffL
   return a.turn === turn && a.path === path && a.side === line.kind && a.line === number;
 }
 
+/**
+ * What committing `turn` now would carry in with it, or leave stranded.
+ *
+ * Each commit is offered on its own, which is what makes committing turn 5
+ * while turn 4 is still only in the working tree possible — and, until this,
+ * silent. Two different things go wrong depending on whether the turns share a
+ * file, and they need two different sentences:
+ *
+ * - **They share one.** `git commit -- <paths>` commits what those paths hold
+ *   *now*, so the earlier turn's edits to a shared file go into this commit
+ *   wearing this turn's message. That is the sharper of the two, because the
+ *   commit is wrong about its own contents rather than merely out of order.
+ * - **They do not.** The earlier work stays in the tree, uncommitted, now
+ *   sitting underneath a commit it is not in. Nothing is lost; the history just
+ *   no longer reads in the order it happened.
+ *
+ * Computed here rather than in the backend because the drawer already holds
+ * every turn and which commit each is in — the listing carries it. Exported for
+ * its own test.
+ */
 export function commitCaveats(turns: Checkpoint[], turn: Checkpoint): string[] {
   const earlier = turns.filter(
     (other) => other.turn < turn.turn && !other.commit && other.files.length > 0,

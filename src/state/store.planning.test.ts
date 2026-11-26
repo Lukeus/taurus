@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 
 import type { Remark } from "../lib/api";
-import { useStore } from "./store";
+import { pinnedPlan, useStore } from "./store";
 
 /** The commands that answer with a list, which `idle` answers with an empty one. */
 const LISTS = new Set(["list_sessions", "list_checkpoints", "running_sessions"]);
@@ -110,14 +110,22 @@ describe("planning a conversation", () => {
     expect(useStore.getState().error).toBe("no such conversation");
   });
 
-  it("is approved in the backend's words, with the comments on its steps", async () => {
+  it("is approved in the backend's words, by the turn that carries it out", async () => {
     useStore.setState({ planning: { open: true } });
+    let planning = true;
     invoke.mockImplementation((command: string, args?: unknown) => {
-      if (command === "approve_plan") return Promise.resolve(APPROVED);
+      if (command === "plan_approval") return Promise.resolve(APPROVED);
       if (command === "compose_message") {
         expect(args).toEqual({ text: APPROVED, remarks: [ON_STEP] });
         return Promise.resolve(`${APPROVED}\n\nComments:\n\n- Plan step`);
       }
+      if (command === "send_message") {
+        // The backend ends planning as it builds the turn, and only then.
+        expect((args as { approvePlan: boolean }).approvePlan).toBe(true);
+        planning = false;
+        return Promise.resolve();
+      }
+      if (command === "is_planning") return Promise.resolve(planning);
       return idle(command);
     });
     useStore.getState().addRemark("open", ON_STEP);
@@ -129,11 +137,55 @@ describe("planning a conversation", () => {
     expect(useStore.getState().remarks.open).toEqual([]);
   });
 
+  it("stays planning when the approval never starts a turn", async () => {
+    // Composing the step comments refused: nothing is sent, so nothing was
+    // approved, and the next message must not be handed every tool.
+    useStore.setState({ planning: { open: true } });
+    invoke.mockImplementation((command: string) => {
+      if (command === "plan_approval") return Promise.resolve(APPROVED);
+      if (command === "compose_message") return Promise.reject("51 comments is more than one message can carry");
+      return idle(command);
+    });
+    useStore.getState().addRemark("open", ON_STEP);
+
+    await useStore.getState().approvePlan();
+
+    expect(sends()).toEqual([]);
+    expect(useStore.getState().planning.open).toBe(true);
+    expect(invoke.mock.calls.map(([name]) => name)).not.toContain("set_planning");
+    // Nobody typed the approval, so it isn't put in the box.
+    expect(useStore.getState().returned).toBeNull();
+    expect(useStore.getState().remarks.open).toEqual([ON_STEP]);
+  });
+
   it("can't be approved while the plan is still being written", async () => {
     useStore.setState({ planning: { open: true }, busy: true });
     invoke.mockImplementation(idle);
     await useStore.getState().approvePlan();
-    expect(invoke.mock.calls.map(([name]) => name)).not.toContain("approve_plan");
+    expect(sends()).toEqual([]);
     expect(useStore.getState().planning.open).toBe(true);
+  });
+
+  it("starts from no plan: one from before isn't pinned for approval", async () => {
+    invoke.mockImplementation(idle);
+    useStore.setState({
+      entries: [
+        {
+          kind: "tool",
+          id: "old",
+          name: "update_plan",
+          preview: "update_plan",
+          status: "ok",
+          steps: [],
+          view: { type: "plan", steps: [{ text: "Rename the widget", state: "todo" }] },
+        },
+      ] as never,
+    });
+    expect(pinnedPlan(useStore.getState().entries)).not.toBeNull();
+
+    await useStore.getState().setPlanning("open", true);
+
+    expect(pinnedPlan(useStore.getState().entries)).toBeNull();
+    expect(useStore.getState().entries.at(-1)).toMatchObject({ kind: "notice", planning: true });
   });
 });

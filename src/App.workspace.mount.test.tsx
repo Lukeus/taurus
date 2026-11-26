@@ -137,6 +137,8 @@ const state = {
   planning: {},
   setPlanning: vi.fn(),
   approvePlan: vi.fn(),
+  returned: null,
+  takeReturned: vi.fn(),
 };
 // Applied rather than ignored, as in `App.test.tsx`: App and the panes under
 // it subscribe to slices, and a mock handing every caller the whole state

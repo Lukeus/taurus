@@ -128,6 +128,8 @@ const state = {
   planning: {},
   setPlanning: vi.fn(),
   approvePlan: vi.fn(),
+  returned: null,
+  takeReturned: vi.fn(),
 };
 vi.mock("./state/store", async (original) => ({
   ...(await original<typeof import("./state/store")>()),
