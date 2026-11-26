@@ -541,7 +541,14 @@ export function Composer({
         <textarea
           ref={box}
           value={text}
-          placeholder={ready ? "Ask Taurus to do something…" : "Connect a model to begin"}
+          aria-label="Message Taurus"
+          placeholder={
+            ready
+              ? "Ask Taurus to do something…"
+              : workspace
+                ? "Connect a model to begin"
+                : "Choose a workspace to begin"
+          }
           disabled={!ready}
           rows={1}
           onChange={(e) => {
@@ -591,6 +598,15 @@ export function Composer({
                 return;
               }
             }
+            // Escape in an empty box stops the running turn: the one action a
+            // turn had no key for. Only when empty, so it never costs a draft,
+            // and not while a reply is being read aloud — that Escape is the
+            // speech's, and stopping the turn would take both at once.
+            if (e.key === "Escape" && busy && !stopping && !speaking && !text) {
+              e.preventDefault();
+              onStop();
+              return;
+            }
             // Enter sends; Shift+Enter is a newline, matching every chat UI.
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -619,6 +635,7 @@ export function Composer({
               the next few hours, and it is decided while looking at a turn. */}
           <button
             className={`pill${unattended ? " on" : ""}`}
+            aria-pressed={unattended}
             onClick={() => onUnattended(!unattended)}
             data-tip={
               unattended
@@ -664,6 +681,7 @@ export function Composer({
               className="danger composer-send"
               onClick={onStop}
               disabled={stopping}
+              data-tip="Stop this turn. Esc in an empty box does the same."
             >
               {stopping ? "Stopping…" : "Stop"}
             </button>

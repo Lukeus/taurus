@@ -8163,6 +8163,14 @@ button.link:where(:not(.excalidraw *)):hover {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   color: var(--text);
 }
+/* Waiting on the user, which is louder than anything merely arriving. */
+.to-foot.asking {
+  border-color: var(--warn);
+  color: var(--text);
+}
+.to-foot.asking .to-foot-arrow {
+  color: var(--warn);
+}
 .to-foot-arrow {
   font-family: var(--mono);
   color: var(--accent);

@@ -45,6 +45,7 @@ function mount(options: Options = {}) {
   const parked: { key: string; held: Parked }[] = [];
   const unqueued: true[] = [];
   const sentQueued: true[] = [];
+  const stopped: true[] = [];
 
   const render = (opts: Options) =>
     root.render(
@@ -69,7 +70,7 @@ function mount(options: Options = {}) {
         unattended={false}
         onUnattended={() => {}}
         onSend={(text, images, onScreen) => sent.push({ text, images, onScreen })}
-        onStop={() => {}}
+        onStop={() => stopped.push(true)}
         onUsage={() => {}}
       />,
     );
@@ -87,6 +88,7 @@ function mount(options: Options = {}) {
     parked,
     unqueued,
     sentQueued,
+    stopped,
     box,
     rerender: (opts: Options) => act(() => render({ ...options, ...opts })),
     type: (text: string) =>
@@ -105,6 +107,12 @@ function mount(options: Options = {}) {
       act(() => {
         box().dispatchEvent(
           new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        );
+      }),
+    escape: () =>
+      act(() => {
+        box().dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
         );
       }),
     click: (element: Element | null) =>
@@ -297,5 +305,36 @@ describe("an input method", () => {
     // And the next, real, Enter does send.
     act(() => box.dispatchEvent(ime({})));
     expect(sent).toHaveLength(1);
+  });
+});
+
+describe("Escape while a turn runs", () => {
+  it("stops the turn from an empty box", () => {
+    const { escape, stopped } = mount({ busy: true });
+    escape();
+    expect(stopped).toEqual([true]);
+  });
+
+  it("leaves the turn alone while there is a draft in the box", () => {
+    // A key that stopped the turn with text in the box would make Escape
+    // mean two different things a keystroke apart.
+    const { type, escape, stopped } = mount({ busy: true });
+    type("next, the tests");
+    escape();
+    expect(stopped).toEqual([]);
+  });
+
+  it("does nothing when no turn is running", () => {
+    const { escape, stopped } = mount({ busy: false });
+    escape();
+    expect(stopped).toEqual([]);
+  });
+});
+
+describe("the box's placeholder when it cannot send", () => {
+  it("names the model when that is the missing step", () => {
+    const { box } = mount({ ready: false });
+    expect(box().placeholder).toBe("Connect a model to begin");
+    expect(box().getAttribute("aria-label")).toBe("Message Taurus");
   });
 });

@@ -13,6 +13,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
 import { modalOpen } from "./components/Modal";
+import { isAsking } from "./lib/asking";
 import { ListPaneIcon } from "./components/icons";
 import { useGlide } from "./lib/motion";
 import { FileLinks } from "./lib/links";
@@ -1913,7 +1914,7 @@ export default function App() {
                     ready={!!store.session}
                     health={health(store.status?.providers.length, providerId, models)}
                     onPickWorkspace={pickWorkspace}
-                    onSettings={() => setSettingsOpen(true)}
+                    onSettings={() => openSettingsAt("models")}
                   />
                 }
               />
@@ -2441,7 +2442,7 @@ export function mcpCounts(
  * Taurus works in and every change is undoable — but only offers setup when
  * setup is what is missing.
  */
-function FirstRun({
+export function FirstRun({
   workspace,
   ready,
   health,
@@ -2454,26 +2455,39 @@ function FirstRun({
   onPickWorkspace: () => void;
   onSettings: () => void;
 }) {
+  // The one step that is blocking, so the hero leads with it. Both buttons
+  // used to be offered side by side whatever was missing, with the provider's
+  // state only in the faint line underneath — so somebody with a folder open
+  // and no model could not tell which of the two was the problem.
+  const needsWorkspace = !workspace;
+  const needsModel = health.state === "none" || health.state === "unreachable";
+  const heading = needsWorkspace
+    ? "Point Taurus at a workspace"
+    : needsModel
+      ? health.state === "unreachable"
+        ? `${health.id} is not answering`
+        : "Connect a model to start"
+      : ready
+        ? `Ready in ${basename(workspace)}`
+        : `Opening ${basename(workspace)}…`;
+  const modelFirst = !needsWorkspace && needsModel;
   return (
     <div className="hero">
       <div className="hero-mark">t</div>
       <div className="hero-copy">
-        <h1>
-          {ready && workspace
-            ? `Ready in ${basename(workspace)}`
-            : "Point Taurus at a folder"}
-        </h1>
+        <h1>{heading}</h1>
         <p>
-          It reads and edits files there, runs commands with your approval, and
-          remembers every change so any turn can be undone.
+          {modelFirst
+            ? "Taurus needs a model to talk to: a local Ollama, anything OpenAI-compatible, Anthropic, or Gemini. Add one in Settings › Models."
+            : "A workspace is the folder Taurus works in. It reads and edits files there, runs commands with your approval, and remembers every change so any turn can be undone."}
         </p>
       </div>
       <div className="hero-actions">
-        <button className="primary" onClick={onPickWorkspace}>
-          {ready ? "Change workspace" : "Choose a workspace"}
+        <button className={modelFirst ? undefined : "primary"} onClick={onPickWorkspace}>
+          {workspace ? "Change workspace" : "Choose a workspace"}
         </button>
-        <button onClick={onSettings}>
-          {ready ? "Providers" : "Connect a model"}
+        <button className={modelFirst ? "primary" : undefined} onClick={onSettings}>
+          {needsModel ? "Connect a model" : "Models"}
         </button>
       </div>
       <div className="hero-status">
@@ -2793,14 +2807,7 @@ function Attention() {
  * definition the newest thing in the transcript — the harness runs one call at
  * a time and this one is blocking it.
  */
-export function isAsking(entries: Entry[]): boolean {
-  const last = entries[entries.length - 1];
-  return (
-    last?.kind === "tool" &&
-    last.status === "running" &&
-    last.view?.type === "questions"
-  );
-}
+export { isAsking } from "./lib/asking";
 
 /**
  * The last thing worth reporting from a turn in flight.
