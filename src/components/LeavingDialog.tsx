@@ -49,7 +49,7 @@ export function LeavingDialog({
 
   return (
     <Modal onClose={onClose}>
-      <div className="dialog" role="dialog" aria-labelledby="leaving-title">
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="leaving-title">
         <div className="dialog-head">
           <h2 id="leaving-title">Running unattended</h2>
         </div>

@@ -85,7 +85,13 @@ export function PermissionDialog({
 
   return (
     <Modal>
-      <div className="dialog" role="alertdialog" aria-labelledby="perm-title">
+      <div
+        className="dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="perm-title"
+        aria-describedby="perm-detail"
+      >
         <div className="dialog-head">
           <span className={`effect ${request.effect}`}>{VERB[request.effect]}</span>
           <h2 id="perm-title">
@@ -108,9 +114,11 @@ export function PermissionDialog({
             head already names the file and what happens to it, so the
             preview would only say the path a second time. */}
         {request.diff ? (
-          <DiffView diff={request.diff} />
+          <div id="perm-detail">
+            <DiffView diff={request.diff} />
+          </div>
         ) : (
-          <pre className="dialog-detail">
+          <pre className="dialog-detail" id="perm-detail">
             {request.effect === "execute" && <span className="prompt">❯ </span>}
             {request.preview}
           </pre>
@@ -119,9 +127,24 @@ export function PermissionDialog({
         {/* The scope sentence describes the standing grant, so it goes away
             with it: in an untrusted workspace there is nowhere to keep one, and
             a footnote about a button that is not there reads as a bug. */}
-        {request.offer_always && (
+        {/* With both grants on offer, each sentence is labelled with the
+            button it belongs to: a single line under the diff read as the
+            meaning of every "Always" button, and the difference between the
+            two was only in their tooltips. */}
+        {request.offer_always && !request.always_global_scope && (
           <p className="dialog-footnote">
             <Ticked text={request.always_scope} />.
+          </p>
+        )}
+        {request.offer_always && request.always_global_scope && (
+          <p className="dialog-footnote dialog-scopes">
+            <span>
+              <b>Always here</b> — <Ticked text={clause(request.always_scope)} />.
+            </span>
+            <span>
+              <b>Always everywhere</b> —{" "}
+              <Ticked text={clause(request.always_global_scope)} />.
+            </span>
           </p>
         )}
         {/* In its place when no standing grant can cover the line. Without
@@ -205,6 +228,11 @@ function Ticked({ text }: { text: string }) {
       {text.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}
     </>
   );
+}
+
+/** "Always allow x in y" as the clause after a button's name: "allow x in y". */
+function clause(text: string): string {
+  return text.replace(/^Always a/, "a");
 }
 
 /** The same sentence for a tooltip, which is plain text: the backticks go. */

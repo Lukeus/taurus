@@ -12,6 +12,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
+import { modalOpen } from "./components/Modal";
 import { ListPaneIcon } from "./components/icons";
 import { useGlide } from "./lib/motion";
 import { FileLinks } from "./lib/links";
@@ -547,6 +548,7 @@ export default function App() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
+      if (modalOpen()) return;
       e.preventDefault();
       setTerminalOpen((open) => !open);
     };
@@ -556,6 +558,7 @@ export default function App() {
       if (e.key.toLowerCase() !== "r" || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (target?.closest(".xterm")) return;
+      if (modalOpen()) return;
       e.preventDefault();
       setSwitcherOpen(true);
     };
@@ -592,6 +595,10 @@ export default function App() {
    */
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      // Not behind a panel that has the keyboard: ⌘N under the permission
+      // prompt started a conversation nobody could see, and ⌘K over Settings
+      // opened a second layer underneath it.
+      if (modalOpen()) return;
       if (isChord(e, "k") || (isChord(e, "p") && e.shiftKey)) {
         e.preventDefault();
         setPaletteOpen(true);
@@ -2161,22 +2168,6 @@ export default function App() {
           )}
         </div>
 
-        {store.permission && (
-          <PermissionDialog
-            request={store.permission}
-            askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
-            onDecide={store.answerPermission}
-          />
-        )}
-
-        {store.leaving && (
-          <LeavingDialog
-            rules={store.leaving}
-            onGrant={store.grantLeaving}
-            onClose={store.dismissLeaving}
-          />
-        )}
-
         {/* Renders nothing. Mounted here because it is about the window rather
             than about anything in it. */}
         <Attention />
@@ -2286,6 +2277,25 @@ export default function App() {
             />
           )}
         </Suspense>
+
+        {/* After every drawer and picker, so a request that arrives while one
+            is open paints over it, and `Modal` counts it as the one in front:
+            the scrims share a z-index, so document order is what decides. */}
+        {store.permission && (
+          <PermissionDialog
+            request={store.permission}
+            askedBy={askedBy(store.permission, store.session?.id, store.sessions)}
+            onDecide={store.answerPermission}
+          />
+        )}
+
+        {store.leaving && (
+          <LeavingDialog
+            rules={store.leaving}
+            onGrant={store.grantLeaving}
+            onClose={store.dismissLeaving}
+          />
+        )}
 
         {/* Last, so it paints over the drawers and dialogs above it without
             needing a z-index that has to be kept ahead of theirs. One layer for

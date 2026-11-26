@@ -3506,6 +3506,16 @@ body.resizing-y iframe {
   font-size: 12.5px;
   color: var(--text-faint);
 }
+/* One line per standing grant, each led by the button it belongs to. */
+.dialog-scopes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dialog-scopes b {
+  font-weight: 600;
+  color: var(--text-dim);
+}
 /* The rules the leaving dialog offers, between its sentence and its buttons. */
 .dialog .leaving-rules {
   margin: 0 0 20px;
