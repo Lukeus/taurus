@@ -51,6 +51,7 @@ pub(crate) const TAURUS_FILES: &[&str] = &[
     "mcp.json",
     "providers.json",
     "search.json",
+    "settings.json",
 ];
 
 /// The most of one file held to put back. A larger one is noticed and reported,
@@ -143,6 +144,9 @@ struct Snapshot {
 struct Cover {
     places: Places,
     git_dirs: Vec<PathBuf>,
+    /// The folders a `core.hooksPath` names, as they were when this was read.
+    /// See [`crate::path_guard::configured_hook_dirs`].
+    hook_dirs: Vec<PathBuf>,
 }
 
 impl Cover {
@@ -150,6 +154,7 @@ impl Cover {
         Self {
             places: places.clone(),
             git_dirs: git_dirs(&places.root),
+            hook_dirs: hook_dirs(&places.root),
         }
     }
 
@@ -168,6 +173,7 @@ impl Cover {
             .iter()
             .any(|dir| path.starts_with(dir) && !path.starts_with(dir.join("worktrees")));
         in_git
+            || self.hook_dirs.iter().any(|dir| path.starts_with(dir))
             || self
                 .places
                 .home
@@ -206,6 +212,20 @@ struct Places {
     keep_to: Option<PathBuf>,
 }
 
+/// The `core.hooksPath` folders worth reading for `root`: each one once, by its
+/// real path, and only one that is there. A folder that appears later is a
+/// settings change the look already sees.
+fn hook_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = crate::path_guard::configured_hook_dirs(root)
+        .into_iter()
+        .filter_map(|dir| dir.canonicalize().ok())
+        .filter(|dir| dir.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 /// The `.git` git uses for `root`: the nearest one at or above it, a folder or
 /// a file naming one. A workspace opened on `repo/packages/app`, or a delegate's
 /// worktree of that folder, has none of its own, and looking only at
@@ -220,7 +240,7 @@ pub(crate) fn dot_git(root: &Path) -> Option<PathBuf> {
 /// The git directories behind a workspace: `.git`, or where a `.git` file says
 /// it is, and for a linked worktree the directory it shares hooks and settings
 /// with.
-fn git_dirs(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn git_dirs(root: &Path) -> Vec<PathBuf> {
     let Some(dot_git) = dot_git(root) else {
         return Vec::new();
     };
@@ -351,8 +371,14 @@ impl Reader {
 /// `.taurus/plugins/*`, and each git directory's `hooks/*` and settings. Global:
 /// `permissions.json` and `hooks.json` in the config home, and `~/.gitconfig` and
 /// `~/.config/git/config` when the config home is `~/.taurus`. A handful of stats,
-/// so they're in. Everything else under the home directory isn't.
-fn listing(places: &Places, git_dirs: &[PathBuf], hold: bool) -> BTreeMap<PathBuf, Entry> {
+/// so they're in. Everything else under the home directory isn't. And wherever
+/// `core.hooksPath` sends git, in the workspace or out of it.
+fn listing(
+    places: &Places,
+    git_dirs: &[PathBuf],
+    hook_dirs: &[PathBuf],
+    hold: bool,
+) -> BTreeMap<PathBuf, Entry> {
     let mut reader = Reader {
         hold,
         held: 0,
@@ -368,6 +394,9 @@ fn listing(places: &Places, git_dirs: &[PathBuf], hold: bool) -> BTreeMap<PathBu
     for dir in git_dirs {
         reader.git(dir);
     }
+    for dir in hook_dirs {
+        reader.walk(dir, true, false);
+    }
     if let Some(home) = &places.home {
         for (i, file) in home_files(home).iter().enumerate() {
             // The first two are Taurus's own; the rest are git's settings.
@@ -380,7 +409,7 @@ fn listing(places: &Places, git_dirs: &[PathBuf], hold: bool) -> BTreeMap<PathBu
 fn snapshot(places: &Places) -> Snapshot {
     let cover = Cover::of(places);
     Snapshot {
-        entries: listing(places, &cover.git_dirs, true),
+        entries: listing(places, &cover.git_dirs, &cover.hook_dirs, true),
         git_dirs: cover.git_dirs.clone(),
         covers: vec![cover],
     }
@@ -398,7 +427,7 @@ impl Snapshot {
             return;
         }
         let cover = Cover::of(places);
-        for (path, entry) in listing(places, &cover.git_dirs, true) {
+        for (path, entry) in listing(places, &cover.git_dirs, &cover.hook_dirs, true) {
             self.entries.entry(path).or_insert(entry);
         }
         for dir in &cover.git_dirs {
@@ -518,7 +547,7 @@ fn changes(baseline: &Snapshot, places: &Places) -> Vec<Change> {
     let Some(cover) = baseline.cover(places) else {
         return Vec::new();
     };
-    let now = listing(places, &cover.git_dirs, false);
+    let now = listing(places, &cover.git_dirs, &cover.hook_dirs, false);
     // A repository removed altogether has nothing to put hooks back into.
     let gone = |path: &Path| {
         baseline
@@ -830,7 +859,7 @@ pub fn written_by_this_process(path: &Path) {
             // and a folder comes with everything in it.
             baseline.entries.retain(|held, _| !held.starts_with(&path));
             for cover in &baseline.covers {
-                let fresh = listing(&cover.places, &cover.git_dirs, true);
+                let fresh = listing(&cover.places, &cover.git_dirs, &cover.hook_dirs, true);
                 for (held, entry) in fresh {
                     if held.starts_with(&path) {
                         baseline.entries.insert(held, entry);
@@ -1204,6 +1233,27 @@ mod tests {
         assert!(std::fs::read_to_string(b.path(".taurus/permissions.json"))
             .unwrap()
             .contains("./x.sh"));
+    }
+
+    #[tokio::test]
+    async fn a_hook_in_the_folder_hooks_path_names_is_undone() {
+        let b = bench(Box::new(DenyAll), true, true);
+        std::fs::write(b.path(".git/config"), "[core]\n\thooksPath = .husky/_\n").unwrap();
+        std::fs::create_dir_all(b.path(".husky/_")).unwrap();
+        std::fs::write(b.path(".husky/pre-commit"), "npm test\n").unwrap();
+        b.script(
+            "echo evil > .husky/pre-commit; echo evil > .husky/_/pre-push; \
+             echo '{\"lsp\": {}}' > .taurus/settings.json; echo done",
+        );
+        let text = b.run().await;
+        assert!(text.contains("done"), "{text}");
+        assert_eq!(
+            std::fs::read_to_string(b.path(".husky/pre-commit")).unwrap(),
+            "npm test\n",
+            "{text}"
+        );
+        assert!(!b.path(".husky/_/pre-push").exists(), "{text}");
+        assert!(!b.path(".taurus/settings.json").exists(), "{text}");
     }
 
     #[tokio::test]

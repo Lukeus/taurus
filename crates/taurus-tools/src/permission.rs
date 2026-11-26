@@ -392,7 +392,8 @@ impl PermissionEngine {
             return Ok(Cleared::Reads);
         }
 
-        let mut keys = keys_for(tool, input, touched, self.root_for(asking));
+        let pinned = tool.grant_key(input).await;
+        let mut keys = keys_for(tool, input, touched, self.root_for(asking), pinned);
         if tool.effect() == Effect::Execute {
             if let Some(line) = input.get("command").and_then(|c| c.as_str()) {
                 let again = self
@@ -654,6 +655,7 @@ fn keys_for(
     input: &serde_json::Value,
     touched: &[PathBuf],
     workspace: &Path,
+    pinned: Option<Result<String, &'static str>>,
 ) -> Keys {
     if tool.effect() == Effect::Execute {
         if let Some(command) = input.get("command").and_then(|c| c.as_str()) {
@@ -696,8 +698,18 @@ fn keys_for(
                 .any(|path| crate::path_guard::decides_what_runs(&root, path))
         }))
     .then_some(DECIDES_WHAT_RUNS);
+    let rule = match pinned {
+        Some(Ok(detail)) => format!("{}:{detail}", tool.name()),
+        Some(Err(why)) => {
+            return Keys {
+                rules: vec![tool.name().to_string()],
+                beyond: beyond.or(Some(why)),
+            };
+        }
+        None => tool.name().to_string(),
+    };
     Keys {
-        rules: vec![tool.name().to_string()],
+        rules: vec![rule],
         beyond,
     }
 }
@@ -718,16 +730,22 @@ fn names_what_decides_what_runs(
     };
     let cwd = input.get("cwd").and_then(|c| c.as_str()).unwrap_or(".");
     let mut at = root.join(cwd);
+    // Once a `cd` goes somewhere only the shell can work out (`cd .g*/hooks`,
+    // `cd $DIR`), no word after it can be placed, so a command that could
+    // write is asked about rather than judged from a folder that isn't real.
+    let mut lost = false;
     programs.commands.iter().any(|command| {
         if let Some(to) = command.moves_to() {
+            lost |= to.contains(['*', '?', '[', '$', '`']);
             at = at.join(to);
             return false;
         }
         !command.only_reads()
-            && command
-                .words
-                .iter()
-                .any(|word| crate::path_guard::word_names_what_runs(&root, &at, word))
+            && (lost
+                || command
+                    .words
+                    .iter()
+                    .any(|word| crate::path_guard::word_names_what_runs(&root, &at, word)))
     })
 }
 
@@ -746,6 +764,10 @@ fn describe_rules(rules: &[String], effect: Effect, scope: Scope) -> String {
     match first.split_once(':') {
         Some((tool, host)) if effect == Effect::Network => {
             format!("Always allow `{tool}` to reach {host} {where_}")
+        }
+        Some(("run_skill_script", pinned)) => {
+            let script = pinned.rsplit_once('@').map_or(pinned, |(script, _)| script);
+            format!("Always allow the skill script `{script}`, as it is now, {where_}")
         }
         Some((tool, _)) => {
             let programs: Vec<String> = rules
@@ -2133,6 +2155,10 @@ mod tests {
             serde_json::json!({"command": "cp x y", "cwd": ".git/hooks"}),
             serde_json::json!({"command": "cat x | tee .taurus/permissions.json"}),
             serde_json::json!({"command": "git checkout -- .taurus/hooks.json"}),
+            serde_json::json!({"command": "cd .g*/hooks && cp ../../x pre-commit"}),
+            serde_json::json!({"command": "cd .tau* && cp x hooks.json"}),
+            serde_json::json!({"command": "cd $HOOKS && cp x pre-commit"}),
+            serde_json::json!({"command": "cp x .taurus/settings.json"}),
         ] {
             engine
                 .check(&run, &input, &Asking::default())
@@ -2158,6 +2184,7 @@ mod tests {
             serde_json::json!({"command": "git diff .taurus/hooks.json"}),
             serde_json::json!({"command": "cp src/a.rs src/b.rs"}),
             serde_json::json!({"command": "cd .git/hooks && ls"}),
+            serde_json::json!({"command": "cd src* && ls"}),
         ] {
             engine
                 .check(&run, &input, &Asking::default())

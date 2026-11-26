@@ -1452,6 +1452,21 @@ the backlog, and they're the minority.
   alternative is a shell parser, and a parser that is wrong lets something
   through, where a tokenizer that gives up asks. See
   [Permissions](safety.md#permissions).
+- **A hook manager configured by a file in the repository isn't protected.**
+  The files that decide what runs are git's: `.git/hooks`, its settings, and
+  wherever `core.hooksPath` points, husky's `.husky` included. A tool that
+  reads its own file and then runs what it says, like `.pre-commit-config.yaml`
+  or `lefthook.yml`, isn't on the list, so a grant for `write_file` can change
+  what the next commit runs through it. Adding them is a list of names, and
+  each one widens what an ordinary edit gets asked about. `core.hooksPath` is
+  read from the repository's settings and yours, without following
+  `include.path` or `includeIf`, so a value only an included file sets isn't
+  seen. See [Permissions](safety.md#permissions).
+- **A skill script's grant is asked again after any edit to its skill.** It's
+  pinned to what the whole skill folder holds, `SKILL.md` included, because a
+  script reads what's beside it. So fixing a typo in a skill's instructions
+  asks about its scripts once more. Pinning to only the files a script reads
+  would need knowing what it reads, which nothing here can.
 - **A query card stands alone, so a query-heavy turn is a stack of cards.**
   Any tool call that draws a view is left out of the folded run header.
   That's what stops a table getting filed under "6 steps · 11s" behind a

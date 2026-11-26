@@ -739,6 +739,19 @@ pub trait Tool: Send + Sync {
         Vec::new()
     }
 
+    /// What a standing grant for this call is pinned to, past the tool's name.
+    ///
+    /// `None`, the default, keys the grant by the name alone: "this tool may
+    /// do its work here". A tool whose calls run very different programs
+    /// says which one this is, so that allowing one doesn't allow the rest:
+    /// `run_skill_script` names the skill, the script, and what the skill's
+    /// files hold, and a script edited since it was allowed is asked about
+    /// again. `Err` says why no grant can be pinned at all, and the call is
+    /// then asked about every time, like a file that decides what runs.
+    async fn grant_key(&self, _input: &serde_json::Value) -> Option<Result<String, &'static str>> {
+        None
+    }
+
     /// Whether this call writes files, named in advance or not. For the
     /// order of checks and writes in one round: a check that ran before a
     /// write didn't check it.

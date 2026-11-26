@@ -73,10 +73,11 @@ fn turned_off() -> bool {
 /// that grant things are on the list.
 ///
 /// A repository that doesn't exist yet isn't listed, so `git init` and `git clone`
-/// can make their hooks.
+/// can make their hooks. Wherever `core.hooksPath` sends git is, in `hook_dirs`.
 fn denied_paths(
     root: &Path,
     git_dirs: &[PathBuf],
+    hook_dirs: &[PathBuf],
     config_home: Option<&Path>,
     user_home: Option<&Path>,
 ) -> Vec<PathBuf> {
@@ -95,6 +96,7 @@ fn denied_paths(
     for dir in git_dirs {
         git(dir, &mut denied, 4);
     }
+    denied.extend(hook_dirs.iter().cloned());
     let taurus = root.join(".taurus");
     for file in crate::protected::TAURUS_FILES {
         denied.push(taurus.join(file));
@@ -350,7 +352,13 @@ impl Fence {
             .collect();
         Asked::Fenced(Self::over(
             backend,
-            denied_paths(root, git_dirs, config_home, user_home.as_deref()),
+            denied_paths(
+                root,
+                git_dirs,
+                &crate::path_guard::configured_hook_dirs(root),
+                config_home,
+                user_home.as_deref(),
+            ),
             kept_out,
             git_dirs.to_vec(),
         ))
@@ -868,11 +876,14 @@ mod tests {
         let denied = denied_paths(
             root,
             &[PathBuf::from("/w/.git")],
+            &[PathBuf::from("/w/.husky")],
             Some(Path::new("/u/.taurus")),
             Some(Path::new("/u")),
         );
         for wanted in [
             "/w/.git/hooks",
+            "/w/.husky",
+            "/w/.taurus/settings.json",
             "/w/.taurus/permissions.json",
             "/w/.taurus/hooks.json",
             "/w/.taurus/mcp.json",
@@ -898,7 +909,13 @@ mod tests {
     #[test]
     fn a_workspace_in_the_config_home_can_write_itself() {
         let home = Path::new("/u/.taurus");
-        let denied = denied_paths(Path::new("/u/.taurus/plugins/x"), &[], Some(home), None);
+        let denied = denied_paths(
+            Path::new("/u/.taurus/plugins/x"),
+            &[],
+            &[],
+            Some(home),
+            None,
+        );
         assert!(!denied.contains(&home.to_path_buf()));
         assert!(denied.contains(&home.join("permissions.json")));
     }

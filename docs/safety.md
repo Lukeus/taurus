@@ -14,7 +14,11 @@ program name, one for each program the line runs, so approving `git` doesn't
 also approve `rm`. A call that
 names a URL is keyed the same way, by that URL's host. Approving `fetch_url`
 for `docs.rs` is a decision about one site, not a standing grant to reach
-anywhere.
+anywhere. A skill script is keyed by the skill, the script, and what's in the
+skill's folder, so allowing one script doesn't allow every other, and a script
+edited since you allowed it, or a file beside it, is asked about again. A
+grant saved before this, by `run_skill_script` alone, no longer covers a
+script. A skill past 512 files or 16 MB is asked about every time.
 
 **What you run in the dock, the model can read.** `read_terminal` is a read
 tool, so it isn't gated either. While the terminal dock has a shell open with
@@ -150,18 +154,28 @@ nobody can list every variable some program runs something from. The list is in
 `write_file` or `edit_file` is about the project's work, so it doesn't cover:
 
 - `.taurus/permissions.json`, `hooks.json`, `mcp.json`, `providers.json`,
-  `search.json`, and anything under `.taurus/plugins`
+  `search.json`, `settings.json` (it can name a language server, which is a
+  program that starts on its own), and anything under `.taurus/plugins`
 - `.git/hooks/*` and `.git/config`, in the repository or in a submodule's
   `.git/modules`
+- wherever `core.hooksPath` sends git instead, like husky's `.husky/_`. For a
+  folder named `_`, which is husky's, the folder above it counts too, because
+  husky's scripts there run the ones a project writes in `.husky`. Every value
+  in the repository's settings and in yours counts, not only the one git would
+  settle on. `include.path` isn't followed.
 
 Otherwise a grant to edit source could give itself every other grant. Any tool
 that names the file it writes is held to this, `run_recipe`'s output included.
 The path is checked after it's resolved and without regard to case, so a symlink
-to `.git/hooks` and `.GIT/Hooks` both count. `~/.gitconfig` is on the list too.
+to `.git/hooks` and `.GIT/Hooks` both count. `~/.gitconfig` is on the list too,
+and so is `~/.config/git/config` (or `$XDG_CONFIG_HOME/git/config`), which git
+reads beside it.
 
 A command line naming one of those files is asked about as well, unless the
 program only reads. `cp x .git/hooks/y`, `tee .taurus/hooks.json`, and
-`cd .git/hooks && mv ../x y` are asked about. `cat .git/hooks/pre-commit`,
+`cd .git/hooks && mv ../x y` are asked about. After a `cd` whose folder only the
+shell can work out, like `cd .g*/hooks` or `cd $DIR`, anything that isn't only
+reading is asked about, because nothing after it can be placed. `cat .git/hooks/pre-commit`,
 `ls .git/hooks` and `git status` aren't. The programs that count as only reading
 are a short list: `cat`, `head`, `tail`, `ls`, `wc`, `grep`, `rg`, `stat`, `file`,
 `du`, `diff`, `echo`, `printf`, `test`, and on Windows `type`, `dir` and
@@ -173,7 +187,9 @@ So are the settings that have git run something, whether through `git config` or
 `git -c`: `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.pager`,
 `alias.*`, `filter.*`, `credential.helper`, `include.path` and the like. Same for
 `git rebase -x`, `git submodule foreach`, `git bisect run`, `git filter-branch`
-and `--upload-pack`. Reading a setting isn't asked about, and neither is
+and `--upload-pack`, along with `git clone -u`, which is its short name, and
+`--exec`, which names the same program for `archive`, `ls-remote`, `push` and
+`fetch-pack`. Reading a setting isn't asked about, and neither is
 `git config user.name me`.
 
 `awk` with `system(`, `getline`, a pipe to a quoted command or a `>` after `print`
@@ -216,6 +232,7 @@ What's in the set:
 
 - in the workspace: `.git/hooks/*` (and a submodule's, and a linked worktree's),
   the `.taurus` files listed above, and `.taurus/plugins/*`. `*.sample` isn't.
+- wherever `core.hooksPath` sends git, as it was when the command started
 - global: `permissions.json` and `hooks.json` in the config home, and
   `~/.gitconfig` and `~/.config/git/config` when the config home is `~/.taurus`
 - `.git/config` and those git config files count only when a setting that runs
@@ -255,6 +272,7 @@ approved don't. The system itself refuses a write to:
 
 - in the workspace: `.git/hooks` (a submodule's too), the `.taurus` files above,
   and `.taurus/plugins`
+- wherever `core.hooksPath` sends git, in the workspace or not
 - in your home: `~/.taurus` in full, `~/.ssh`, `~/.gnupg`, `~/.aws`, `.zshrc`,
   `.zshenv`, `.zprofile`, `.zlogin`, `.bashrc`, `.bash_profile`, `.bash_login`,
   `.profile`, fish's config, `~/Library/LaunchAgents`, `~/.config/autostart`, and
@@ -301,8 +319,9 @@ A few things you may run into under it:
 - `ssh` can't add to `~/.ssh/known_hosts`, and it warns about that and carries on.
   Commit signing and AWS SSO want to write under `~/.gnupg` and `~/.aws`, and we
   haven't tried either. Approve the line, or turn this off.
-- husky's `npm install` gets a refused write to `.git/hooks` rather than a repair,
-  if it writes there. Approve the line and it stands.
+- husky's `npm install` gets a refused write to `.git/hooks`, or to `.husky/_`
+  once `core.hooksPath` points there, rather than a repair. Approve the line and
+  it stands.
 
 An edit you make in another program to one of these files while a grant-covered
 command is running looks the same as the command making it. It's undone, reported

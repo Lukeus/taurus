@@ -1044,8 +1044,12 @@ fn git_runs_what_it_is_told(words: &[String]) -> bool {
         if setting.is_some_and(|s| git_key_runs_something(&key_of(s))) {
             return true;
         }
+        // `--exec` names the remote `git-upload-pack` or `git-receive-pack`
+        // for `archive`, `fetch-pack`, `ls-remote`, `push` and `send-pack`, which
+        // for a local remote is a command line git hands a shell, the same as
+        // `--upload-pack`. `--exec-path=` is covered by it too.
         const FLAGS: &[&str] = &[
-            "--exec-path=",
+            "--exec",
             "--git-dir",
             "--upload-pack",
             "--receive-pack",
@@ -1086,6 +1090,12 @@ fn git_runs_what_it_is_told(words: &[String]) -> bool {
                     && positional.len() >= 2
                     && positional.iter().any(|w| git_key_runs_something(w)))
         }
+        // `clone -u` is `--upload-pack`. Elsewhere `-u` is something else
+        // (`push -u` sets an upstream), so it's only read here, alone or in a
+        // run of short flags (`-qu`).
+        "clone" => rest
+            .iter()
+            .any(|w| w.starts_with('-') && !w.starts_with("--") && w[1..].contains('u')),
         "filter-branch" => true,
         "rebase" => has(&["-x", "--exec"]),
         "difftool" => has(&["-x"]),
@@ -1768,6 +1778,12 @@ mod tests {
             "git filter-branch --tree-filter x",
             "git grep -Ox foo",
             "git clone --upload-pack=x url",
+            "git clone -u 'touch p;:' file://. x",
+            "git clone -ux url",
+            "git clone -qu x url",
+            "git archive --remote=file://. --exec='touch p;:' HEAD",
+            "git ls-remote --exec=x file://.",
+            "git push --exec x file://. main",
             "git fetch ext::sh",
         ] {
             assert_eq!(reason(line), Some(GIT_RUNS), "{line:?}");
@@ -1785,6 +1801,9 @@ mod tests {
             "git log -x",
             "git clean -x",
             "git cherry-pick -x abc",
+            "git push -u origin main",
+            "git add -u",
+            "git clone --quiet url",
         ] {
             assert_eq!(reason(line), None, "{line:?}");
         }
