@@ -20,7 +20,7 @@ import { type ReactNode } from "react";
  * was a paragraph of prose wearing the wrong tag.
  */
 export function Problem({ children }: { children: ReactNode }) {
-  return <p className="problem m-0 text-12-5 text-danger">{children}</p>;
+  return <p className="problem m-0 text-13 text-danger">{children}</p>;
 }
 
 /**
@@ -30,7 +30,7 @@ export function Problem({ children }: { children: ReactNode }) {
  * fish marks no commands read as the shell being refused.
  */
 export function Caution({ children }: { children: ReactNode }) {
-  return <p className="caution m-0 text-12-5 text-warn">{children}</p>;
+  return <p className="caution m-0 text-13 text-warn">{children}</p>;
 }
 
 /**

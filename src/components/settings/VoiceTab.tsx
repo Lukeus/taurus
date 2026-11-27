@@ -72,7 +72,7 @@ export function VoiceTab() {
                           checked={chosen}
                           onChange={() => run(() => api.setVoiceModel(model.id))}
                         />
-                        <span className="card-title font-mono text-12-5">{model.id}</span>
+                        <span className="card-title font-mono text-13">{model.id}</span>
                       </label>
                       <span className="tag">{megabytes(model.bytes)}</span>
                       {model.installed && <span className="tag project">downloaded</span>}
@@ -145,7 +145,7 @@ export function VoiceTab() {
       {status && (
         <section className="section">
           <span className="micro">On this machine</span>
-          <dl className="voice-files m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
+          <dl className="voice-files m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-13 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
             <dt>Microphone</dt>
             <dd>{status.microphone ?? "none found"}</dd>
             <dt>Models</dt>

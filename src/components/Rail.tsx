@@ -271,7 +271,7 @@ export const Rail = memo(function Rail({
           </b>
           {/* Armed, the row spends its subtitle line saying what is about to
               be lost; there is no other room at this width to say it. */}
-          <span className="text-11-5 tabular-nums text-faint truncate group-data-armed:text-danger">
+          <span className="text-12 tabular-nums text-faint truncate group-data-armed:text-danger">
             {armed
               ? "delete this and its undo history?"
               : working
@@ -376,7 +376,7 @@ export const Rail = memo(function Rail({
         {/* Null is "no opinion" and falls back to the app's name; empty string
             is a decision, and means a mark standing on its own. */}
         {brand?.wordmark !== "" && (
-          <span className="font-mono text-11-5 tracking-[0.06em] text-dim">
+          <span className="font-mono text-12 tracking-[0.06em] text-dim">
             {brand?.wordmark ?? "taurus"}
           </span>
         )}
@@ -403,7 +403,7 @@ export const Rail = memo(function Rail({
         >
           <span className="mark">t</span>
           <span className="rail-workspace-name flex-1 min-w-0">
-            <b className="block text-12-5 font-normal text-ink truncate">
+            <b className="block text-13 font-normal text-ink truncate">
               {workspace ? basename(workspace) : "No workspace"}
             </b>
             <span className="block font-mono text-10 text-faint truncate">
@@ -453,7 +453,7 @@ export const Rail = memo(function Rail({
       */}
       <div className="rail-scroll flex-auto min-h-24 overflow-y-auto">
         {sessions.length === 0 && (
-          <p className="rail-empty pt-1 px-gutter-rail text-12-5 text-faint">
+          <p className="rail-empty pt-1 px-gutter-rail text-13 text-faint">
             Nothing saved yet. Every conversation is written to disk as it
             happens.
           </p>
@@ -681,7 +681,7 @@ export const Rail = memo(function Rail({
         </div>
         <div className="rail-status flex items-center gap-2 py-2 px-3" data-tip={healthTitle(health)}>
           <span className={`dot ml-1 ${healthDot(health)}`} />
-          <span className="text-11-5 text-faint truncate">{healthLabel(health)}</span>
+          <span className="text-12 text-faint truncate">{healthLabel(health)}</span>
         </div>
       </div>
     </aside>

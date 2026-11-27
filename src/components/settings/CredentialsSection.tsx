@@ -105,7 +105,7 @@ export function CredentialsSection() {
                 <li key={credential.name} className="card credential-card">
                   <div className="card-body">
                     <div className="card-row">
-                      <span className="card-title font-mono text-12-5 min-w-0 wrap-anywhere">
+                      <span className="card-title font-mono text-13 min-w-0 wrap-anywhere">
                         {credential.name}
                       </span>
                       <div className="spacer" />

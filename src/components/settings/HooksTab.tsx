@@ -119,7 +119,7 @@ export function HooksTab({ onOpenFile }: { onOpenFile?: (path: string) => void }
               <div className="card-body">
                 <div className="card-row">
                   <span
-                    className={`card-title font-mono text-12-5 min-w-0 wrap-anywhere${
+                    className={`card-title font-mono text-13 min-w-0 wrap-anywhere${
                       hook.enabled ? "" : " text-faint"
                     }`}
                   >

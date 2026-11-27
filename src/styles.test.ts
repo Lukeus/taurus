@@ -271,6 +271,29 @@ describe("the stylesheet", () => {
     expect(strays).toEqual([]);
   });
 
+  it("keeps every font size on the type scale", () => {
+    /*
+     * Twenty sizes became eight. The scale is the one `tailwind.css` publishes
+     * as `text-*`, so a rule here and a utility in a component can only ever
+     * land on the same steps. Relative sizes (`em`) are a proportion of the
+     * size around them, not a step of their own, so they are not checked.
+     */
+    const SCALE = new Set([10, 11, 12, 13, 14, 15, 16, 24]);
+    const strays: string[] = [];
+    for (const [, group, body] of css.matchAll(/^([^\s@}][^{]*)\{([^}]*)\}/gm)) {
+      for (const [, n] of body.matchAll(/font-size:\s*([\d.]+)px/g)) {
+        if (!SCALE.has(Number(n))) {
+          strays.push(`${group.trim().replace(/\s+/g, " ").slice(0, 40)} — ${n}px`);
+        }
+      }
+    }
+    expect(strays).toEqual([]);
+
+    const tw = readFileSync(new URL("./tailwind.css", import.meta.url), "utf8");
+    const published = [...tw.matchAll(/--text-(\d+):\s*(\d+)px/g)].map(([, , px]) => Number(px));
+    expect(new Set(published)).toEqual(SCALE);
+  });
+
   it("keeps empty, loading and failed as three different states", () => {
     /*
      * All three used to share `.drawer-empty`, so a drawer whose read failed

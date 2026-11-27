@@ -157,7 +157,7 @@ export function PlanPanel({
                     {/* What the model said would prove the step, which is what
                         it's asked to run before calling the work done. */}
                     {step.check && (
-                      <span className="plan-check block font-mono text-11-5 text-faint wrap-anywhere">
+                      <span className="plan-check block font-mono text-12 text-faint wrap-anywhere">
                         check: {step.check}
                       </span>
                     )}

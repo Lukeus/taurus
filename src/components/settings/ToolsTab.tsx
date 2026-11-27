@@ -95,7 +95,7 @@ export function ToolsTab() {
         !error && <p className="drawer-loading">Reading…</p>
       ) : (
         <>
-          <p className="tools-summary m-0 text-12-5 text-dim">
+          <p className="tools-summary m-0 text-13 text-dim">
             {enabled.length} of {switches.length} on, about {short(fixed)}{" "}
             tokens on every request.
           </p>
@@ -126,7 +126,7 @@ export function ToolsTab() {
                         onChange={(e) => toggle(tool.name, e.target.checked)}
                       />
                       <span
-                        className="min-w-0 flex-1 font-mono text-12-5 wrap-anywhere"
+                        className="min-w-0 flex-1 font-mono text-13 wrap-anywhere"
                         data-tip={server ? tool.name : undefined}
                       >
                         {server ? tool.name.slice(`mcp__${server}__`.length) : tool.name}
