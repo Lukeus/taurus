@@ -988,10 +988,17 @@ body.resizing-y iframe {
  * The rail row's padding is here rather than a utility on the element so the
  * override below is in the same layer as what it overrides.
  */
+/* Compact, the workspace button's badge sits 4px inside its own hover
+   background; the row gives those 4px back so the badge, not the hover box,
+   is what lands on the rail's text edge. */
 .rail-brand {
-  padding: 0 var(--gutter-rail);
+  padding: 0 var(--gutter-rail) 0 calc(var(--gutter-rail) - 4px);
 }
-:root[data-chrome="overlay"]:not([data-fullscreen]) .rail-brand {
+.rail-brand[data-branded] {
+  padding-left: var(--gutter-rail);
+}
+:root[data-chrome="overlay"]:not([data-fullscreen]) .rail-brand,
+:root[data-chrome="overlay"]:not([data-fullscreen]) .rail-brand[data-branded] {
   padding-left: var(--lights);
 }
 :root[data-chrome="overlay"]:not([data-fullscreen]) .app[data-rail-shut] .topbar {

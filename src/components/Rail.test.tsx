@@ -144,15 +144,34 @@ function subtitleOf(html: string, title: string): string {
 }
 
 describe("the workspace button", () => {
-  it("leads with the folder name and keeps the path underneath", () => {
-    const html = draw();
-    expect(html).toContain("taurus-ai-shell");
-    // The full path is too long for 236px, so the parent is abbreviated.
-    expect(html).toContain("~/code");
+  const firstRow = (html: string) =>
+    html.match(/<div class="rail-brand[^"]*"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "";
+
+  it("is the window's first row, in place of the app's own name", () => {
+    const row = firstRow(draw());
+    expect(row).toContain("rail-workspace");
+    expect(row).toContain("taurus-ai-shell");
+    // The Dock and the menu bar say which app this is; the row does not.
+    expect(row).not.toContain(">taurus<");
   });
 
-  it("says so when there is no workspace rather than rendering an empty row", () => {
-    expect(draw({ workspace: null })).toContain("No workspace");
+  it("keeps the full path in its tip rather than a second line", () => {
+    const html = draw();
+    expect(html).toMatch(/data-tip="[^"]*\/taurus-ai-shell · Switch workspace/);
+    expect(html).not.toContain(">~/code<");
+  });
+
+  it("asks for a folder when there is none rather than rendering an empty row", () => {
+    expect(firstRow(draw({ workspace: null }))).toContain("Choose a workspace");
+  });
+
+  it("gives the first row back to a theme that brings its own brand", () => {
+    const html = draw({ brand: { name: "Acme", wordmark: "acme", logo: null } });
+    expect(firstRow(html)).toContain(">acme<");
+    expect(firstRow(html)).not.toContain("rail-workspace");
+    // The workspace is still there, as the card under it, path and all.
+    expect(html).toContain("rail-workspace");
+    expect(html).toContain("~/code");
   });
 });
 
