@@ -1945,6 +1945,7 @@ export default function App() {
                     health={health(store.status?.providers.length, providerId, models)}
                     onPickWorkspace={pickWorkspace}
                     onSettings={() => openSettingsAt("models")}
+                    onSuggest={ask}
                   />
                 }
               />
@@ -2519,6 +2520,30 @@ export function mcpCounts(
 }
 
 /**
+ * Starters for an empty conversation in a workspace that is ready. Generic on
+ * purpose — each is a question any repository can answer — and phrased as the
+ * message itself, so what is pressed is what appears in the box to be edited.
+ */
+export const STARTERS: readonly { label: string; prompt: string }[] = [
+  {
+    label: "Tour the project",
+    prompt: "Give me a tour of this project: what it does, how it is laid out, and where to start reading.",
+  },
+  {
+    label: "Review my changes",
+    prompt: "Review the changes I haven't committed yet. Point out bugs and anything that looks unintended.",
+  },
+  {
+    label: "Run the tests",
+    prompt: "Find how this project runs its tests, run them, and tell me what fails and why.",
+  },
+  {
+    label: "Find what's unfinished",
+    prompt: "Look for TODOs, failing checks and half-finished work here, and tell me what is worth doing first.",
+  },
+];
+
+/**
  * What fills the transcript before there is one.
  *
  * Says the same thing in both of the states it covers — this is a folder
@@ -2531,12 +2556,15 @@ export function FirstRun({
   health,
   onPickWorkspace,
   onSettings,
+  onSuggest,
 }: {
   workspace: string | null;
   ready: boolean;
   health: ProviderHealth;
   onPickWorkspace: () => void;
   onSettings: () => void;
+  /** Puts a starter into the message box, unsent. */
+  onSuggest?: (text: string) => void;
 }) {
   // The one step that is blocking, so the hero leads with it. Both buttons
   // used to be offered side by side whatever was missing, with the provider's
@@ -2554,25 +2582,48 @@ export function FirstRun({
         ? `Ready in ${basename(workspace)}`
         : `Opening ${basename(workspace)}…`;
   const modelFirst = !needsWorkspace && needsModel;
+  // Nothing left to set up. The setup buttons were still offered here — Change
+  // workspace and Models, on a screen whose whole job by now is to get a first
+  // message written — so the one thing on it that could be pressed was a way
+  // back to a step already done. Both live elsewhere now (the rail's first row,
+  // the composer's model pill), and the room goes to somewhere to start.
+  const set = !needsWorkspace && !needsModel && ready;
   return (
     <div className="hero">
       <div className="hero-mark">t</div>
       <div className="hero-copy">
         <h1>{heading}</h1>
         <p>
-          {modelFirst
+          {set
+            ? "Ask about the code or have Taurus change it. Every edit is shown to you before it's made, and any turn can be undone."
+            : modelFirst
             ? "Taurus needs a model to talk to: a local Ollama, anything OpenAI-compatible, Anthropic, or Gemini. Add one in Settings › Models."
             : "A workspace is the folder Taurus works in. It reads and edits files there, runs commands with your approval, and remembers every change so any turn can be undone."}
         </p>
       </div>
-      <div className="hero-actions">
-        <button className={modelFirst ? undefined : "primary"} onClick={onPickWorkspace}>
-          {workspace ? "Change workspace" : "Choose a workspace"}
-        </button>
-        <button className={modelFirst ? "primary" : undefined} onClick={onSettings}>
-          {needsModel ? "Connect a model" : "Models"}
-        </button>
-      </div>
+      {set && onSuggest ? (
+        // Filled in, not sent: a starter is somewhere to begin writing, and the
+        // folder it is about is one only the person at the keyboard knows.
+        <ul className="hero-starters" aria-label="Ways to start">
+          {STARTERS.map((starter) => (
+            <li key={starter.label}>
+              <button className="hero-starter" onClick={() => onSuggest(starter.prompt)}>
+                <b>{starter.label}</b>
+                <span>{starter.prompt}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="hero-actions">
+          <button className={modelFirst ? undefined : "primary"} onClick={onPickWorkspace}>
+            {workspace ? "Change workspace" : "Choose a workspace"}
+          </button>
+          <button className={modelFirst ? "primary" : undefined} onClick={onSettings}>
+            {needsModel ? "Connect a model" : "Models"}
+          </button>
+        </div>
+      )}
       <div className="hero-status">
         <span className={`dot ${health.state === "connected" ? "ok" : health.state === "unreachable" ? "error" : ""}`} />
         {health.state === "connected"

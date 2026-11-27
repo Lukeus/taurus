@@ -570,6 +570,9 @@ requestAnimationFrame(() => {
       // The dialog is state, not a route, so seeding it is all it takes to
       // photograph the moment a write is actually approved.
       ...(shot === "permission" ? { permission: PERMISSION as never } : {}),
+      // A conversation with nothing in it yet — what a new one opens on once a
+      // workspace and a model are in place. After `entries`, so it wins.
+      ...(shot === "start" ? { entries: [] } : {}),
       // Seeded, and the reason is worth the line: the canvas opens off the
       // `opening` errand, which is set as a turn's events are folded inside
       // `send`. This harness folds the same events with the same reducer but

@@ -225,6 +225,9 @@ const SHOTS = [
   // The rail with a section folded. An open section looks like the plain list
   // it replaced, so the shut one is the only state that shows the feature.
   { name: "rail", shot: "rail", theme: "dark" },
+  // A new conversation in a workspace that is ready: the starters that fill
+  // the message box, in place of the setup buttons nothing needs any more.
+  { name: "start", shot: "start", theme: "dark" },
   // Agent activity: three delegates under one question, two of them side by
   // side on the shared clock, one still running with its calls and its words
   // opened up. Opened from the top bar's chip, which only exists while

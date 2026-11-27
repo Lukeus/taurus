@@ -1336,6 +1336,43 @@ body.resizing-y iframe {
   display: flex;
   gap: 10px;
 }
+/* Two by two, each a card with the label and the message it writes: the
+   label says what it is for, the sentence says exactly what will be asked. */
+.hero-starters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: min(560px, 100%);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hero-starter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  text-align: left;
+}
+.hero-starter b {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.hero-starter span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+@media (max-width: 720px) {
+  .hero-starters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .hero-actions button {
   border-radius: var(--r-md);
   padding: 8px 16px;
