@@ -1030,8 +1030,8 @@ stop on is selected, and a selection goes with your next message.
 
 ### Going to a file
 
-Press **Go to file** in the toolbar, or ⌘P (Ctrl+P on Windows and Linux), and type
-part of a name. Letters only have to appear in order, so `cnvslt` finds
+Press ⌘P (Ctrl+P on Windows and Linux), or choose **File › Go to File…** on
+macOS or **Go to file** in the command palette, and type part of a name. Letters only have to appear in order, so `cnvslt` finds
 `CanvasSlot.tsx`. A match in the filename beats one in a folder, and typing a `/`
 lets you match across folders, like `src/comp/can`. With nothing typed, the files
 you already have open come first.
