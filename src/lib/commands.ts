@@ -1,5 +1,3 @@
-import { OVERLAY } from "./chrome";
-
 /**
  * The window-wide commands, by the names the macOS menu bar sends them as.
  *
@@ -34,11 +32,17 @@ export const COMMANDS: readonly Command[] = [
 /**
  * Whether there is a native menu bar to own some of the keys.
  *
- * The same condition as the overlay title bar — Tauri on macOS — because that
- * is where `menu.rs` builds one. In a browser and on Windows and Linux the
- * page's own handler is the only thing listening, and answers every key.
+ * Read off the flag `applyChrome` sets on `<html>`, not worked out again from
+ * the user agent and `__TAURI_INTERNALS__`. That global is also what any Tauri
+ * mock defines — the screenshot build's does — so testing for it made a
+ * browser on a Mac believe it had a menu bar, and step aside for ⌘K with
+ * nothing there to take it. `applyChrome` runs only from the app's real entry
+ * point, on the one platform `menu.rs` builds a menu for, so the flag and the
+ * menu are true together or not at all.
  */
-export const NATIVE_MENU = OVERLAY;
+export function nativeMenu(): boolean {
+  return typeof document !== "undefined" && document.documentElement.dataset.chrome === "overlay";
+}
 
 /**
  * Whether the page should leave this key to the menu bar.
@@ -52,12 +56,12 @@ export const NATIVE_MENU = OVERLAY;
  * the menu does not answer to it.
  */
 export function leaveToMenu(owned: boolean): boolean {
-  return NATIVE_MENU && owned;
+  return owned && nativeMenu();
 }
 
 /** Runs `run` for each menu item the app owns. Returns the unsubscribe. */
 export function onMenu(run: (command: Command) => void): () => void {
-  if (!NATIVE_MENU) return () => {};
+  if (!nativeMenu()) return () => {};
   let unlisten: (() => void) | undefined;
   let gone = false;
   void import("@tauri-apps/api/event").then(({ listen }) =>
