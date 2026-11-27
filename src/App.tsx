@@ -27,6 +27,7 @@ import { ConversationTitle } from "./components/ConversationTitle";
 import { keptIn, type TabMark } from "./components/CanvasSlot";
 import { CanvasDeck } from "./components/CanvasDeck";
 import { Boundary } from "./components/Boundary";
+import { Select } from "./components/Select";
 import {
   closeTab,
   isPreviewTab,
@@ -80,7 +81,7 @@ import type {
   SessionMeta,
   Theme,
 } from "./lib/api";
-import { basename, plural } from "./lib/format";
+import { basename, plural, short } from "./lib/format";
 import { useProviderModels } from "./lib/useProviderModels";
 import { branchesOf } from "./lib/branches";
 import { withFinding } from "./lib/findings";
@@ -1788,40 +1789,34 @@ export default function App() {
                 is the common case and the picker would be a dropdown that can
                 only ever say what the model list already implies. */}
             {providers.length > 1 && (
-              <select
+              <Select
                 className="provider-select"
                 aria-label="Provider"
                 data-tip={providerId ?? undefined}
                 value={providerId ?? ""}
                 disabled={store.busy || moving}
-                onChange={(e) => chooseProvider(e.target.value)}
-              >
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.id}
-                  </option>
-                ))}
-              </select>
+                onChange={chooseProvider}
+                options={providers.map((p) => ({ value: p.id, label: p.id }))}
+              />
             )}
 
-            <select
+            {/* `available` already carries the running session's model even
+                when nothing listed it, so the picker can always show what the
+                conversation is actually on. */}
+            <Select
               className="model-select"
               aria-label="Model"
               data-tip={available.find((m) => m.id === store.session?.model)?.display_name}
               value={store.session?.model ?? ""}
               disabled={store.busy || moving || !providerId}
-              onChange={(e) => providerId && moveTo(providerId, e.target.value)}
-            >
-              {available.length === 0 && <option value="">no models</option>}
-              {/* `available` already carries the running session's model even
-                  when nothing listed it, so the select can always show what the
-                  conversation is actually on. */}
-              {available.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.display_name}
-                </option>
-              ))}
-            </select>
+              placeholder="no models"
+              onChange={(v) => providerId && moveTo(providerId, v)}
+              options={available.map((m) => ({
+                value: m.id,
+                label: m.display_name,
+                hint: m.context_length ? short(m.context_length) : undefined,
+              }))}
+            />
           </header>
 
           {/* Drawn above the pane rather than in the topbar: the topbar names the

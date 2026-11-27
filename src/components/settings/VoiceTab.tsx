@@ -7,6 +7,7 @@ import { DICTATE_SHORTCUT } from "../Mic";
 import { Problem } from "../Problem";
 import { Field } from "./Field";
 import { SpeechSection } from "./SpeechSection";
+import { Select } from "../Select";
 
 /**
  * The Voice tab: which speech model the mic uses and the language it
@@ -127,9 +128,9 @@ export function VoiceTab() {
       {status && (
         <section className="section">
           <Field label="Language" hint={languageHint(status)}>
-            <select
+            <Select
               value={status.language}
-              onChange={(e) => run(() => api.setVoiceLanguage(e.target.value))}
+              onChange={(value) => run(() => api.setVoiceLanguage(value))}
             >
               <option value="auto">Detect it each time</option>
               {status.languages.map((l) => (
@@ -137,7 +138,7 @@ export function VoiceTab() {
                   {l.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
         </section>
       )}

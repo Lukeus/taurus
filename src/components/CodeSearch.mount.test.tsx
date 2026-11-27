@@ -22,6 +22,7 @@ vi.mock("../state/store", () => ({
 }));
 
 import { CodeSearch, useIndexBuild } from "./settings/SearchTab";
+import { choose as pick } from "../test/select";
 
 /** `CodeSearch` the way `Settings` holds it: the build lives a level up. */
 function Harness(props: {
@@ -66,11 +67,9 @@ const mountServer = async () => {
 };
 
 const choose = async (host: HTMLElement, engine: string) => {
-  const select = host.querySelector("select")!;
-  await act(async () => {
-    select.value = engine;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  pick(host.querySelector('[role="combobox"]'), engine);
+  // The save it starts is a promise; let it land.
+  await act(async () => {});
 };
 
 const catalog = (installed: boolean) => ({
@@ -364,7 +363,7 @@ describe("the built-in engine", () => {
     invoke.mockImplementationOnce(() => Promise.reject("settings.json is read-only"));
     const host = await mount("");
     await choose(host, "builtin");
-    expect(host.querySelector("select")!.value).toBe("off");
+    expect(host.querySelector<HTMLElement>('[role="combobox"]')!.dataset.value).toBe("off");
     expect(host.textContent).toContain("settings.json is read-only");
   });
 

@@ -4,6 +4,7 @@ import { previewSnapshot } from "../lib/api";
 import { frames, isLoopbackHost, offerLook, wait } from "../lib/preview";
 import { onTabKeys } from "../lib/tabs";
 import { CameraIcon, NarrowIcon, WidenIcon } from "./icons";
+import { Select } from "./Select";
 
 /** Widths a page is checked at. `null` is the column's own width. */
 const VIEWPORTS = [
@@ -238,10 +239,10 @@ export function PreviewTab({
               </button>
             ))}
           </div>
-          <select
+          <Select
             className="preview-viewport-select"
             value={viewport}
-            onChange={(e) => setViewport(e.target.value as Viewport)}
+            onChange={(value) => setViewport(value as Viewport)}
             aria-label="Viewport"
           >
             {VIEWPORTS.map((v) => (
@@ -249,7 +250,7 @@ export function PreviewTab({
                 {v.label}
               </option>
             ))}
-          </select>
+          </Select>
           <button
             className="pane-toggle"
             onClick={() => void takeLook()}

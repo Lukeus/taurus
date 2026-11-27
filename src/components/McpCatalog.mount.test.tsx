@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 import { McpCatalog } from "./McpCatalog";
 import { McpSetup } from "./McpSetup";
 import type { CatalogEntry, McpServerDraft, McpServerView } from "../lib/api";
+import { choose as pick } from "../test/select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -328,15 +329,7 @@ function mountSetup(entry: CatalogEntry) {
         box.dispatchEvent(new Event("input", { bubbles: true }));
       }),
     choose: (value: string) =>
-      act(() => {
-        const select = host.querySelector("select") as HTMLSelectElement;
-        const set = Object.getOwnPropertyDescriptor(
-          HTMLSelectElement.prototype,
-          "value",
-        )!.set!;
-        set.call(select, value);
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      }),
+      pick(host.querySelector('[role="combobox"]'), value),
     tick: () =>
       act(() => {
         (host.querySelector(
@@ -391,7 +384,7 @@ describe("filling an entry in", () => {
 
   it("defaults a credential to the file that is not inside a repository", () => {
     const form = setup(GITHUB);
-    expect((form.host.querySelector("select") as HTMLSelectElement).value).toBe(
+    expect(form.host.querySelector<HTMLElement>('[role="combobox"]')!.dataset.value).toBe(
       "global",
     );
     expect(form.host.querySelector(".mcp-leak")).toBeNull();

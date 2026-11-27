@@ -24,6 +24,7 @@ import {
 } from "../lib/mcp";
 import { DrawerHead } from "./Drawer";
 import { Modal } from "./Modal";
+import { Select } from "./Select";
 
 /**
  * Adding or changing one MCP server.
@@ -192,13 +193,13 @@ export function McpServerEditor({
             </label>
             <label className="field narrow">
               <span className="micro">Applies to</span>
-              <select
+              <Select
                 value={draft.scope}
-                onChange={(e) => change({ scope: e.target.value as Scope })}
+                onChange={(value) => change({ scope: value as Scope })}
               >
                 <option value="global">All projects</option>
                 <option value="workspace">This project</option>
-              </select>
+              </Select>
               <span className="hint">
                 {draft.scope === "workspace"
                   ? "Written to .taurus/mcp.json, which is committed"

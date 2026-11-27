@@ -507,7 +507,6 @@ button.quiet:where(:not(.excalidraw *)):hover:not(:disabled) {
 }
 
 input:where(:not(.excalidraw *)),
-select:where(:not(.excalidraw *)),
 textarea:where(:not(.excalidraw *)) {
   font: inherit;
   color: var(--text);
@@ -522,6 +521,139 @@ textarea:where(:not(.excalidraw *)) {
 }
 textarea:where(:not(.excalidraw *)) {
   resize: none;
+}
+
+/*
+ * The dropdown — see `Select`. Closed, it is a field: the same surface, border,
+ * radius, inset and size as the input beside it, so a row of a text box and a
+ * choice reads as one row. The chevron is the only thing saying it opens.
+ */
+.select-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.select-box:hover:not(:disabled),
+.select-box[data-open] {
+  background: var(--bg-elevated);
+  border-color: color-mix(in srgb, var(--text-faint) 60%, var(--border));
+  color: var(--text);
+}
+/*
+ * As wide as its widest option, the way a native select is, so choosing a
+ * shorter name does not pull every control after it sideways. Every label is
+ * drawn into the same grid cell and all but the chosen one are hidden: the
+ * cell takes the widest, and `minmax(0, 1fr)` still lets a narrow column
+ * squeeze it, where the chosen label truncates.
+ */
+.select-value {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.select-current,
+.select-sizer {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-sizer {
+  visibility: hidden;
+  height: 0;
+}
+.select-value.empty .select-current {
+  color: var(--text-faint);
+}
+.select-chevron {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform var(--hover) var(--ease);
+}
+.select-box[data-open] .select-chevron {
+  transform: rotate(180deg);
+}
+/* Above every scrim, below the tooltip layer. Transparent: it is there to take
+   the press that closes the list, not to dim anything. */
+.select-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+}
+.select-list {
+  position: fixed;
+  max-width: min(420px, calc(100vw - 16px));
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--lift);
+  font-size: 13px;
+  animation: select-in var(--hover) var(--ease);
+}
+@keyframes select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.select-list[data-up] {
+  animation-name: select-in-up;
+}
+@keyframes select-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* A wash of the text colour rather than --bg-hover, which in light is paler
+   than the elevated surface the list sits on and would vanish into it. */
+.select-option[data-active] {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.select-option[aria-disabled] {
+  color: var(--text-faint);
+  cursor: default;
+}
+.select-check {
+  flex: none;
+  width: 12px;
+  color: var(--accent);
+  font-size: 12px;
+}
+.select-hint {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.select-group {
+  padding: 8px 8px 4px;
+  color: var(--text-faint);
+  font-size: 11px;
 }
 /*
  * The focus ring, and the one thing it has to survive: being drawn outside the
@@ -4595,11 +4727,16 @@ button.link:where(:not(.excalidraw *)):hover {
   gap: 4px;
 }
 /* Inputs must not push the drawer wider than it is. */
-.settings-field input,
-.settings-field select {
+/* Mono for what is typed (ids, URLs, paths), not for what is chosen: the
+   choices are sentences ("Assume supported"), and setting them as code was
+   most of why this drawer read as a config file. */
+.settings-field input {
   width: 100%;
   min-width: 0;
   font-family: var(--mono);
+}
+.settings-field .select-box {
+  width: 100%;
 }
 .settings-actions {
   display: flex;
@@ -7317,7 +7454,9 @@ button.link:where(:not(.excalidraw *)):hover {
   .turn-what,
   .run-row.live .run-row-status,
   .tip,
-  .tip.bottom {
+  .tip.bottom,
+  .select-list,
+  .select-list[data-up] {
     animation-name: fade-in;
   }
 }

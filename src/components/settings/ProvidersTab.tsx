@@ -10,6 +10,7 @@ import type {
 import * as api from "../../lib/api";
 import { ApiKeyField } from "./ApiKeyField";
 import { Field, blank, same } from "./Field";
+import { Select } from "../Select";
 
 export const KINDS: { value: ProviderKind; label: string }[] = [
   { value: "ollama", label: "Ollama" },
@@ -260,17 +261,17 @@ export function ProviderForm({
           placeholder="id"
           onChange={(e) => onChange({ id: e.target.value })}
         />
-        <select
+        <Select
           value={provider.kind}
           aria-label="Provider kind"
-          onChange={(e) => onChange({ kind: e.target.value as ProviderKind })}
+          onChange={(value) => onChange({ kind: value as ProviderKind })}
         >
           {KINDS.map((kind) => (
             <option key={kind.value} value={kind.value}>
               {kind.label}
             </option>
           ))}
-        </select>
+        </Select>
         {!open && problems.length > 0 && (
           <span
             className="dot error"
@@ -317,9 +318,9 @@ export function ProviderForm({
             shows up as a failed first turn. Free text only while the list
             is empty and the endpoint is asked what it serves. */}
         {compatible && provider.models.some((m) => m.id.trim()) ? (
-          <select
+          <Select
             value={provider.default_model ?? ""}
-            onChange={(e) => onChange({ default_model: blank(e.target.value) })}
+            onChange={(value) => onChange({ default_model: blank(value) })}
           >
             <option value="">First in the list</option>
             {provider.models
@@ -335,7 +336,7 @@ export function ProviderForm({
                   {provider.default_model} (not in the list)
                 </option>
               )}
-          </select>
+          </Select>
         ) : (
           <input
             value={provider.default_model ?? ""}
@@ -395,16 +396,16 @@ export function ProviderForm({
               label="Tool calling"
               hint="These cannot be probed over the OpenAI API, so they have to be declared."
             >
-              <select
+              <Select
                 value={triState(provider.native_tools)}
-                onChange={(e) =>
-                  onChange({ native_tools: fromTriState(e.target.value) })
+                onChange={(value) =>
+                  onChange({ native_tools: fromTriState(value) })
                 }
               >
                 <option value="auto">Assume supported</option>
                 <option value="yes">Native</option>
                 <option value="no">Prompted — model has no tool support</option>
-              </select>
+              </Select>
             </Field>
           )}
 
@@ -414,18 +415,18 @@ export function ProviderForm({
                 label="Chat route"
                 hint="Chat completions is what every OpenAI-compatible server answers. OpenAI's reasoning models need the Responses API to call tools while they reason, and Azure OpenAI serves it too. Models, embeddings and reranking stay where they are."
               >
-                <select
+                <Select
                   value={provider.wire_api ?? ""}
-                  onChange={(e) =>
+                  onChange={(value) =>
                     onChange({
                       wire_api:
-                        e.target.value === "responses" ? "responses" : null,
+                        value === "responses" ? "responses" : null,
                     })
                   }
                 >
                   <option value="">Chat completions</option>
                   <option value="responses">Responses API</option>
-                </select>
+                </Select>
               </Field>
 
               <Field
@@ -436,10 +437,10 @@ export function ProviderForm({
                     : "On chat completions, None is how a reasoning model gets tools at all: this route refuses tools on those models at any other effort. Switch the route to Responses to keep both."
                 }
               >
-                <select
+                <Select
                   value={provider.reasoning_effort ?? ""}
-                  onChange={(e) =>
-                    onChange({ reasoning_effort: blank(e.target.value) })
+                  onChange={(value) =>
+                    onChange({ reasoning_effort: blank(value) })
                   }
                 >
                   <option value="">Model's default</option>
@@ -448,7 +449,7 @@ export function ProviderForm({
                       {EFFORT_LABELS[effort] ?? effort}
                     </option>
                   ))}
-                </select>
+                </Select>
               </Field>
             </>
           )}
@@ -458,14 +459,14 @@ export function ProviderForm({
               label="Images"
               hint="Turn this off for an endpoint serving text-only weights, so an attached screenshot is refused here with a reason rather than a round trip away."
             >
-              <select
+              <Select
                 value={triState(provider.vision)}
-                onChange={(e) => onChange({ vision: fromTriState(e.target.value) })}
+                onChange={(value) => onChange({ vision: fromTriState(value) })}
               >
                 <option value="auto">Assume readable</option>
                 <option value="yes">Model reads images</option>
                 <option value="no">Text only — refuse attachments</option>
-              </select>
+              </Select>
             </Field>
           )}
 
@@ -474,14 +475,14 @@ export function ProviderForm({
               label="Thinking"
               hint="Leave on the model's default unless you have a reason: it is the only setting valid on every Claude model, and the wrong one is rejected rather than ignored."
             >
-              <select
+              <Select
                 value={provider.thinking ?? ""}
-                onChange={(e) => onChange({ thinking: blank(e.target.value) })}
+                onChange={(value) => onChange({ thinking: blank(value) })}
               >
                 <option value="">Model's default</option>
                 <option value="adaptive">Adaptive — the model decides</option>
                 <option value="disabled">Off</option>
-              </select>
+              </Select>
             </Field>
           )}
 
@@ -579,7 +580,7 @@ export function ModelList({
           // field being typed into, and is empty on a row just added.
           <li
             key={i}
-            className="model-row grid grid-cols-[1fr_auto] gap-x-2 gap-y-1.5 items-center [&_input]:min-w-0 [&_input]:w-full [&_select]:min-w-0 [&_select]:w-full"
+            className="model-row grid grid-cols-[1fr_auto] gap-x-2 gap-y-1.5 items-center [&_input]:min-w-0 [&_input]:w-full [&_.select-box]:w-full"
           >
             <input
               className="font-mono"
@@ -630,26 +631,26 @@ export function ModelList({
                 />
                 <span className="shrink-0">tokens</span>
               </label>
-              <select
+              <Select
                 aria-label={`Tool calling for ${model.id || `model ${i + 1}`}`}
                 value={triState(model.native_tools ?? null)}
-                onChange={(e) =>
-                  patch(i, { native_tools: fromTriState(e.target.value) })
+                onChange={(value) =>
+                  patch(i, { native_tools: fromTriState(value) })
                 }
               >
                 <option value="auto">Tools: inherit</option>
                 <option value="yes">Tools: native</option>
                 <option value="no">Tools: prompted</option>
-              </select>
-              <select
+              </Select>
+              <Select
                 aria-label={`Images for ${model.id || `model ${i + 1}`}`}
                 value={triState(model.vision ?? null)}
-                onChange={(e) => patch(i, { vision: fromTriState(e.target.value) })}
+                onChange={(value) => patch(i, { vision: fromTriState(value) })}
               >
                 <option value="auto">Images: inherit</option>
                 <option value="yes">Images: readable</option>
                 <option value="no">Images: text only</option>
-              </select>
+              </Select>
             </div>
           </li>
         ))}
