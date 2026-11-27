@@ -1054,28 +1054,39 @@ body.resizing-y iframe {
   white-space: nowrap;
   flex: none;
 }
-/* A fixed width, not a cap. With `max-width` the select sized itself to the
-   chosen option, so picking a model with a shorter or longer name moved every
-   chip to its left and the select itself out from under the pointer. A name
-   too long for the box is clipped with an ellipsis, and the full name is in
-   the tip and in the open list. */
+/*
+ * The model the next message goes to, and its provider, in the composer's
+ * foot beside the other choices about that message — shaped like the pills
+ * next to them, because they are the same kind of thing.
+ *
+ * No fixed width any more: the old select sized itself to the chosen option
+ * and moved everything beside it, so it was pinned at 220px. `Select` sizes
+ * itself to its widest option, which is stable, so all this needs is a ceiling
+ * past which a long model name truncates; the full name is in the tip and in
+ * the open list.
+ */
 .model-select,
 .provider-select {
-  width: 220px;
   flex: none;
-  text-overflow: ellipsis;
-  border-radius: var(--r);
+  max-width: 240px;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
   background: transparent;
   color: var(--text-dim);
-  padding: 6px 10px;
-  font-size: 13px;
 }
-/* Narrower, and monospaced: a provider id is a config key the user typed,
-   not a product name, and it reads as one next to the model beside it. */
+.model-select:hover:not(:disabled),
+.provider-select:hover:not(:disabled),
+.model-select[data-open],
+.provider-select[data-open] {
+  background: transparent;
+  color: var(--text);
+}
+/* Monospaced: a provider id is a config key the user typed, not a product
+   name, and it reads as one next to the model beside it. */
 .provider-select {
-  width: 150px;
+  max-width: 160px;
   font-family: var(--mono);
-  font-size: 12px;
 }
 
 /* ------------------------------------------------------------- transcript */

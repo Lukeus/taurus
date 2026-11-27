@@ -1788,13 +1788,6 @@ export default function App() {
 
             <div className="spacer" data-tauri-drag-region />
 
-            <button
-              className="chip"
-              data-tip={`Find a file in this workspace (${chord("P")})`}
-              onClick={() => setFinderOpen(true)}
-            >
-              Go to file
-            </button>
 
             {/* Only while there's something to watch. Delegates working in the
                 background, or two side by side, are otherwise one line each
@@ -1822,43 +1815,10 @@ export default function App() {
                   : "No file changes"}
               </button>
             )}
-
-            {/* Only worth a control when there is a choice to make. One provider
-                is the common case and the picker would be a dropdown that can
-                only ever say what the model list already implies. */}
-            {providers.length > 1 && (
-              <Select
-                className="provider-select"
-                aria-label="Provider"
-                data-tip={providerId ?? undefined}
-                value={providerId ?? ""}
-                disabled={store.busy || moving}
-                onChange={chooseProvider}
-                options={providers.map((p) => ({ value: p.id, label: p.id }))}
-              />
-            )}
-
-            {/* `available` already carries the running session's model even
-                when nothing listed it, so the picker can always show what the
-                conversation is actually on. */}
-            <Select
-              className="model-select"
-              aria-label="Model"
-              data-tip={available.find((m) => m.id === store.session?.model)?.display_name}
-              value={store.session?.model ?? ""}
-              disabled={store.busy || moving || !providerId}
-              placeholder="no models"
-              onChange={(v) => providerId && moveTo(providerId, v)}
-              options={available.map((m) => ({
-                value: m.id,
-                label: m.display_name,
-                hint: m.context_length ? short(m.context_length) : undefined,
-              }))}
-            />
           </header>
 
           {/* Drawn above the pane rather than in the topbar: the topbar names the
-              conversation and the model, and neither of those changes when the
+              conversation, and that does not change when the
               centre column does.
 
               Notes is always here and Data only once a dataset is loaded, and the
@@ -2196,6 +2156,43 @@ export default function App() {
             vision={store.session?.vision ?? false}
             workspace={workspace}
             onPickWorkspace={pickWorkspace}
+            pickers={
+              <>
+              {/* Only worth a control when there is a choice to make. One provider
+                  is the common case and the picker would be a dropdown that can
+                  only ever say what the model list already implies. */}
+              {providers.length > 1 && (
+                <Select
+                  className="provider-select"
+                  aria-label="Provider"
+                  data-tip={providerId ?? undefined}
+                  value={providerId ?? ""}
+                  disabled={store.busy || moving}
+                  onChange={chooseProvider}
+                  options={providers.map((p) => ({ value: p.id, label: p.id }))}
+                />
+              )}
+
+              {/* `available` already carries the running session's model even
+                  when nothing listed it, so the picker can always show what the
+                  conversation is actually on. */}
+              <Select
+                className="model-select"
+                aria-label="Model"
+                data-tip={available.find((m) => m.id === store.session?.model)?.display_name}
+                value={store.session?.model ?? ""}
+                disabled={store.busy || moving || !providerId}
+                placeholder="no models"
+                onChange={(v) => providerId && moveTo(providerId, v)}
+                options={available.map((m) => ({
+                  value: m.id,
+                  label: m.display_name,
+                  hint: m.context_length ? short(m.context_length) : undefined,
+                }))}
+              />
+              </>
+            }
+            showWorkspace={railShut}
             library={library}
             onScreen={onScreen}
             draft={draft}
