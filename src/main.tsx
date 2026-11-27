@@ -15,6 +15,7 @@ import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/500.css";
 
 import App from "./App";
+import { Boundary } from "./components/Boundary";
 import { applyCachedTheme } from "./lib/theme";
 import "./styles.css";
 
@@ -54,6 +55,8 @@ window.addEventListener("drop", inert);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <Boundary label="The window" whole>
+      <App />
+    </Boundary>
   </React.StrictMode>,
 );

@@ -11,6 +11,7 @@ import { Waveform, waveFor } from "./Waveform";
 import { FlowCard } from "./FlowCard";
 import { SequenceCard } from "./SequenceCard";
 import { Markdown } from "./Markdown";
+import { Boundary } from "./Boundary";
 import { Attachments } from "./Attachments";
 import { QuestionsCard } from "./QuestionsCard";
 import { TableCard } from "./TableCard";
@@ -616,24 +617,32 @@ const TurnView = memo(function TurnView({
       {turn.body.map((item, at) =>
         Array.isArray(item) ? (
           <div className="turn-step" key={item[0].id}>
-            <ToolRun steps={item} latest={latest} onOpenDelegate={onOpenDelegate} />
+            <Boundary label="This step" resetKey={item}>
+              <ToolRun steps={item} latest={latest} onOpenDelegate={onOpenDelegate} />
+            </Boundary>
           </div>
         ) : (
           <div className="turn-step" key={item.id}>
-            <EntryView
-              entry={item}
-              onAnswer={onAnswer}
-              onOpenDelegate={onOpenDelegate}
-              onOpenDataset={onOpenDataset}
-              onOpenDocument={onOpenDocument}
-              onOpenNote={onOpenNote}
-              onRunQuery={onRunQuery}
-              // Only where the failure is the last word. A turn that broke and
-              // then carried on to say something else is not one waiting to be
-              // tried again, and a button halfway up it would be offering to
-              // resend a message the conversation has already moved past.
-              onRetry={at === turn.body.length - 1 ? onRetry : undefined}
-            />
+            {/* Keyed to the entry, which is a new object on every streamed
+                update: a reply that throws half-written (a diagram whose source
+                has not closed yet) is tried again as the rest arrives instead of
+                staying broken. */}
+            <Boundary label="This step" resetKey={item}>
+              <EntryView
+                entry={item}
+                onAnswer={onAnswer}
+                onOpenDelegate={onOpenDelegate}
+                onOpenDataset={onOpenDataset}
+                onOpenDocument={onOpenDocument}
+                onOpenNote={onOpenNote}
+                onRunQuery={onRunQuery}
+                // Only where the failure is the last word. A turn that broke and
+                // then carried on to say something else is not one waiting to be
+                // tried again, and a button halfway up it would be offering to
+                // resend a message the conversation has already moved past.
+                onRetry={at === turn.body.length - 1 ? onRetry : undefined}
+              />
+            </Boundary>
           </div>
         ),
       )}

@@ -26,6 +26,7 @@ import {} from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { keptIn, type TabMark } from "./components/CanvasSlot";
 import { CanvasDeck } from "./components/CanvasDeck";
+import { Boundary } from "./components/Boundary";
 import {
   closeTab,
   isPreviewTab,
@@ -1889,22 +1890,24 @@ export default function App() {
                 hasWorkspace={!!workspace}
               />
             ) : pane === "data" ? (
-              <Suspense fallback={<div className="data-pane" />}>
-                <DataPane
-                  datasets={store.datasets}
-                  selected={dataset}
-                  onSelect={setDataset}
-                  onForget={forgetDataset}
-                  onRan={() => void store.refreshDatasets()}
-                  tab={tab}
-                  onTab={setTab}
-                  sql={sql}
-                  onSql={setSql}
-                  pending={pendingQuery}
-                  onPendingRun={() => setPendingQuery(null)}
-                  onAsk={ask}
-                />
-              </Suspense>
+              <Boundary label="The Data pane">
+                <Suspense fallback={<div className="data-pane" />}>
+                  <DataPane
+                    datasets={store.datasets}
+                    selected={dataset}
+                    onSelect={setDataset}
+                    onForget={forgetDataset}
+                    onRan={() => void store.refreshDatasets()}
+                    tab={tab}
+                    onTab={setTab}
+                    sql={sql}
+                    onSql={setSql}
+                    pending={pendingQuery}
+                    onPendingRun={() => setPendingQuery(null)}
+                    onAsk={ask}
+                  />
+                </Suspense>
+              </Boundary>
             ) : (
               <TranscriptPane
                 conversationId={store.session?.id}
@@ -2008,29 +2011,31 @@ export default function App() {
                   ref={changesPane.slot}
                   style={{ width: changesPane.size }}
                 >
-                  <Suspense fallback={<aside className="drawer changes-pane" />}>
-                    <ChangesDrawer
-                      sessionId={store.session.id}
-                      busy={store.busy}
-                      away={store.away}
-                      onClose={() => setChangesOpen(false)}
-                      // The new conversation opens with the question it was
-                      // forked before, ready to be asked again or differently.
-                      // From a review finding, the question carries what the
-                      // review found, for the second attempt to take in.
-                      // Read from the rail's listing, which already knows every
-                      // conversation's parent.
-                      branches={branchesOf(store.sessions, store.session.id)}
-                      onOpenBranch={(id) => void store.openConversation(id)}
-                      onFork={async (turn, finding) => {
-                        const forked = await store.fork(store.session!.id, turn);
-                        setDraft({
-                          text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
-                        });
-                        return forked;
-                      }}
-                    />
-                  </Suspense>
+                  <Boundary label="Changes">
+                    <Suspense fallback={<aside className="drawer changes-pane" />}>
+                      <ChangesDrawer
+                        sessionId={store.session.id}
+                        busy={store.busy}
+                        away={store.away}
+                        onClose={() => setChangesOpen(false)}
+                        // The new conversation opens with the question it was
+                        // forked before, ready to be asked again or differently.
+                        // From a review finding, the question carries what the
+                        // review found, for the second attempt to take in.
+                        // Read from the rail's listing, which already knows every
+                        // conversation's parent.
+                        branches={branchesOf(store.sessions, store.session.id)}
+                        onOpenBranch={(id) => void store.openConversation(id)}
+                        onFork={async (turn, finding) => {
+                          const forked = await store.fork(store.session!.id, turn);
+                          setDraft({
+                            text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
+                          });
+                          return forked;
+                        }}
+                      />
+                    </Suspense>
+                  </Boundary>
                 </div>
               </>
             )}
@@ -2043,15 +2048,17 @@ export default function App() {
                   ref={activityPane.slot}
                   style={{ width: activityPane.size }}
                 >
-                  <Suspense fallback={<aside className="drawer agents-pane" />}>
-                    <AgentsPanel
-                      model={store.session.model}
-                      busy={store.busy}
-                      focus={agentsView.focus}
-                      onClose={agentsView.close}
-                      onOpenTranscript={setDelegate}
-                    />
-                  </Suspense>
+                  <Boundary label="Agent activity">
+                    <Suspense fallback={<aside className="drawer agents-pane" />}>
+                      <AgentsPanel
+                        model={store.session.model}
+                        busy={store.busy}
+                        focus={agentsView.focus}
+                        onClose={agentsView.close}
+                        onOpenTranscript={setDelegate}
+                      />
+                    </Suspense>
+                  </Boundary>
                 </div>
               </>
             )}
@@ -2060,21 +2067,23 @@ export default function App() {
                 While Changes has it this draws nothing and keeps the documents.
                 See `CanvasDeck`. */}
             {canvas && (
-              <CanvasDeck
-                canvas={canvas}
-                marks={canvasMarks}
-                workspace={workspace}
-                showing={side === "canvas"}
-                pane={canvasPane}
-                onShow={showTabOf}
-                onClose={closeDocument}
-                onNamed={nameDocument}
-                onMark={markDocument}
-                onTyped={canvasTyped}
-                onSelect={setSelection}
-                onAsk={ask}
-                flushRef={canvasFlush}
-              />
+              <Boundary label="The open file" resetKey={canvas.active}>
+                <CanvasDeck
+                  canvas={canvas}
+                  marks={canvasMarks}
+                  workspace={workspace}
+                  showing={side === "canvas"}
+                  pane={canvasPane}
+                  onShow={showTabOf}
+                  onClose={closeDocument}
+                  onNamed={nameDocument}
+                  onMark={markDocument}
+                  onTyped={canvasTyped}
+                  onSelect={setSelection}
+                  onAsk={ask}
+                  flushRef={canvasFlush}
+                />
+              </Boundary>
             )}
           </main>
 
@@ -2185,26 +2194,28 @@ export default function App() {
           {terminalOpen && (
             <>
               <ResizeHandle pane={dock} label="Terminal height" />
-              <Suspense fallback={<div className="dock-loading" />}>
-                <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
-                  <TerminalDock
-                    // A new folder is a new shell. Keyed rather than handled
-                    // inside, so the old one is torn down by the same path that
-                    // closes the dock instead of a second one that has to agree
-                    // with it.
-                    key={workspace ?? "none"}
-                    workspace={workspace}
-                    jobs={jobs}
-                    watching={watching}
-                    output={jobOutput}
-                    onWatch={setWatching}
-                    onStop={api.stopBackground}
-                    onClose={() => setTerminalOpen(false)}
-                    onAsk={ask}
-                    onPreview={(url) => linkTo.current(`${PREVIEW_PREFIX}${url}`, null)}
-                  />
-                </div>
-              </Suspense>
+              <Boundary label="The terminal">
+                <Suspense fallback={<div className="dock-loading" />}>
+                  <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
+                    <TerminalDock
+                      // A new folder is a new shell. Keyed rather than handled
+                      // inside, so the old one is torn down by the same path that
+                      // closes the dock instead of a second one that has to agree
+                      // with it.
+                      key={workspace ?? "none"}
+                      workspace={workspace}
+                      jobs={jobs}
+                      watching={watching}
+                      output={jobOutput}
+                      onWatch={setWatching}
+                      onStop={api.stopBackground}
+                      onClose={() => setTerminalOpen(false)}
+                      onAsk={ask}
+                      onPreview={(url) => linkTo.current(`${PREVIEW_PREFIX}${url}`, null)}
+                    />
+                  </div>
+                </Suspense>
+              </Boundary>
             </>
           )}
         </div>
@@ -2219,105 +2230,107 @@ export default function App() {
             time a drawer is opened its module is almost always already in hand —
             see `warmPanels` — and a flash of skeleton for a frame that usually
             does not happen reads worse than the drawer simply appearing. */}
-        <Suspense fallback={null}>
-          {switcherOpen && (
-            <WorkspaceSwitcher
-              current={workspace}
-              recent={recentFolders}
-              blocked={switchBlocked}
-              onSwitch={(path) => void switchWorkspace(path)}
-              onBrowse={() => void pickWorkspace()}
-              onForget={(path) =>
-                void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
-              }
-              onClose={() => setSwitcherOpen(false)}
-            />
-          )}
-          {finderOpen && (
-            <FileFinder
-              open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
-              onOpen={(path) => {
-                giveCanvasTheColumn();
-                showDocument(path, null);
-              }}
-              onClose={() => setFinderOpen(false)}
-            />
-          )}
-          {paletteOpen && (
-            <CommandPalette
-              actions={actions}
-              sessions={store.sessions}
-              onOpenSession={openFound}
-              onClose={() => setPaletteOpen(false)}
-            />
-          )}
+        <Boundary label="This panel" resetKey={[switcherOpen, finderOpen, paletteOpen, usageOpen, tracesOpen, memoryOpen, delegate, skillsOpen, agentsOpen, mcpOpen, pluginsOpen, settingsOpen].join()}>
+          <Suspense fallback={null}>
+            {switcherOpen && (
+              <WorkspaceSwitcher
+                current={workspace}
+                recent={recentFolders}
+                blocked={switchBlocked}
+                onSwitch={(path) => void switchWorkspace(path)}
+                onBrowse={() => void pickWorkspace()}
+                onForget={(path) =>
+                  void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
+                }
+                onClose={() => setSwitcherOpen(false)}
+              />
+            )}
+            {finderOpen && (
+              <FileFinder
+                open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
+                onOpen={(path) => {
+                  giveCanvasTheColumn();
+                  showDocument(path, null);
+                }}
+                onClose={() => setFinderOpen(false)}
+              />
+            )}
+            {paletteOpen && (
+              <CommandPalette
+                actions={actions}
+                sessions={store.sessions}
+                onOpenSession={openFound}
+                onClose={() => setPaletteOpen(false)}
+              />
+            )}
 
-          {usageOpen && (
-            <UsagePanel
-              sessionId={store.session?.id ?? null}
-              onClose={() => setUsageOpen(false)}
-              onOpenTools={() => openSettingsAt("tools")}
-            />
-          )}
+            {usageOpen && (
+              <UsagePanel
+                sessionId={store.session?.id ?? null}
+                onClose={() => setUsageOpen(false)}
+                onOpenTools={() => openSettingsAt("tools")}
+              />
+            )}
 
-          {tracesOpen && (
-            <TracePanel
-              sessionId={store.session?.id ?? null}
-              onClose={() => setTracesOpen(false)}
-              onOpenTracing={() => openSettingsAt("tracing")}
-            />
-          )}
+            {tracesOpen && (
+              <TracePanel
+                sessionId={store.session?.id ?? null}
+                onClose={() => setTracesOpen(false)}
+                onOpenTracing={() => openSettingsAt("tracing")}
+              />
+            )}
 
-          {memoryOpen && (
-            <MemoryDrawer
-              onClose={() => setMemoryOpen(false)}
-              // Not offered mid-turn: switching conversations under a running one
-              // is not something the rail offers either.
-              onOpenSession={
-                store.busy
-                  ? undefined
-                  : (id) => {
-                      setMemoryOpen(false);
-                      void store.openConversation(id);
-                    }
-              }
-            />
-          )}
+            {memoryOpen && (
+              <MemoryDrawer
+                onClose={() => setMemoryOpen(false)}
+                // Not offered mid-turn: switching conversations under a running one
+                // is not something the rail offers either.
+                onOpenSession={
+                  store.busy
+                    ? undefined
+                    : (id) => {
+                        setMemoryOpen(false);
+                        void store.openConversation(id);
+                      }
+                }
+              />
+            )}
 
-          {delegate && store.session && (
-            <DelegateTranscript
-              sessionId={store.session.id}
-              subagentId={delegate.session}
-              agent={delegate.agent}
-              onClose={() => setDelegate(null)}
-            />
-          )}
-          {skillsOpen && (
-            <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
-          )}
-          {agentsOpen && (
-            <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
-          )}
-          {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
+            {delegate && store.session && (
+              <DelegateTranscript
+                sessionId={store.session.id}
+                subagentId={delegate.session}
+                agent={delegate.agent}
+                onClose={() => setDelegate(null)}
+              />
+            )}
+            {skillsOpen && (
+              <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
+            )}
+            {agentsOpen && (
+              <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
+            )}
+            {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
 
-          {pluginsOpen && (
-            <PluginsDrawer
-              busy={store.busy}
-              trusted={store.trust?.trusted ?? true}
-              onClose={() => setPluginsOpen(false)}
-            />
-          )}
-          {settingsOpen && (
-            <Settings
-              initialTab={settingsTab}
-              onOpenFile={openLibraryFile}
-              onClose={() => {
-                setSettingsOpen(false);
-                setSettingsTab(undefined);
-              }}
-            />
-          )}
-        </Suspense>
+            {pluginsOpen && (
+              <PluginsDrawer
+                busy={store.busy}
+                trusted={store.trust?.trusted ?? true}
+                onClose={() => setPluginsOpen(false)}
+              />
+            )}
+            {settingsOpen && (
+              <Settings
+                initialTab={settingsTab}
+                onOpenFile={openLibraryFile}
+                onClose={() => {
+                  setSettingsOpen(false);
+                  setSettingsTab(undefined);
+                }}
+              />
+            )}
+          </Suspense>
+        </Boundary>
 
         {/* After every drawer and picker, so a request that arrives while one
             is open paints over it, and `Modal` counts it as the one in front:
