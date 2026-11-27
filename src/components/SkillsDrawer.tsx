@@ -9,6 +9,7 @@ import { Drawer } from "./Drawer";
 import { Problem, Problems } from "./Problem";
 import { SkillEditor } from "./SkillEditor";
 import { useLoad } from "../lib/load";
+import { Menu } from "./Menu";
 
 type Filter = "all" | "project" | "attention";
 
@@ -235,6 +236,7 @@ export function SkillsDrawer({
                 armed={armed === skill.name}
                 onOpen={onOpenFile}
                 onCopy={() => act(() => api.copySkill(skill.name))}
+                onKeep={disarm}
                 onDelete={() =>
                   armed === skill.name
                     ? act(() => api.deleteSkill(skill.name))
@@ -301,15 +303,32 @@ function SkillActions({
   onOpen,
   onCopy,
   onDelete,
+  onKeep,
 }: {
   skill: SkillSummary;
   armed: boolean;
   onOpen: (path: string) => void;
   onCopy: () => void;
+  /** Arms on the first call and deletes on the second; see the drawer. */
   onDelete: () => void;
+  onKeep: () => void;
 }) {
   const { open, copy, remove } = skillActions(skill);
   const where = skill.tier === "project" ? "this project's" : "your";
+  // Open in view, the rest behind the ⋯ — see `Menu`. Once Delete has been
+  // chosen there, the row is the question it asks.
+  if (armed) {
+    return (
+      <div className="card-row">
+        <button className="danger" data-tip={`Deletes ${skill.dir}`} onClick={onDelete}>
+          Delete it
+        </button>
+        <button className="quiet" onClick={onKeep} autoFocus>
+          Keep
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="card-row">
       {open && (
@@ -321,29 +340,25 @@ function SkillActions({
           Open
         </button>
       )}
-      {copy && (
-        <button
-          className="quiet"
-          data-tip={
-            skill.plugin
-              ? `Copy it into ${where} .taurus/skills, to change there`
-              : `Copy it into ${where} .taurus/skills, where it replaces this one`
-          }
-          onClick={onCopy}
-        >
-          Copy to mine
-        </button>
-      )}
       <div className="spacer" />
-      {remove && (
-        <button
-          className={armed ? "danger" : "quiet"}
-          data-tip={`Deletes ${skill.dir}`}
-          onClick={onDelete}
-        >
-          {armed ? "Delete it" : "Delete"}
-        </button>
-      )}
+      <Menu
+        label={`Actions for ${skill.name}`}
+        items={[
+          copy && {
+            label: "Copy to mine",
+            onSelect: onCopy,
+            tip: skill.plugin
+              ? `Copy it into ${where} .taurus/skills, to change there`
+              : `Copy it into ${where} .taurus/skills, where it replaces this one`,
+          },
+          remove && {
+            label: "Delete…",
+            onSelect: onDelete,
+            danger: true,
+            tip: `Deletes ${skill.dir}`,
+          },
+        ]}
+      />
     </div>
   );
 }

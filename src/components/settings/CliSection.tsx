@@ -43,7 +43,7 @@ export function CliSection() {
     <section className="section">
       <span className="micro">Command line</span>
       <div className="card-row">
-        <span className="text-12-5 text-dim">
+        <span className="text-13 text-dim">
           {status?.installed ? (
             <>
               <span className="font-mono">taurus</span> is at{" "}

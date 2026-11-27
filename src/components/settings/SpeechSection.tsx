@@ -9,6 +9,7 @@ import { useSpeech } from "../../state/speech";
 import { Problem } from "../Problem";
 import { ApiKeyField } from "./ApiKeyField";
 import { Field, blank } from "./Field";
+import { Select } from "../Select";
 
 /** Models ElevenLabs offers for speech, fastest first. Any id is accepted. */
 const ELEVENLABS_MODELS = [
@@ -200,15 +201,15 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
             : "Each sentence of a reply is sent to this service to be spoken. Nothing else from the conversation is."
         }
       >
-        <select
+        <Select
           value={draft.engine}
           disabled={busy}
-          onChange={(e) => void save({ ...draft, engine: e.target.value as SpeechEngine })}
+          onChange={(value) => void save({ ...draft, engine: value as SpeechEngine })}
         >
           <option value="system">{systemName()}</option>
           <option value="elevenlabs">ElevenLabs</option>
           <option value="openai">OpenAI or a compatible server</option>
-        </select>
+        </Select>
       </Field>
 
       {draft.engine === "system" && (
@@ -220,11 +221,11 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
               : undefined
           }
         >
-          <select
+          <Select
             value={draft.system.voice ?? ""}
             disabled={busy || voices === null}
-            onChange={(e) =>
-              void save({ ...draft, system: { voice: e.target.value || undefined } })
+            onChange={(value) =>
+              void save({ ...draft, system: { voice: value || undefined } })
             }
           >
             <option value="">System default</option>
@@ -237,7 +238,7 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
                 ))}
               </optgroup>
             ))}
-          </select>
+          </Select>
         </Field>
       )}
       {/* Why the list is empty, which on Linux without espeak-ng is the
@@ -265,13 +266,13 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
                     : "Store a key to list the voices on your account."
                 }
               >
-                <select
+                <Select
                   value={draft.elevenlabs.voice_id ?? ""}
                   disabled={busy || !voices?.length}
-                  onChange={(e) =>
+                  onChange={(value) =>
                     void save({
                       ...draft,
-                      elevenlabs: { ...draft.elevenlabs, voice_id: e.target.value || undefined },
+                      elevenlabs: { ...draft.elevenlabs, voice_id: value || undefined },
                     })
                   }
                 >
@@ -290,7 +291,7 @@ export function SpeechSection({ keychain }: { keychain: boolean }) {
                       {v.detail && ` · ${v.detail}`}
                     </option>
                   ))}
-                </select>
+                </Select>
               </Field>
               {voicesError && <Problem>{voicesError}</Problem>}
               <Field label="Model" hint="Flash is the quickest to start speaking; Multilingual v2 sounds best.">

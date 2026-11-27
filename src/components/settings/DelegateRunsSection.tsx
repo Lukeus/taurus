@@ -52,7 +52,7 @@ export function DelegateRunsSection() {
       <ul className="delegate-runs-list">
         {runs.map((run) => (
           <li key={run.run} className="card-row">
-            <span className="text-12-5">
+            <span className="text-13">
               {run.agent} in <span className="font-mono">{basename(run.workspace)}</span>
               <span className="text-dim">
                 {" "}

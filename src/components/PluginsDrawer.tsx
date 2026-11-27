@@ -6,6 +6,7 @@ import type { PluginSummary } from "../lib/api";
 import { useArmed } from "../lib/armed";
 import { Drawer } from "./Drawer";
 import { Problem } from "./Problem";
+import { Menu } from "./Menu";
 
 /**
  * Plugins: skills, commands, sub-agents, MCP servers and hooks under one name.
@@ -150,31 +151,46 @@ export function PluginsDrawer({
                     >
                       {plugin.enabled ? "Switch off" : "Switch on"}
                     </button>
-                    {plugin.source && (
-                      <button
-                        className="quiet"
-                        disabled={!idle}
-                        data-tip={why ?? `Fetch it again from ${plugin.source.from}`}
-                        onClick={() =>
-                          change(key, () => api.updatePlugin(plugin.name, project))
-                        }
-                      >
-                        {working === key ? "Updating…" : "Update"}
-                      </button>
-                    )}
+                    {/* While it fetches, the word says so where the item
+                        that started it was — the menu is shut by then. */}
+                    {working === key && <span className="text-12 text-faint">Updating…</span>}
                     <div className="spacer" />
-                    <button
-                      className={armed === key ? "danger" : "quiet"}
-                      disabled={!idle}
-                      data-tip={why ?? `Deletes ${plugin.root}`}
-                      onClick={() =>
-                        armed === key
-                          ? change(key, () => api.removePlugin(plugin.name, project))
-                          : arm(key)
-                      }
-                    >
-                      {armed === key ? "Remove it" : "Remove"}
-                    </button>
+                    {/* The switch in view, the rest behind the ⋯ — see `Menu`
+                        — and once Remove is chosen there, the question it asks. */}
+                    {armed === key ? (
+                      <>
+                        <button
+                          className="danger"
+                          disabled={!idle}
+                          data-tip={why ?? `Deletes ${plugin.root}`}
+                          onClick={() => change(key, () => api.removePlugin(plugin.name, project))}
+                        >
+                          Remove it
+                        </button>
+                        <button className="quiet" onClick={disarm} autoFocus>
+                          Keep
+                        </button>
+                      </>
+                    ) : (
+                      <Menu
+                        label={`Actions for ${plugin.name}`}
+                        disabled={!idle}
+                        items={[
+                          plugin.source && {
+                            label: "Update",
+                            onSelect: () =>
+                              change(key, () => api.updatePlugin(plugin.name, project)),
+                            tip: why ?? `Fetch it again from ${plugin.source.from}`,
+                          },
+                          {
+                            label: "Remove…",
+                            onSelect: () => arm(key),
+                            danger: true,
+                            tip: why ?? `Deletes ${plugin.root}`,
+                          },
+                        ]}
+                      />
+                    )}
                   </div>
                 </div>
               </li>

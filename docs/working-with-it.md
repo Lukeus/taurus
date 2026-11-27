@@ -432,7 +432,7 @@ that's all the harness can do. See [Known gaps](known-gaps.md).
 
 ### Plan first
 
-Press **▷ does the work** under the message box and it becomes **◇ plans
+Press **Does the work** under the message box and it becomes **Plans
 first**. From the next turn, the model reads what it needs, writes the plan
 with `update_plan`, and stops, with nothing that could change anything
 offered to it. The plan panel opens on its own:
@@ -513,7 +513,7 @@ composer's half: paste or drop it there.
 ┌──────────────────────────────────────────┐
 │  [thumb] [thumb] ✕                       │
 │  why is this layout wrong?               │
-│  ▤ taurus-ai-shell   ↵ send · paste an image │
+│  qwen3:8b ▾          ↵ send · paste an image │
 └──────────────────────────────────────────┘
 ```
 
@@ -598,7 +598,7 @@ often enough that you'll want to look first.
 ```
 ┌───────────────────────────────────────────────────────┐
 │  fix the login test and run it again                  │
-│  ▤ taurus-ai-shell  ● 0:04 listening · esc discards  ◉ Send │
+│  qwen3:8b ▾         ● 0:04 listening · esc discards  ◉ Send │
 └───────────────────────────────────────────────────────┘
 ```
 

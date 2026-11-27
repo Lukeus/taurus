@@ -52,7 +52,7 @@ export function UpdatesSection() {
     <section className="section">
       <span className="micro">Updates</span>
       <div className="card-row">
-        <span className="text-12-5 text-dim">
+        <span className="text-13 text-dim">
           {result ? (
             <>
               Taurus <span className="font-mono">{result.current}</span>

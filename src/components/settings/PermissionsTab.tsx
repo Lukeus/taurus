@@ -42,7 +42,7 @@ export function PermissionsTab({
             <li key={`${allowed.scope}:${allowed.rule}`} className="card">
               <div className="card-body">
                 <div className="card-row">
-                  <span className="card-title font-mono rule-name text-12-5 min-w-0 wrap-anywhere">
+                  <span className="card-title font-mono rule-name text-13 min-w-0 wrap-anywhere">
                     {allowed.rule}
                   </span>
                   <span

@@ -145,17 +145,18 @@
    * The stylesheet next door argues that a distance reads better as its own
    * value than as a name for one — `padding: 8px 12px` says what it does where
    * `var(--sp-4) var(--sp-6)` needs a lookup — and a font size is the same kind
-   * of fact. `text-12-5` is the app's control size whether or not you know that
-   * is what the buttons use, and a rule converted from `font-size: 12.5px`
+   * of fact. `text-13` is the app's control size whether or not you know that
+   * is what the buttons use, and a rule converted from `font-size: 13px`
    * lands on it without a translation step anyone can get wrong.
    *
-   * The half-steps are here because they are real: 11.5px carries twenty-two
-   * rules and 10.5px twenty-one. Consolidating them onto whole pixels is a
-   * defensible change to make on purpose; it is not one to make silently while
-   * moving a file to a new syntax.
+   * Eight steps and no half-pixels. The file grew up with twenty sizes —
+   * 11.5px beside 12px beside 12.5px — which, like the spacing ladder's
+   * strays, were never a decision anyone made. Every half-step was rounded up
+   * by the same half pixel, so each size kept its place relative to the
+   * others, and `styles.test.ts` now fails over any size off this list.
    *
    * A size and no leading, which is the opposite of what Tailwind ships and is
-   * the point. Every `--text-*--line-height` here would make `text-12-5` set
+   * the point. Every `--text-*--line-height` here would make `text-13` set
    * leading as well as size, and this app decides leading once — 1.55 on the
    * body — and overrides it only where something is deliberately tight. Pairing
    * the two cost the workspace button five and a half pixels of height the
@@ -165,17 +166,12 @@
    */
   --text-*: initial;
   --text-10: 10px;
-  --text-10-5: 10.5px;
   --text-11: 11px;
-  --text-11-5: 11.5px;
   --text-12: 12px;
-  --text-12-5: 12.5px;
   --text-13: 13px;
-  --text-13-5: 13.5px;
   --text-14: 14px;
   --text-15: 15px;
   --text-16: 16px;
-  --text-22: 22px;
   --text-24: 24px;
 
   /* Tracking for the few labels still set in capitals (the risk badge on a

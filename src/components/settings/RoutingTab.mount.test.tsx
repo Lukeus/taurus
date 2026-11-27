@@ -20,6 +20,7 @@ vi.mock("../../state/store", () => ({
 
 import { RoutingTab } from "./RoutingTab";
 import type { ModelRoutes } from "../../lib/api";
+import { choose as pick } from "../../test/select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -61,13 +62,17 @@ const field = <T extends HTMLElement>(host: HTMLElement, label: string) => {
   return el as T;
 };
 
-/** Sets a controlled field's value the way typing does. */
-const type = async (el: HTMLInputElement | HTMLSelectElement, value: string) => {
-  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement : HTMLInputElement;
-  const setter = Object.getOwnPropertyDescriptor(proto.prototype, "value")!.set!;
+/** Sets a controlled field's value the way typing does, or picks it from a dropdown. */
+const type = async (el: HTMLElement, value: string) => {
+  if (el.getAttribute("role") === "combobox") {
+    pick(el, value);
+    await act(async () => {});
+    return;
+  }
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   await act(async () => {
     setter.call(el, value);
-    el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+    el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 };
 

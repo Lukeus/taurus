@@ -30,6 +30,7 @@ vi.mock("../state/store", () => ({
 
 import { Settings } from "./Settings";
 import { MAX_ITERATIONS_LIMIT } from "../lib/limits";
+import { choose as pick, optionsOf } from "../test/select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -226,7 +227,7 @@ describe("folding a provider card", () => {
     expect(
       (first.querySelector(".settings-id") as HTMLInputElement).value,
     ).toBe("ollama");
-    expect(first.querySelector("select")).toBeTruthy();
+    expect(first.querySelector('[role="combobox"]')).toBeTruthy();
   });
 
   it("shows the rest when the disclosure is pressed, and hides it again", async () => {
@@ -684,13 +685,11 @@ describe("the search tab", () => {
     const host = await mount();
     click(host, "Search");
     await act(async () => {});
-    const select = [...host.querySelectorAll("select")].find((s) =>
-      s.querySelector('option[value="brave"]'),
-    ) as HTMLSelectElement;
-    await act(async () => {
-      select.value = "brave";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const select = [...host.querySelectorAll('[role="combobox"]')].find((s) =>
+      optionsOf(s).includes("brave"),
+    )!;
+    pick(select, "brave");
+    await act(async () => {});
 
     expect(host.textContent).toContain("search.json is read-only");
   });
@@ -763,6 +762,20 @@ describe("saving providers", () => {
 
     click(host, "Remove");
     expect(save().disabled).toBe(false);
+  });
+
+  it("puts every card back as it was on Discard", async () => {
+    withProviders();
+    const host = await mount();
+    const before = cards(host).length;
+    click(host, "Remove");
+    expect(cards(host)).toHaveLength(before - 1);
+
+    click(host, "Discard");
+    expect(cards(host)).toHaveLength(before);
+    expect(host.textContent).not.toContain("Unsaved changes");
+    // Nothing to throw away, so nothing offers to.
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Discard")).toBe(false);
   });
 
   it("says why a save was refused, and keeps the edit", async () => {
