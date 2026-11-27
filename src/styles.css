@@ -697,6 +697,68 @@ textarea:where(:not(.excalidraw *)) {
   outline-offset: -2px;
 }
 
+/*
+ * A card's ⋯ and the menu it opens — see `Menu`. The list is the dropdown's
+ * list in all but role, so a choice and an action open the same-looking panel.
+ */
+.menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  color: var(--text-faint);
+}
+.menu-button[data-open] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.menu-list {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--lift);
+  animation: select-in var(--hover) var(--ease);
+}
+.menu-list[data-up] {
+  animation-name: select-in-up;
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+/* The ring stays — the wash alone is too faint to be the only sign of where
+   the keyboard is — turned inward like the other controls that fill a
+   clipping parent. */
+.menu-item:focus-visible {
+  outline-offset: -2px;
+}
+.menu-item.danger,
+.menu-item.danger:hover:not(:disabled),
+.menu-item.danger:focus-visible {
+  color: var(--danger);
+  border: 0;
+}
+
 code:where(:not(.excalidraw *)) {
   font-family: var(--mono);
   font-size: 0.92em;
@@ -7505,7 +7567,9 @@ button.link:where(:not(.excalidraw *)):hover {
   .tip,
   .tip.bottom,
   .select-list,
-  .select-list[data-up] {
+  .select-list[data-up],
+  .menu-list,
+  .menu-list[data-up] {
     animation-name: fade-in;
   }
 }

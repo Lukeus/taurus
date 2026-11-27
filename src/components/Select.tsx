@@ -11,6 +11,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { anchorTo } from "../lib/anchor";
+
 export type SelectOption = {
   value: string;
   label: string;
@@ -184,19 +186,10 @@ export function Select({
 
   // Placed against the trigger, below it unless there is more room above.
   // Measured before paint, so the list never draws once in the wrong place.
-  const [place, setPlace] = useState<{ left: number; top: number; width: number; up: boolean }>();
+  const [place, setPlace] = useState<ReturnType<typeof anchorTo>>();
   useLayoutEffect(() => {
     if (!open || !trigger.current) return;
-    const box = trigger.current.getBoundingClientRect();
-    const height = list.current?.offsetHeight ?? 0;
-    const below = window.innerHeight - box.bottom;
-    const up = below < height + 8 && box.top > below;
-    setPlace({
-      left: Math.min(box.left, window.innerWidth - Math.max(box.width, 180) - 8),
-      top: up ? box.top - 4 : box.bottom + 4,
-      width: box.width,
-      up,
-    });
+    setPlace(anchorTo(trigger.current, list.current?.offsetHeight ?? 0));
   }, [open]);
 
   // The active row stays in view as the keyboard moves it.
@@ -275,15 +268,7 @@ export function Select({
               aria-label={ariaLabel}
               className="select-list"
               data-up={place?.up ? "" : undefined}
-              style={
-                place
-                  ? {
-                      left: place.left,
-                      minWidth: place.width,
-                      ...(place.up ? { bottom: window.innerHeight - place.top } : { top: place.top }),
-                    }
-                  : { visibility: "hidden" }
-              }
+              style={place ? place.style : { visibility: "hidden" }}
               // Keeps focus on the trigger, which is where the keyboard and
               // `aria-activedescendant` live.
               onPointerDown={(e) => e.preventDefault()}

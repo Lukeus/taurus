@@ -145,7 +145,7 @@ describe("opening the panel", () => {
       server({ name: "github", disabled: true }),
     ]);
     expect(host.innerHTML).toContain("github");
-    expect(host.innerHTML).toContain("Enable");
+    expect(actions(host)).toContain("Enable");
     unmount();
   });
 
@@ -189,6 +189,28 @@ describe("opening the panel", () => {
   });
 });
 
+describe("deleting a server from its menu", () => {
+  it("arms the card rather than deleting, and deletes on the second press", async () => {
+    const { host, unmount } = await mount([server({ name: "github" })]);
+    const deleted = () => invoke.mock.calls.filter(([c]) => c === "delete_mcp_server");
+
+    act(() => host.querySelector<HTMLButtonElement>(".menu-button")!.click());
+    const choose = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (i) => i.textContent === "Delete…",
+    )!;
+    act(() => choose.click());
+    expect(deleted()).toEqual([]);
+
+    const confirm = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "Remove from mcp.json",
+    )!;
+    expect(confirm).toBeDefined();
+    await act(async () => confirm.click());
+    expect(deleted()).toEqual([["delete_mcp_server", { scope: "global", name: "github" }]]);
+    unmount();
+  });
+});
+
 describe("a server that wants an account", () => {
   /*
    * OAuth is offered on an HTTP server and never on a stdio one. That is not a
@@ -214,7 +236,7 @@ describe("a server that wants an account", () => {
 
   it("offers to sign out of one already signed in, and says so", async () => {
     const { host } = await mount([remote({ signed_in: true })]);
-    expect(host.textContent).toContain("Sign out");
+    expect(actions(host)).toContain("Sign out");
     expect(host.textContent).toContain("signed in");
     expect(host.textContent).not.toContain("Sign in");
   });
@@ -222,7 +244,7 @@ describe("a server that wants an account", () => {
   it("offers neither on a stdio server", async () => {
     const { host } = await mount([server()]);
     expect(host.textContent).not.toContain("Sign in");
-    expect(host.textContent).not.toContain("Sign out");
+    expect(actions(host)).not.toContain("Sign out");
   });
 });
 
@@ -351,3 +373,13 @@ describe("Reconnect", () => {
     unmount();
   });
 });
+
+/** What a card's ⋯ offers: opened, read, and shut again. */
+function actions(host: HTMLElement): string[] {
+  const more = host.querySelector<HTMLButtonElement>(".menu-button");
+  if (!more) return [];
+  act(() => more.click());
+  const labels = [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent ?? "");
+  act(() => more.click());
+  return labels;
+}

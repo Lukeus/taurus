@@ -19,6 +19,7 @@ import { Modal } from "./Modal";
 import { Problem, Problems } from "./Problem";
 import { FromProject } from "./settings/Field";
 import { useArmed } from "../lib/armed";
+import { Menu } from "./Menu";
 
 /**
  * Every tool server this workspace reaches, and everything needed to work out
@@ -419,6 +420,28 @@ function ServerCard({
               signed in
             </span>
           )}
+          {/* Everything the card can do except the one thing it is for. See
+              `Menu`. Delete arms the card rather than deleting, so the menu is
+              the first of its two presses, as the button it replaced was. */}
+          <span className="ml-auto flex-none">
+            <Menu
+              label={`Actions for ${server.name}`}
+              disabled={busy}
+              items={[
+                !stdio && server.signed_in && {
+                  label: "Sign out",
+                  onSelect: onSignOut,
+                  tip: "Forgets Taurus's copy. The grant stays until you remove it at the provider.",
+                },
+                // A plugin's server is the plugin's to define: it can be
+                // switched off here, which writes a toggle to your own file,
+                // and changed or removed only by changing the plugin.
+                !server.plugin && { label: "Edit", onSelect: onEdit },
+                { label: server.disabled ? "Enable" : "Disable", onSelect: onToggle },
+                !server.plugin && { label: "Delete…", onSelect: () => arm(true), danger: true },
+              ]}
+            />
+          </span>
         </div>
 
         <span className="card-sub font-mono">
@@ -504,29 +527,32 @@ function ServerCard({
           </>
         )}
 
-        {/* Quiet, as a card's actions are in Skills, Agents, Plugins and
-            Memory: the weight is kept for the one that needs pressing — Sign in
-            on a server that can't work without it — and for the red of a
-            Delete once it has been asked for. */}
-        <div className="card-actions">
-          {/* First, because on a server that wants an account it is the only
-              thing that will make anything else work. */}
-          {!stdio &&
-            (server.signed_in ? (
-              <button
-                className="quiet"
-                disabled={busy}
-                onClick={onSignOut}
-                data-tip="Forgets Taurus's copy. The grant stays until you remove it at the provider."
-              >
-                Sign out
-              </button>
+        {/* The one action on the card that is not behind its ⋯: signing in, on
+            a server that offers it, because until it is done nothing else on
+            the card works. Primary only where that is true — a server already
+            connected on a token can still be signed in to, and a blue button
+            on a working row would be urging something nobody needs. And the
+            two-press delete, once the ⋯ has armed it, where it can be seen. */}
+        {(arming || (!stdio && !server.signed_in)) && (
+          <div className="card-actions">
+            {arming ? (
+              <>
+                <button
+                  className="danger"
+                  disabled={busy}
+                  onClick={() => {
+                    disarm();
+                    onDelete();
+                  }}
+                >
+                  Remove from mcp.json
+                </button>
+                <button className="quiet" disabled={busy} onClick={disarm} autoFocus>
+                  Keep
+                </button>
+              </>
             ) : (
               <button
-                // Primary only where signing in is the thing that will make it
-                // work. A server already connected on a token can still be
-                // signed in to, and a blue button on a working row would be
-                // urging something nobody needs.
                 className={server.status?.connected ? "quiet" : "primary"}
                 disabled={busy || signingIn}
                 onClick={onSignIn}
@@ -534,40 +560,9 @@ function ServerCard({
               >
                 {signingIn ? "Waiting for the browser…" : "Sign in"}
               </button>
-            ))}
-          {/* A plugin's server is the plugin's to define: it can be switched
-              off here, which writes a toggle to your own file, and changed or
-              removed only by changing the plugin. */}
-          {!server.plugin && (
-            <button className="quiet" disabled={busy} onClick={onEdit}>
-              Edit
-            </button>
-          )}
-          <button className="quiet" disabled={busy} onClick={onToggle}>
-            {server.disabled ? "Enable" : "Disable"}
-          </button>
-          {server.plugin ? null : arming ? (
-            <>
-              <button
-                className="danger"
-                disabled={busy}
-                onClick={() => {
-                  disarm();
-                  onDelete();
-                }}
-              >
-                Remove from mcp.json
-              </button>
-              <button className="quiet" disabled={busy} onClick={disarm}>
-                Keep
-              </button>
-            </>
-          ) : (
-            <button className="quiet" disabled={busy} onClick={() => arm(true)}>
-              Delete
-            </button>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </li>
   );
