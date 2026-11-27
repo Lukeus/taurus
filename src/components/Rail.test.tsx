@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { Rail, type ProviderHealth } from "./Rail";
+import { Rail, workspaceInitial, type ProviderHealth } from "./Rail";
 import type { SessionMeta } from "../lib/api";
 
 const now = Math.floor(Date.now() / 1000);
@@ -326,5 +326,19 @@ describe("the foot links", () => {
     expect(empty).not.toContain(">0<");
 
     expect(draw({ noteCount: 4 })).toContain(">4<");
+  });
+});
+
+describe("the workspace badge", () => {
+  it("is the folder's own initial, not the app's", () => {
+    expect(workspaceInitial("/home/me/code/website")).toBe("w");
+    expect(workspaceInitial("/home/me/code/Taurus")).toBe("t");
+    expect(workspaceInitial("/home/me/code/.dotfiles")).toBe("d");
+    expect(workspaceInitial("/home/me/code/2026-plans")).toBe("2");
+    expect(workspaceInitial("/home/me/code/Écrits")).toBe("é");
+  });
+
+  it("offers to add one when there is no workspace", () => {
+    expect(workspaceInitial(null)).toBe("+");
   });
 });

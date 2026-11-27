@@ -351,7 +351,10 @@ export const Rail = memo(function Rail({
       {/* Clears the macOS traffic lights, which float over this corner, and
           carries the wordmark at the one height that lines its rule up with
           the topbar's across the fold. */}
-      <div className="rail-brand h-11 flex-none flex items-center gap-2 px-gutter-rail border-b border-rule">
+      <div
+        className="rail-brand h-11 flex-none flex items-center gap-2 border-b border-rule"
+        data-tauri-drag-region
+      >
         {brand?.logo ? (
           /*
              A theme's own mark, inlined as a data URI by the loader.
@@ -401,7 +404,13 @@ export const Rail = memo(function Rail({
           }
           data-tip-side="bottom"
         >
-          <span className="mark">t</span>
+          {/* The folder's initial, so two workspaces can be told apart at a
+              glance. It was a fixed "t" — the app's mark, sitting where the
+              workspace's should be — which read as right only in a folder that
+              happened to be called taurus. */}
+          <span className="mark" aria-hidden="true">
+            {workspaceInitial(workspace)}
+          </span>
           <span className="rail-workspace-name flex-1 min-w-0">
             <b className="block text-13 font-normal text-ink truncate">
               {workspace ? basename(workspace) : "No workspace"}
@@ -957,4 +966,11 @@ function healthTitle(health: ProviderHealth): string {
     default:
       return "";
   }
+}
+
+/** The badge on the workspace row: the folder's first letter or digit. */
+export function workspaceInitial(workspace: string | null): string {
+  if (!workspace) return "+";
+  const first = [...basename(workspace)].find((c) => /[\p{L}\p{N}]/u.test(c));
+  return (first ?? "·").toLowerCase();
 }

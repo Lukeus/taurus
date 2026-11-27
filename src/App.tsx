@@ -12,6 +12,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
+import { DOCS_URL, leaveToMenu, onMenu, type Command } from "./lib/commands";
+import { openLink } from "./state/openLink";
 import { modalOpen } from "./components/Modal";
 import { isAsking } from "./lib/asking";
 import { ListPaneIcon } from "./components/icons";
@@ -555,7 +557,7 @@ export default function App() {
       if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
       if (modalOpen()) return;
       e.preventDefault();
-      setTerminalOpen((open) => !open);
+      command.current("terminal");
     };
     // ⌃R for the recent folders, as other editors have it. Not from the
     // terminal, where it is the shell's history search.
@@ -565,7 +567,7 @@ export default function App() {
       if (target?.closest(".xterm")) return;
       if (modalOpen()) return;
       e.preventDefault();
-      setSwitcherOpen(true);
+      command.current("switch");
     };
     window.addEventListener("keydown", key);
     window.addEventListener("keydown", recent);
@@ -604,38 +606,42 @@ export default function App() {
       // prompt started a conversation nobody could see, and ⌘K over Settings
       // opened a second layer underneath it.
       if (modalOpen()) return;
-      if (isChord(e, "k") || (isChord(e, "p") && e.shiftKey)) {
-        e.preventDefault();
-        setPaletteOpen(true);
-      } else if (isChord(e, "p")) {
-        e.preventDefault();
-        setFinderOpen(true);
-      } else if (isChord(e, "n") && !e.shiftKey) {
-        e.preventDefault();
-        // Through the ref, not the closure. This effect is registered once,
-        // and a dependency on a handler rebuilt on every render of `App`
-        // would add and remove a window listener each time it rendered.
-        start.current();
-      } else if (isChord(e, ",")) {
-        e.preventDefault();
-        setSettingsOpen(true);
-      } else if (isChord(e, "l")) {
-        e.preventDefault();
-        setFocusComposer((n) => n + 1);
-      } else if (isChord(e, "b") && !e.shiftKey) {
-        e.preventDefault();
-        toggleRail();
-      } else if (isChord(e, "d") && e.shiftKey) {
+      // Which command, and whether the menu bar has this exact key — see
+      // `leaveToMenu`, which is why the two are decided together.
+      let hit: [Command, boolean] | null = null;
+      if (isChord(e, "k")) hit = ["palette", true];
+      else if (isChord(e, "p") && e.shiftKey) hit = ["palette", false];
+      else if (isChord(e, "p")) hit = ["finder", true];
+      else if (isChord(e, "n") && !e.shiftKey) hit = ["new", true];
+      else if (isChord(e, ",")) hit = ["settings", true];
+      else if (isChord(e, "l")) hit = ["composer", true];
+      else if (isChord(e, "b") && !e.shiftKey) hit = ["sidebar", true];
+      else if (isChord(e, "d") && e.shiftKey) {
         // With Shift, unlike the rest. Plain Ctrl+D is end-of-input to the
         // shell in the terminal dock on Windows and Linux, and a shortcut
         // that took it would close somebody's shell.
         e.preventDefault();
         setDictate((n) => n + 1);
+        return;
       }
+      if (!hit || leaveToMenu(hit[1])) return;
+      e.preventDefault();
+      command.current(hit[0]);
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [toggleRail]);
+  }, []);
+
+  // The menu bar's items, on macOS. The same guard as the keys: a menu click
+  // while a prompt has the keyboard would open something behind it.
+  useEffect(
+    () =>
+      onMenu((c) => {
+        if (modalOpen() && c !== "docs") return;
+        command.current(c);
+      }),
+    [],
+  );
 
   /*
    * Re-asks the questions nothing can push, when the user comes back.
@@ -898,6 +904,34 @@ export default function App() {
 
   /** The latest `newConversation`, for the window shortcut. See the effect. */
   const start = useRef(() => {});
+  /*
+   * Every window-wide command, in one place. The keyboard handlers and the
+   * macOS menu bar both call this (see `lib/commands.ts`), through a ref so
+   * that the listeners, registered once, always reach the current one.
+   */
+  const command = useRef<(c: Command) => void>(() => {});
+  command.current = (c: Command) => {
+    switch (c) {
+      case "palette":
+        return setPaletteOpen(true);
+      case "finder":
+        return setFinderOpen(true);
+      case "new":
+        return start.current();
+      case "settings":
+        return setSettingsOpen(true);
+      case "composer":
+        return setFocusComposer((n) => n + 1);
+      case "sidebar":
+        return toggleRail();
+      case "terminal":
+        return setTerminalOpen((open) => !open);
+      case "switch":
+        return setSwitcherOpen(true);
+      case "docs":
+        return openLink(DOCS_URL);
+    }
+  };
   /**
    * The latest `pickWorkspace` and `chooseTheme`, for the palette.
    *
@@ -1681,7 +1715,7 @@ export default function App() {
 
   return (
     <FileLinks.Provider value={openFromLink}>
-      <div className="app">
+      <div className="app" data-rail-shut={railShut || undefined}>
         {!railShut && (
           <Rail
             width={rail.size}
@@ -1720,7 +1754,11 @@ export default function App() {
         {!railShut && <ResizeHandle pane={rail} label="Rail width" />}
 
         <div className="pane">
-          <header className="topbar">
+          {/* The window is dragged by its header, now that the platform's
+              title bar is gone on macOS. Only the header and the spacer in
+              it: a drag region is the element itself, never its children, so
+              every control in here still takes its own clicks. */}
+          <header className="topbar" data-tauri-drag-region>
             <button
               className="pane-toggle"
               onClick={toggleRail}
@@ -1748,7 +1786,7 @@ export default function App() {
               </span>
             )}
 
-            <div className="spacer" />
+            <div className="spacer" data-tauri-drag-region />
 
             <button
               className="chip"

@@ -177,6 +177,17 @@
   --gutter-rail: 20px;
 
   /*
+   * How far in from the window's left edge the macOS window buttons reach,
+   * when the title bar is an overlay (see `lib/chrome.ts`). Measured off the
+   * running window through the accessibility tree rather than worked out from
+   * the artwork: with `trafficLightPosition.x` at 20 the three buttons' frames
+   * run to 81px, and 12px after them is where the first thing of ours starts.
+   * `trafficLightPosition.y` is 24 for the same reason — it centres their 16px
+   * frames on the 44px row that the rail's brand and the topbar share.
+   */
+  --lights: calc(81px + 12px);
+
+  /*
    * The spacing ladder — 2, 4, 6, 8, 10, 12, 16, 20, 24, 32.
    *
    * Steps of 2 up to 12, then 4, then 8: fine where a label sits next to an
@@ -965,6 +976,26 @@ body.resizing-y iframe {
   gap: 10px;
   padding: 0 var(--gutter);
   border-bottom: 1px solid var(--rule);
+}
+
+/*
+ * Clearing the window buttons, where they float over the app (macOS, see
+ * `lib/chrome.ts`). The rail's first row is their home: they sit in it the way
+ * they sit in Finder's sidebar, and the brand starts after them. With the rail
+ * put away they land on the topbar instead, so it makes the same room. Full
+ * screen hides them, and the room goes with them.
+ *
+ * The rail row's padding is here rather than a utility on the element so the
+ * override below is in the same layer as what it overrides.
+ */
+.rail-brand {
+  padding: 0 var(--gutter-rail);
+}
+:root[data-chrome="overlay"]:not([data-fullscreen]) .rail-brand {
+  padding-left: var(--lights);
+}
+:root[data-chrome="overlay"]:not([data-fullscreen]) .app[data-rail-shut] .topbar {
+  padding-left: var(--lights);
 }
 .topbar-title {
   font-size: 14px;

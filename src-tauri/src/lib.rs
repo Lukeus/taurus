@@ -7,6 +7,7 @@ mod bridge;
 mod cli_install;
 mod commands;
 mod live;
+mod menu;
 mod preview;
 mod state;
 mod terminal;
@@ -229,6 +230,8 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move { state.page_replaced().await });
             }
         })
+        // The menu bar's own items, handed to the page. See `menu`.
+        .on_menu_event(|app, event| menu::forward(app, event.id().as_ref()))
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::Destroyed) {
                 if let Some(state) = window.app_handle().try_state::<Arc<state::AppState>>() {
@@ -246,6 +249,8 @@ pub fn run() {
         .setup(|app| {
             paint_window(app);
             zoom_window(app);
+            #[cfg(target_os = "macos")]
+            app.set_menu(menu::build(app.handle())?)?;
 
             // Tells the CLI which app it sits beside, and refreshes a copy of
             // it that an update left behind. Off the setup path: it can copy
