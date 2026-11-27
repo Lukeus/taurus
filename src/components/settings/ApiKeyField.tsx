@@ -6,7 +6,7 @@ import { Field } from "./Field";
 import { useArmed } from "../../lib/armed";
 
 /** What stands in for the key box where there is nothing to type into. */
-export const KEY_NONE = "settings-key-none py-2 text-12-5 text-faint italic";
+export const KEY_NONE = "settings-key-none py-2 text-13 text-faint italic";
 
 /**
  * The API key field.

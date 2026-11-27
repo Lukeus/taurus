@@ -403,6 +403,20 @@ export function Settings({
                 {saved && !saving && <span className="text-dim text-12">Saved</span>}
                 {dirty && !saving && <span className="text-dim text-12">Unsaved changes</span>}
                 <div className="spacer" />
+                {/* The way back from an edit, beside the way forward. Without
+                    it, undoing a change meant remembering what each field had
+                    said, or closing and choosing to throw everything away. */}
+                {dirty && !saving && (
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      setDraft((d) => (loaded ? rowsOf(loaded, d) : d));
+                      setSaved(false);
+                    }}
+                  >
+                    Discard
+                  </button>
+                )}
                 <button
                   className="primary"
                   onClick={() => void save()}
@@ -632,7 +646,7 @@ export function Settings({
 
               <section className="section">
                 <span className="micro">Files</span>
-                <dl className="settings-paths m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-12-5 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
+                <dl className="settings-paths m-0 grid grid-cols-[88px_1fr] gap-x-3 gap-y-1.5 text-13 [&_dt]:text-faint [&_dd]:m-0 [&_dd]:wrap-anywhere [&_dd]:font-mono [&_dd]:text-12 [&_dd]:text-dim">
                   <dt>Config</dt>
                   <dd>~/.taurus</dd>
                   <dt>This project</dt>

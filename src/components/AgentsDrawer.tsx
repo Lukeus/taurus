@@ -13,6 +13,7 @@ import { useStore } from "../state/store";
 import { Drawer } from "./Drawer";
 import { Problem, Problems } from "./Problem";
 import { useLoad } from "../lib/load";
+import { Menu } from "./Menu";
 
 type Filter = "all" | "builtin" | "attention";
 
@@ -195,6 +196,7 @@ export function AgentsDrawer({
             onChanged={refresh}
             onEdit={() => open(agent.name)}
             onDelete={() => remove(agent.name)}
+            onKeep={disarm}
           />
         ))}
       </ul>
@@ -231,14 +233,20 @@ function AgentCard({
   onChanged,
   onEdit,
   onDelete,
+  onKeep,
 }: {
   agent: AgentSummary;
   armed: boolean;
   onChanged: () => Promise<void>;
   onEdit: () => void;
+  /** Arms on the first call and deletes on the second; see the drawer. */
   onDelete: () => void;
+  onKeep: () => void;
 }) {
   const { deletable, editHint } = agentActions(agent);
+  const deleteHint = agent.shadows
+    ? `Deletes ${agent.path}; the ${TIER_LABEL[agent.shadows]} agent it replaced is back`
+    : `Deletes ${agent.path}`;
   const tools = agent.tools ? chips(agent.tools) : null;
   // Everything that is true of every agent, on one line, because separately
   // they are four lines of grey that push the next card off the screen. The
@@ -310,23 +318,36 @@ function AgentCard({
           <IterationField agent={agent} onChanged={onChanged} />
         )}
         <span className="card-files">{meta.join(" · ")}</span>
+        {/* Edit in view, Delete behind the ⋯ — see `Menu` — and, once it
+            has been chosen there, the row is the question it asks. */}
         <div className="card-row">
-          <button className="quiet" data-tip={editHint} onClick={onEdit}>
-            Edit
-          </button>
-          <div className="spacer" />
-          {deletable && (
-            <button
-              className={armed ? "danger" : "quiet"}
-              data-tip={
-                agent.shadows
-                  ? `Deletes ${agent.path}; the ${TIER_LABEL[agent.shadows]} agent it replaced is back`
-                  : `Deletes ${agent.path}`
-              }
-              onClick={onDelete}
-            >
-              {armed ? "Delete it" : "Delete"}
-            </button>
+          {armed ? (
+            <>
+              <button className="danger" data-tip={deleteHint} onClick={onDelete}>
+                Delete it
+              </button>
+              <button className="quiet" onClick={onKeep} autoFocus>
+                Keep
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="quiet" data-tip={editHint} onClick={onEdit}>
+                Edit
+              </button>
+              <div className="spacer" />
+              <Menu
+                label={`Actions for ${agent.name}`}
+                items={[
+                  deletable && {
+                    label: "Delete…",
+                    onSelect: onDelete,
+                    danger: true,
+                    tip: deleteHint,
+                  },
+                ]}
+              />
+            </>
           )}
         </div>
       </div>

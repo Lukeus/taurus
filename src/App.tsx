@@ -12,6 +12,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 import { chord, isChord, SWITCH_SHORTCUT, TERMINAL_SHORTCUT } from "./lib/keys";
+import { DOCS_URL, leaveToMenu, onMenu, type Command } from "./lib/commands";
+import { openLink } from "./state/openLink";
 import { modalOpen } from "./components/Modal";
 import { isAsking } from "./lib/asking";
 import { ListPaneIcon } from "./components/icons";
@@ -26,6 +28,8 @@ import {} from "./components/ContextMeter";
 import { ConversationTitle } from "./components/ConversationTitle";
 import { keptIn, type TabMark } from "./components/CanvasSlot";
 import { CanvasDeck } from "./components/CanvasDeck";
+import { Boundary } from "./components/Boundary";
+import { Select } from "./components/Select";
 import {
   closeTab,
   isPreviewTab,
@@ -79,7 +83,7 @@ import type {
   SessionMeta,
   Theme,
 } from "./lib/api";
-import { basename, plural } from "./lib/format";
+import { basename, plural, short } from "./lib/format";
 import { useProviderModels } from "./lib/useProviderModels";
 import { branchesOf } from "./lib/branches";
 import { withFinding } from "./lib/findings";
@@ -553,7 +557,7 @@ export default function App() {
       if (e.key !== "`" || !e.ctrlKey || e.metaKey || e.altKey) return;
       if (modalOpen()) return;
       e.preventDefault();
-      setTerminalOpen((open) => !open);
+      command.current("terminal");
     };
     // ⌃R for the recent folders, as other editors have it. Not from the
     // terminal, where it is the shell's history search.
@@ -563,7 +567,7 @@ export default function App() {
       if (target?.closest(".xterm")) return;
       if (modalOpen()) return;
       e.preventDefault();
-      setSwitcherOpen(true);
+      command.current("switch");
     };
     window.addEventListener("keydown", key);
     window.addEventListener("keydown", recent);
@@ -602,38 +606,42 @@ export default function App() {
       // prompt started a conversation nobody could see, and ⌘K over Settings
       // opened a second layer underneath it.
       if (modalOpen()) return;
-      if (isChord(e, "k") || (isChord(e, "p") && e.shiftKey)) {
-        e.preventDefault();
-        setPaletteOpen(true);
-      } else if (isChord(e, "p")) {
-        e.preventDefault();
-        setFinderOpen(true);
-      } else if (isChord(e, "n") && !e.shiftKey) {
-        e.preventDefault();
-        // Through the ref, not the closure. This effect is registered once,
-        // and a dependency on a handler rebuilt on every render of `App`
-        // would add and remove a window listener each time it rendered.
-        start.current();
-      } else if (isChord(e, ",")) {
-        e.preventDefault();
-        setSettingsOpen(true);
-      } else if (isChord(e, "l")) {
-        e.preventDefault();
-        setFocusComposer((n) => n + 1);
-      } else if (isChord(e, "b") && !e.shiftKey) {
-        e.preventDefault();
-        toggleRail();
-      } else if (isChord(e, "d") && e.shiftKey) {
+      // Which command, and whether the menu bar has this exact key — see
+      // `leaveToMenu`, which is why the two are decided together.
+      let hit: [Command, boolean] | null = null;
+      if (isChord(e, "k")) hit = ["palette", true];
+      else if (isChord(e, "p") && e.shiftKey) hit = ["palette", false];
+      else if (isChord(e, "p")) hit = ["finder", true];
+      else if (isChord(e, "n") && !e.shiftKey) hit = ["new", true];
+      else if (isChord(e, ",")) hit = ["settings", true];
+      else if (isChord(e, "l")) hit = ["composer", true];
+      else if (isChord(e, "b") && !e.shiftKey) hit = ["sidebar", true];
+      else if (isChord(e, "d") && e.shiftKey) {
         // With Shift, unlike the rest. Plain Ctrl+D is end-of-input to the
         // shell in the terminal dock on Windows and Linux, and a shortcut
         // that took it would close somebody's shell.
         e.preventDefault();
         setDictate((n) => n + 1);
+        return;
       }
+      if (!hit || leaveToMenu(hit[1])) return;
+      e.preventDefault();
+      command.current(hit[0]);
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [toggleRail]);
+  }, []);
+
+  // The menu bar's items, on macOS. The same guard as the keys: a menu click
+  // while a prompt has the keyboard would open something behind it.
+  useEffect(
+    () =>
+      onMenu((c) => {
+        if (modalOpen() && c !== "docs") return;
+        command.current(c);
+      }),
+    [],
+  );
 
   /*
    * Re-asks the questions nothing can push, when the user comes back.
@@ -896,6 +904,34 @@ export default function App() {
 
   /** The latest `newConversation`, for the window shortcut. See the effect. */
   const start = useRef(() => {});
+  /*
+   * Every window-wide command, in one place. The keyboard handlers and the
+   * macOS menu bar both call this (see `lib/commands.ts`), through a ref so
+   * that the listeners, registered once, always reach the current one.
+   */
+  const command = useRef<(c: Command) => void>(() => {});
+  command.current = (c: Command) => {
+    switch (c) {
+      case "palette":
+        return setPaletteOpen(true);
+      case "finder":
+        return setFinderOpen(true);
+      case "new":
+        return start.current();
+      case "settings":
+        return setSettingsOpen(true);
+      case "composer":
+        return setFocusComposer((n) => n + 1);
+      case "sidebar":
+        return toggleRail();
+      case "terminal":
+        return setTerminalOpen((open) => !open);
+      case "switch":
+        return setSwitcherOpen(true);
+      case "docs":
+        return openLink(DOCS_URL);
+    }
+  };
   /**
    * The latest `pickWorkspace` and `chooseTheme`, for the palette.
    *
@@ -1679,7 +1715,7 @@ export default function App() {
 
   return (
     <FileLinks.Provider value={openFromLink}>
-      <div className="app">
+      <div className="app" data-rail-shut={railShut || undefined}>
         {!railShut && (
           <Rail
             width={rail.size}
@@ -1718,7 +1754,11 @@ export default function App() {
         {!railShut && <ResizeHandle pane={rail} label="Rail width" />}
 
         <div className="pane">
-          <header className="topbar">
+          {/* The window is dragged by its header, now that the platform's
+              title bar is gone on macOS. Only the header and the spacer in
+              it: a drag region is the element itself, never its children, so
+              every control in here still takes its own clicks. */}
+          <header className="topbar" data-tauri-drag-region>
             <button
               className="pane-toggle"
               onClick={toggleRail}
@@ -1746,15 +1786,8 @@ export default function App() {
               </span>
             )}
 
-            <div className="spacer" />
+            <div className="spacer" data-tauri-drag-region />
 
-            <button
-              className="chip"
-              data-tip={`Find a file in this workspace (${chord("P")})`}
-              onClick={() => setFinderOpen(true)}
-            >
-              Go to file
-            </button>
 
             {/* Only while there's something to watch. Delegates working in the
                 background, or two side by side, are otherwise one line each
@@ -1782,49 +1815,10 @@ export default function App() {
                   : "No file changes"}
               </button>
             )}
-
-            {/* Only worth a control when there is a choice to make. One provider
-                is the common case and the picker would be a dropdown that can
-                only ever say what the model list already implies. */}
-            {providers.length > 1 && (
-              <select
-                className="provider-select"
-                aria-label="Provider"
-                data-tip={providerId ?? undefined}
-                value={providerId ?? ""}
-                disabled={store.busy || moving}
-                onChange={(e) => chooseProvider(e.target.value)}
-              >
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.id}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            <select
-              className="model-select"
-              aria-label="Model"
-              data-tip={available.find((m) => m.id === store.session?.model)?.display_name}
-              value={store.session?.model ?? ""}
-              disabled={store.busy || moving || !providerId}
-              onChange={(e) => providerId && moveTo(providerId, e.target.value)}
-            >
-              {available.length === 0 && <option value="">no models</option>}
-              {/* `available` already carries the running session's model even
-                  when nothing listed it, so the select can always show what the
-                  conversation is actually on. */}
-              {available.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.display_name}
-                </option>
-              ))}
-            </select>
           </header>
 
           {/* Drawn above the pane rather than in the topbar: the topbar names the
-              conversation and the model, and neither of those changes when the
+              conversation, and that does not change when the
               centre column does.
 
               Notes is always here and Data only once a dataset is loaded, and the
@@ -1889,22 +1883,24 @@ export default function App() {
                 hasWorkspace={!!workspace}
               />
             ) : pane === "data" ? (
-              <Suspense fallback={<div className="data-pane" />}>
-                <DataPane
-                  datasets={store.datasets}
-                  selected={dataset}
-                  onSelect={setDataset}
-                  onForget={forgetDataset}
-                  onRan={() => void store.refreshDatasets()}
-                  tab={tab}
-                  onTab={setTab}
-                  sql={sql}
-                  onSql={setSql}
-                  pending={pendingQuery}
-                  onPendingRun={() => setPendingQuery(null)}
-                  onAsk={ask}
-                />
-              </Suspense>
+              <Boundary label="The Data pane">
+                <Suspense fallback={<div className="data-pane" />}>
+                  <DataPane
+                    datasets={store.datasets}
+                    selected={dataset}
+                    onSelect={setDataset}
+                    onForget={forgetDataset}
+                    onRan={() => void store.refreshDatasets()}
+                    tab={tab}
+                    onTab={setTab}
+                    sql={sql}
+                    onSql={setSql}
+                    pending={pendingQuery}
+                    onPendingRun={() => setPendingQuery(null)}
+                    onAsk={ask}
+                  />
+                </Suspense>
+              </Boundary>
             ) : (
               <TranscriptPane
                 conversationId={store.session?.id}
@@ -1949,6 +1945,7 @@ export default function App() {
                     health={health(store.status?.providers.length, providerId, models)}
                     onPickWorkspace={pickWorkspace}
                     onSettings={() => openSettingsAt("models")}
+                    onSuggest={ask}
                   />
                 }
               />
@@ -2008,29 +2005,31 @@ export default function App() {
                   ref={changesPane.slot}
                   style={{ width: changesPane.size }}
                 >
-                  <Suspense fallback={<aside className="drawer changes-pane" />}>
-                    <ChangesDrawer
-                      sessionId={store.session.id}
-                      busy={store.busy}
-                      away={store.away}
-                      onClose={() => setChangesOpen(false)}
-                      // The new conversation opens with the question it was
-                      // forked before, ready to be asked again or differently.
-                      // From a review finding, the question carries what the
-                      // review found, for the second attempt to take in.
-                      // Read from the rail's listing, which already knows every
-                      // conversation's parent.
-                      branches={branchesOf(store.sessions, store.session.id)}
-                      onOpenBranch={(id) => void store.openConversation(id)}
-                      onFork={async (turn, finding) => {
-                        const forked = await store.fork(store.session!.id, turn);
-                        setDraft({
-                          text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
-                        });
-                        return forked;
-                      }}
-                    />
-                  </Suspense>
+                  <Boundary label="Changes">
+                    <Suspense fallback={<aside className="drawer changes-pane" />}>
+                      <ChangesDrawer
+                        sessionId={store.session.id}
+                        busy={store.busy}
+                        away={store.away}
+                        onClose={() => setChangesOpen(false)}
+                        // The new conversation opens with the question it was
+                        // forked before, ready to be asked again or differently.
+                        // From a review finding, the question carries what the
+                        // review found, for the second attempt to take in.
+                        // Read from the rail's listing, which already knows every
+                        // conversation's parent.
+                        branches={branchesOf(store.sessions, store.session.id)}
+                        onOpenBranch={(id) => void store.openConversation(id)}
+                        onFork={async (turn, finding) => {
+                          const forked = await store.fork(store.session!.id, turn);
+                          setDraft({
+                            text: finding ? withFinding(forked.prompt, finding) : forked.prompt,
+                          });
+                          return forked;
+                        }}
+                      />
+                    </Suspense>
+                  </Boundary>
                 </div>
               </>
             )}
@@ -2043,15 +2042,17 @@ export default function App() {
                   ref={activityPane.slot}
                   style={{ width: activityPane.size }}
                 >
-                  <Suspense fallback={<aside className="drawer agents-pane" />}>
-                    <AgentsPanel
-                      model={store.session.model}
-                      busy={store.busy}
-                      focus={agentsView.focus}
-                      onClose={agentsView.close}
-                      onOpenTranscript={setDelegate}
-                    />
-                  </Suspense>
+                  <Boundary label="Agent activity">
+                    <Suspense fallback={<aside className="drawer agents-pane" />}>
+                      <AgentsPanel
+                        model={store.session.model}
+                        busy={store.busy}
+                        focus={agentsView.focus}
+                        onClose={agentsView.close}
+                        onOpenTranscript={setDelegate}
+                      />
+                    </Suspense>
+                  </Boundary>
                 </div>
               </>
             )}
@@ -2060,21 +2061,23 @@ export default function App() {
                 While Changes has it this draws nothing and keeps the documents.
                 See `CanvasDeck`. */}
             {canvas && (
-              <CanvasDeck
-                canvas={canvas}
-                marks={canvasMarks}
-                workspace={workspace}
-                showing={side === "canvas"}
-                pane={canvasPane}
-                onShow={showTabOf}
-                onClose={closeDocument}
-                onNamed={nameDocument}
-                onMark={markDocument}
-                onTyped={canvasTyped}
-                onSelect={setSelection}
-                onAsk={ask}
-                flushRef={canvasFlush}
-              />
+              <Boundary label="The open file" resetKey={canvas.active}>
+                <CanvasDeck
+                  canvas={canvas}
+                  marks={canvasMarks}
+                  workspace={workspace}
+                  showing={side === "canvas"}
+                  pane={canvasPane}
+                  onShow={showTabOf}
+                  onClose={closeDocument}
+                  onNamed={nameDocument}
+                  onMark={markDocument}
+                  onTyped={canvasTyped}
+                  onSelect={setSelection}
+                  onAsk={ask}
+                  flushRef={canvasFlush}
+                />
+              </Boundary>
             )}
           </main>
 
@@ -2154,6 +2157,43 @@ export default function App() {
             vision={store.session?.vision ?? false}
             workspace={workspace}
             onPickWorkspace={pickWorkspace}
+            pickers={
+              <>
+              {/* Only worth a control when there is a choice to make. One provider
+                  is the common case and the picker would be a dropdown that can
+                  only ever say what the model list already implies. */}
+              {providers.length > 1 && (
+                <Select
+                  className="provider-select"
+                  aria-label="Provider"
+                  data-tip={providerId ?? undefined}
+                  value={providerId ?? ""}
+                  disabled={store.busy || moving}
+                  onChange={chooseProvider}
+                  options={providers.map((p) => ({ value: p.id, label: p.id }))}
+                />
+              )}
+
+              {/* `available` already carries the running session's model even
+                  when nothing listed it, so the picker can always show what the
+                  conversation is actually on. */}
+              <Select
+                className="model-select"
+                aria-label="Model"
+                data-tip={available.find((m) => m.id === store.session?.model)?.display_name}
+                value={store.session?.model ?? ""}
+                disabled={store.busy || moving || !providerId}
+                placeholder="no models"
+                onChange={(v) => providerId && moveTo(providerId, v)}
+                options={available.map((m) => ({
+                  value: m.id,
+                  label: m.display_name,
+                  hint: m.context_length ? short(m.context_length) : undefined,
+                }))}
+              />
+              </>
+            }
+            showWorkspace={railShut}
             library={library}
             onScreen={onScreen}
             draft={draft}
@@ -2185,26 +2225,28 @@ export default function App() {
           {terminalOpen && (
             <>
               <ResizeHandle pane={dock} label="Terminal height" />
-              <Suspense fallback={<div className="dock-loading" />}>
-                <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
-                  <TerminalDock
-                    // A new folder is a new shell. Keyed rather than handled
-                    // inside, so the old one is torn down by the same path that
-                    // closes the dock instead of a second one that has to agree
-                    // with it.
-                    key={workspace ?? "none"}
-                    workspace={workspace}
-                    jobs={jobs}
-                    watching={watching}
-                    output={jobOutput}
-                    onWatch={setWatching}
-                    onStop={api.stopBackground}
-                    onClose={() => setTerminalOpen(false)}
-                    onAsk={ask}
-                    onPreview={(url) => linkTo.current(`${PREVIEW_PREFIX}${url}`, null)}
-                  />
-                </div>
-              </Suspense>
+              <Boundary label="The terminal">
+                <Suspense fallback={<div className="dock-loading" />}>
+                  <div className="dock-slot" ref={dock.slot} style={{ height: dock.size }}>
+                    <TerminalDock
+                      // A new folder is a new shell. Keyed rather than handled
+                      // inside, so the old one is torn down by the same path that
+                      // closes the dock instead of a second one that has to agree
+                      // with it.
+                      key={workspace ?? "none"}
+                      workspace={workspace}
+                      jobs={jobs}
+                      watching={watching}
+                      output={jobOutput}
+                      onWatch={setWatching}
+                      onStop={api.stopBackground}
+                      onClose={() => setTerminalOpen(false)}
+                      onAsk={ask}
+                      onPreview={(url) => linkTo.current(`${PREVIEW_PREFIX}${url}`, null)}
+                    />
+                  </div>
+                </Suspense>
+              </Boundary>
             </>
           )}
         </div>
@@ -2219,105 +2261,107 @@ export default function App() {
             time a drawer is opened its module is almost always already in hand —
             see `warmPanels` — and a flash of skeleton for a frame that usually
             does not happen reads worse than the drawer simply appearing. */}
-        <Suspense fallback={null}>
-          {switcherOpen && (
-            <WorkspaceSwitcher
-              current={workspace}
-              recent={recentFolders}
-              blocked={switchBlocked}
-              onSwitch={(path) => void switchWorkspace(path)}
-              onBrowse={() => void pickWorkspace()}
-              onForget={(path) =>
-                void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
-              }
-              onClose={() => setSwitcherOpen(false)}
-            />
-          )}
-          {finderOpen && (
-            <FileFinder
-              open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
-              onOpen={(path) => {
-                giveCanvasTheColumn();
-                showDocument(path, null);
-              }}
-              onClose={() => setFinderOpen(false)}
-            />
-          )}
-          {paletteOpen && (
-            <CommandPalette
-              actions={actions}
-              sessions={store.sessions}
-              onOpenSession={openFound}
-              onClose={() => setPaletteOpen(false)}
-            />
-          )}
+        <Boundary label="This panel" resetKey={[switcherOpen, finderOpen, paletteOpen, usageOpen, tracesOpen, memoryOpen, delegate, skillsOpen, agentsOpen, mcpOpen, pluginsOpen, settingsOpen].join()}>
+          <Suspense fallback={null}>
+            {switcherOpen && (
+              <WorkspaceSwitcher
+                current={workspace}
+                recent={recentFolders}
+                blocked={switchBlocked}
+                onSwitch={(path) => void switchWorkspace(path)}
+                onBrowse={() => void pickWorkspace()}
+                onForget={(path) =>
+                  void api.forgetWorkspace(path).catch((e) => store.noteError(String(e)))
+                }
+                onClose={() => setSwitcherOpen(false)}
+              />
+            )}
+            {finderOpen && (
+              <FileFinder
+                open={canvas?.tabs.map((tab) => tab.shown ?? tab.path) ?? []}
+                onOpen={(path) => {
+                  giveCanvasTheColumn();
+                  showDocument(path, null);
+                }}
+                onClose={() => setFinderOpen(false)}
+              />
+            )}
+            {paletteOpen && (
+              <CommandPalette
+                actions={actions}
+                sessions={store.sessions}
+                onOpenSession={openFound}
+                onClose={() => setPaletteOpen(false)}
+              />
+            )}
 
-          {usageOpen && (
-            <UsagePanel
-              sessionId={store.session?.id ?? null}
-              onClose={() => setUsageOpen(false)}
-              onOpenTools={() => openSettingsAt("tools")}
-            />
-          )}
+            {usageOpen && (
+              <UsagePanel
+                sessionId={store.session?.id ?? null}
+                onClose={() => setUsageOpen(false)}
+                onOpenTools={() => openSettingsAt("tools")}
+              />
+            )}
 
-          {tracesOpen && (
-            <TracePanel
-              sessionId={store.session?.id ?? null}
-              onClose={() => setTracesOpen(false)}
-              onOpenTracing={() => openSettingsAt("tracing")}
-            />
-          )}
+            {tracesOpen && (
+              <TracePanel
+                sessionId={store.session?.id ?? null}
+                onClose={() => setTracesOpen(false)}
+                onOpenTracing={() => openSettingsAt("tracing")}
+              />
+            )}
 
-          {memoryOpen && (
-            <MemoryDrawer
-              onClose={() => setMemoryOpen(false)}
-              // Not offered mid-turn: switching conversations under a running one
-              // is not something the rail offers either.
-              onOpenSession={
-                store.busy
-                  ? undefined
-                  : (id) => {
-                      setMemoryOpen(false);
-                      void store.openConversation(id);
-                    }
-              }
-            />
-          )}
+            {memoryOpen && (
+              <MemoryDrawer
+                onClose={() => setMemoryOpen(false)}
+                // Not offered mid-turn: switching conversations under a running one
+                // is not something the rail offers either.
+                onOpenSession={
+                  store.busy
+                    ? undefined
+                    : (id) => {
+                        setMemoryOpen(false);
+                        void store.openConversation(id);
+                      }
+                }
+              />
+            )}
 
-          {delegate && store.session && (
-            <DelegateTranscript
-              sessionId={store.session.id}
-              subagentId={delegate.session}
-              agent={delegate.agent}
-              onClose={() => setDelegate(null)}
-            />
-          )}
-          {skillsOpen && (
-            <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
-          )}
-          {agentsOpen && (
-            <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
-          )}
-          {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
+            {delegate && store.session && (
+              <DelegateTranscript
+                sessionId={store.session.id}
+                subagentId={delegate.session}
+                agent={delegate.agent}
+                onClose={() => setDelegate(null)}
+              />
+            )}
+            {skillsOpen && (
+              <SkillsDrawer onClose={() => setSkillsOpen(false)} onOpenFile={openLibraryFile} />
+            )}
+            {agentsOpen && (
+              <AgentsDrawer onClose={() => setAgentsOpen(false)} onOpenFile={openLibraryFile} />
+            )}
+            {mcpOpen && <McpDrawer onClose={() => setMcpOpen(false)} />}
 
-          {pluginsOpen && (
-            <PluginsDrawer
-              busy={store.busy}
-              trusted={store.trust?.trusted ?? true}
-              onClose={() => setPluginsOpen(false)}
-            />
-          )}
-          {settingsOpen && (
-            <Settings
-              initialTab={settingsTab}
-              onOpenFile={openLibraryFile}
-              onClose={() => {
-                setSettingsOpen(false);
-                setSettingsTab(undefined);
-              }}
-            />
-          )}
-        </Suspense>
+            {pluginsOpen && (
+              <PluginsDrawer
+                busy={store.busy}
+                trusted={store.trust?.trusted ?? true}
+                onClose={() => setPluginsOpen(false)}
+              />
+            )}
+            {settingsOpen && (
+              <Settings
+                initialTab={settingsTab}
+                onOpenFile={openLibraryFile}
+                onClose={() => {
+                  setSettingsOpen(false);
+                  setSettingsTab(undefined);
+                }}
+              />
+            )}
+          </Suspense>
+        </Boundary>
 
         {/* After every drawer and picker, so a request that arrives while one
             is open paints over it, and `Modal` counts it as the one in front:
@@ -2476,6 +2520,30 @@ export function mcpCounts(
 }
 
 /**
+ * Starters for an empty conversation in a workspace that is ready. Generic on
+ * purpose — each is a question any repository can answer — and phrased as the
+ * message itself, so what is pressed is what appears in the box to be edited.
+ */
+export const STARTERS: readonly { label: string; prompt: string }[] = [
+  {
+    label: "Tour the project",
+    prompt: "Give me a tour of this project: what it does, how it is laid out, and where to start reading.",
+  },
+  {
+    label: "Review my changes",
+    prompt: "Review the changes I haven't committed yet. Point out bugs and anything that looks unintended.",
+  },
+  {
+    label: "Run the tests",
+    prompt: "Find how this project runs its tests, run them, and tell me what fails and why.",
+  },
+  {
+    label: "Find what's unfinished",
+    prompt: "Look for TODOs, failing checks and half-finished work here, and tell me what is worth doing first.",
+  },
+];
+
+/**
  * What fills the transcript before there is one.
  *
  * Says the same thing in both of the states it covers — this is a folder
@@ -2488,12 +2556,15 @@ export function FirstRun({
   health,
   onPickWorkspace,
   onSettings,
+  onSuggest,
 }: {
   workspace: string | null;
   ready: boolean;
   health: ProviderHealth;
   onPickWorkspace: () => void;
   onSettings: () => void;
+  /** Puts a starter into the message box, unsent. */
+  onSuggest?: (text: string) => void;
 }) {
   // The one step that is blocking, so the hero leads with it. Both buttons
   // used to be offered side by side whatever was missing, with the provider's
@@ -2511,25 +2582,48 @@ export function FirstRun({
         ? `Ready in ${basename(workspace)}`
         : `Opening ${basename(workspace)}…`;
   const modelFirst = !needsWorkspace && needsModel;
+  // Nothing left to set up. The setup buttons were still offered here — Change
+  // workspace and Models, on a screen whose whole job by now is to get a first
+  // message written — so the one thing on it that could be pressed was a way
+  // back to a step already done. Both live elsewhere now (the rail's first row,
+  // the composer's model pill), and the room goes to somewhere to start.
+  const set = !needsWorkspace && !needsModel && ready;
   return (
     <div className="hero">
       <div className="hero-mark">t</div>
       <div className="hero-copy">
         <h1>{heading}</h1>
         <p>
-          {modelFirst
+          {set
+            ? "Ask about the code or have Taurus change it. Every edit is shown to you before it's made, and any turn can be undone."
+            : modelFirst
             ? "Taurus needs a model to talk to: a local Ollama, anything OpenAI-compatible, Anthropic, or Gemini. Add one in Settings › Models."
             : "A workspace is the folder Taurus works in. It reads and edits files there, runs commands with your approval, and remembers every change so any turn can be undone."}
         </p>
       </div>
-      <div className="hero-actions">
-        <button className={modelFirst ? undefined : "primary"} onClick={onPickWorkspace}>
-          {workspace ? "Change workspace" : "Choose a workspace"}
-        </button>
-        <button className={modelFirst ? "primary" : undefined} onClick={onSettings}>
-          {needsModel ? "Connect a model" : "Models"}
-        </button>
-      </div>
+      {set && onSuggest ? (
+        // Filled in, not sent: a starter is somewhere to begin writing, and the
+        // folder it is about is one only the person at the keyboard knows.
+        <ul className="hero-starters" aria-label="Ways to start">
+          {STARTERS.map((starter) => (
+            <li key={starter.label}>
+              <button className="hero-starter" onClick={() => onSuggest(starter.prompt)}>
+                <b>{starter.label}</b>
+                <span>{starter.prompt}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="hero-actions">
+          <button className={modelFirst ? undefined : "primary"} onClick={onPickWorkspace}>
+            {workspace ? "Change workspace" : "Choose a workspace"}
+          </button>
+          <button className={modelFirst ? "primary" : undefined} onClick={onSettings}>
+            {needsModel ? "Connect a model" : "Models"}
+          </button>
+        </div>
+      )}
       <div className="hero-status">
         <span className={`dot ${health.state === "connected" ? "ok" : health.state === "unreachable" ? "error" : ""}`} />
         {health.state === "connected"

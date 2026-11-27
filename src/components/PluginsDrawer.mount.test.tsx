@@ -68,8 +68,16 @@ async function mount(props: Partial<Parameters<typeof PluginsDrawer>[0]> = {}) {
     host,
     text: () => host.textContent ?? "",
     button,
+    // A label not on the card is looked for in its ⋯, which is opened for it.
     click: async (label: string) => {
-      const found = button(label);
+      let found = button(label);
+      if (!found) {
+        const more = host.querySelector<HTMLButtonElement>(".menu-button");
+        if (more) act(() => more.click());
+        found = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+          (b) => b.textContent === label,
+        );
+      }
       if (!found) throw new Error(`no button reading "${label}"`);
       await act(async () => found.click());
     },
@@ -119,7 +127,7 @@ describe("the plugins drawer", () => {
   it("removes only on a second press", async () => {
     backend([plugin()], []);
     const drawer = await mount();
-    await drawer.click("Remove");
+    await drawer.click("Remove…");
     expect(invoke).not.toHaveBeenCalledWith("remove_plugin", expect.anything());
     await drawer.click("Remove it");
     expect(invoke).toHaveBeenCalledWith("remove_plugin", { name: "ops", project: false });
@@ -165,7 +173,7 @@ describe("the plugins drawer", () => {
     backend([plugin()]);
     const drawer = await mount({ busy: true });
     expect(drawer.button("Switch off")?.disabled).toBe(true);
-    expect(drawer.button("Remove")?.disabled).toBe(true);
+    expect(drawer.host.querySelector<HTMLButtonElement>(".menu-button")?.disabled).toBe(true);
   });
 
   it("says the list couldn't be read, rather than that nothing is installed", async () => {

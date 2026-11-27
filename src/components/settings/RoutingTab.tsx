@@ -7,6 +7,7 @@ import type { AgentSummary, ModelRoute, ModelRoutes } from "../../lib/api";
 import * as api from "../../lib/api";
 import { useStore } from "../../state/store";
 import { Problem, Problems } from "../Problem";
+import { Select } from "../Select";
 
 /** A route as the form holds it: both fields always present, empty meaning unset. */
 const EMPTY: ModelRoute = { provider: "", model: "" };
@@ -54,11 +55,10 @@ function RouteRow({
     <div className="settings-field">
       <span className="micro">{label}</span>
       <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2">
-        <select
+        <Select
           aria-label={`${label} provider`}
           value={provider}
-          onChange={(e) => {
-            const next = e.target.value;
+          onChange={(next) => {
             setProvider(next);
             if (next) onWantModels(next);
             // Only once there's a model: a provider alone isn't a route yet.
@@ -76,7 +76,7 @@ function RouteRow({
           {provider && !providers.includes(provider) && (
             <option value={provider}>{provider} (not configured)</option>
           )}
-        </select>
+        </Select>
         <input
           aria-label={`${label} model`}
           className="font-mono"

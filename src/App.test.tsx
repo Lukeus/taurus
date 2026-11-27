@@ -248,15 +248,17 @@ describe("the pane switch", () => {
   });
 });
 
+// The trigger alone: closed, the list is not in the page. Every name is still
+// drawn into it (hidden) so it is as wide as the widest one — see `Select`.
 const providerSelect = (html: string) =>
-  html.match(/<select[^>]*class="provider-select"[\s\S]*?<\/select>/)?.[0];
+  html.match(/<button[^>]*class="select-box provider-select"[\s\S]*?<\/button>/)?.[0];
 
 describe("the provider picker in the header", () => {
   it("lists every configured provider", () => {
     const select = providerSelect(withProviders(["ollama", "openai", "azure"]));
     expect(select).toBeDefined();
     for (const id of ["ollama", "openai", "azure"]) {
-      expect(select).toContain(`value="${id}"`);
+      expect(select).toContain(`>${id}</span>`);
     }
   });
 
@@ -264,7 +266,8 @@ describe("the provider picker in the header", () => {
     // Without this the picker drew the right options and still pointed at the
     // wrong one, which is the bug wearing a dropdown.
     const select = providerSelect(withProviders(["ollama", "azure"], "azure"));
-    expect(select).toMatch(/<option value="azure" selected=""/);
+    expect(select).toContain('data-value="azure"');
+    expect(select).toContain('<span class="select-current">azure</span>');
   });
 
   it("is absent when there is only one provider to choose from", () => {

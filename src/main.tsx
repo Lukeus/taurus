@@ -15,7 +15,9 @@ import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/500.css";
 
 import App from "./App";
+import { Boundary } from "./components/Boundary";
 import { applyCachedTheme } from "./lib/theme";
+import { applyChrome } from "./lib/chrome";
 import "./styles.css";
 
 // Before the first render, and from the local copy rather than from settings:
@@ -28,6 +30,8 @@ import "./styles.css";
 // cyan and turning violet a round trip later moves a whole palette, where the
 // preference only ever moves one of two.
 applyCachedTheme();
+// The window's frame, for the same reason: see `applyChrome`.
+applyChrome();
 
 /*
  * A drop that nothing claimed has to land on nothing.
@@ -54,6 +58,8 @@ window.addEventListener("drop", inert);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <Boundary label="The window" whole>
+      <App />
+    </Boundary>
   </React.StrictMode>,
 );

@@ -14,6 +14,7 @@ import * as api from "../../lib/api";
 import { ApiKeyField } from "./ApiKeyField";
 import { Field, blank } from "./Field";
 import { useArmed } from "../../lib/armed";
+import { Select } from "../Select";
 
 /**
  * The settings a save came back with, keeping anything typed since it was sent.
@@ -122,10 +123,10 @@ export function SearchTab() {
       )}
 
       <Field label="Search with" hint={statusHint(settings)}>
-        <select
+        <Select
           value={settings.selected ?? ""}
           disabled={busy}
-          onChange={(e) => save(e.target.value === "" ? null : e.target.value)}
+          onChange={(value) => save(value === "" ? null : value)}
         >
           <option value="">Off</option>
           {settings.backends.map((backend) => (
@@ -133,7 +134,7 @@ export function SearchTab() {
               {backend.id}
             </option>
           ))}
-        </select>
+        </Select>
       </Field>
 
       {selected && (
@@ -428,15 +429,15 @@ export function CodeSearch({
       <span className="micro">Search the codebase</span>
       {error && <Problem>{error}</Problem>}
       <Field label="Find code by meaning" hint={engineHint(engine)}>
-        <select
+        <Select
           value={engineDraft}
           disabled={building || download !== null}
-          onChange={(e) => void choose(e.target.value as Engine)}
+          onChange={(value) => void choose(value as Engine)}
         >
           <option value="off">Off</option>
           <option value="builtin">On this computer</option>
           <option value="server">On a model server</option>
-        </select>
+        </Select>
       </Field>
 
       {engineDraft === "builtin" && catalog && (
@@ -445,17 +446,17 @@ export function CodeSearch({
             label="Model"
             hint={chosen ? `${chosen.summary} ${chosen.license} license.` : undefined}
           >
-            <select
+            <Select
               value={model}
               disabled={building || download !== null}
-              onChange={(e) => void save(e.target.value, BUILTIN)}
+              onChange={(value) => void save(value, BUILTIN)}
             >
               {catalog.models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.installed ? m.id : `${m.id} (not downloaded)`}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
           {chosen && !chosen.installed && (
             <>

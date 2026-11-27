@@ -271,7 +271,7 @@ export const Rail = memo(function Rail({
           </b>
           {/* Armed, the row spends its subtitle line saying what is about to
               be lost; there is no other room at this width to say it. */}
-          <span className="text-11-5 tabular-nums text-faint truncate group-data-armed:text-danger">
+          <span className="text-12 tabular-nums text-faint truncate group-data-armed:text-danger">
             {armed
               ? "delete this and its undo history?"
               : working
@@ -343,78 +343,123 @@ export const Rail = memo(function Rail({
     );
   };
 
+  // A theme that brings its own mark keeps the first row for it. See the row.
+  const branded = !!brand?.logo || !!brand?.wordmark;
+
+  /**
+   * The workspace switcher, in the first row (`compact`) or as the card under
+   * a theme's brand. Compact, it is as wide as its name rather than the row,
+   * so what is left of the row is still somewhere to drag the window by; the
+   * folder's full path is in its tip either way.
+   */
+  const workspaceButton = (compact: boolean) => (
+    <button
+      className={
+        compact
+          ? "rail-workspace flex min-w-0 max-w-full items-center gap-2 rounded-sm border-0 bg-transparent py-1 pr-2 pl-1 text-left hover:not-disabled:bg-hover"
+          : "rail-workspace w-full flex items-center gap-2 py-2 px-3 rounded-md bg-hover text-left hover:not-disabled:bg-active"
+      }
+      // Switching folders closes the conversation and restarts every MCP
+      // server the new folder configures differently, neither of which a
+      // running turn survives.
+      //
+      // Any running turn, not only this conversation's: a turn left
+      // working in another one is just as dead when the servers go, and it
+      // is not on screen to say so.
+      disabled={anyRunning}
+      onClick={onPickWorkspace}
+      data-tip={
+        anyRunning
+          ? "Stop the running turn before switching workspace"
+          : `${workspace ? `${workspace} · ` : ""}Switch workspace (${SWITCH_SHORTCUT})`
+      }
+      data-tip-side="bottom"
+    >
+      {/* The folder's initial, so two workspaces can be told apart at a
+          glance. It was a fixed "t" — the app's mark, sitting where the
+          workspace's should be — which read as right only in a folder that
+          happened to be called taurus. */}
+      <span className="mark" aria-hidden="true">
+        {workspaceInitial(workspace)}
+      </span>
+      <span className="rail-workspace-name min-w-0 flex-1">
+        <b className="block text-13 font-normal text-ink truncate">
+          {workspace ? basename(workspace) : "Choose a workspace"}
+        </b>
+        {!compact && (
+          <span className="block font-mono text-10 text-faint truncate">
+            {workspace ? parentDir(workspace) : "choose a folder"}
+          </span>
+        )}
+      </span>
+      <span className="rail-workspace-swap flex-none inline-flex text-faint">
+        <SwapIcon size={12} />
+      </span>
+    </button>
+  );
+
   return (
     <aside
       className="rail flex-none flex flex-col min-h-0 bg-rail"
       style={{ width }}
     >
-      {/* Clears the macOS traffic lights, which float over this corner, and
-          carries the wordmark at the one height that lines its rule up with
-          the topbar's across the fold. */}
-      <div className="rail-brand h-11 flex-none flex items-center gap-2 px-gutter-rail border-b border-rule">
-        {brand?.logo ? (
-          /*
-             A theme's own mark, inlined as a data URI by the loader.
+      {/*
+          The window's first row. It clears the macOS window buttons, which
+          float over this corner (see `lib/chrome.ts`), and its rule lines up
+          with the topbar's across the fold.
 
-             Capped rather than trusted: the file is somebody's SVG and its
-             intrinsic size is whatever their editor wrote. Unbounded, a 200px
-             logo takes the 44px brand row with it — and that row is what
-             clears the macOS traffic lights, so the failure is a window whose
-             close button is under a picture. `object-contain` keeps the aspect
-             ratio inside the box rather than squashing a wordmark that is
-             wider than it is tall.
-          */
-          <img
-            className="rail-logo w-auto max-w-24 h-4 object-contain object-left"
-            src={brand.logo}
-            alt=""
-            aria-hidden="true"
-          />
+          It holds the workspace — the folder this window is working in, which
+          is the one thing here that changes between windows. The app's own
+          logo and name used to sit here, above a card that named the folder
+          again; but the Dock, the menu bar and the platform's title bar
+          already say which app this is, and a window that brands itself is the
+          web-page habit this frame is getting away from. A theme that sets a
+          logo or wordmark of its own is a different case — somebody chose to
+          put that brand here — so it keeps the row, and the workspace goes
+          back to the card beneath it.
+      */}
+      <div
+        className="rail-brand h-11 flex-none flex items-center gap-2 border-b border-rule"
+        data-branded={branded || undefined}
+        data-tauri-drag-region
+      >
+        {!branded ? (
+          workspaceButton(true)
         ) : (
-          <Logo />
-        )}
-        {/* Null is "no opinion" and falls back to the app's name; empty string
-            is a decision, and means a mark standing on its own. */}
-        {brand?.wordmark !== "" && (
-          <span className="font-mono text-11-5 tracking-[0.06em] text-dim">
-            {brand?.wordmark ?? "taurus"}
-          </span>
+          <>
+            {brand?.logo ? (
+              /*
+                 A theme's own mark, inlined as a data URI by the loader.
+
+                 Capped rather than trusted: the file is somebody's SVG and its
+                 intrinsic size is whatever their editor wrote. Unbounded, a
+                 200px logo takes the 44px row with it — and that row is what
+                 clears the macOS window buttons, so the failure is a window
+                 whose close button is under a picture. `object-contain` keeps
+                 the aspect ratio inside the box rather than squashing a
+                 wordmark that is wider than it is tall.
+              */
+              <img
+                className="rail-logo w-auto max-w-24 h-4 object-contain object-left"
+                src={brand.logo}
+                alt=""
+                aria-hidden="true"
+              />
+            ) : (
+              <Logo />
+            )}
+            {/* Null is "no opinion" and falls back to the app's name; empty
+                string is a decision, and means a mark standing on its own. */}
+            {brand?.wordmark !== "" && (
+              <span className="font-mono text-12 tracking-[0.06em] text-dim">
+                {brand?.wordmark ?? "taurus"}
+              </span>
+            )}
+          </>
         )}
       </div>
 
-      <div className="rail-pad px-2 pt-2.5 pb-2.5">
-        <button
-          className="rail-workspace w-full flex items-center gap-2 py-2 px-3 rounded-md bg-hover text-left hover:not-disabled:bg-active"
-          // Switching folders closes the conversation and restarts every MCP
-          // server the new folder configures differently, neither of which a
-          // running turn survives.
-          //
-          // Any running turn, not only this conversation's: a turn left
-          // working in another one is just as dead when the servers go, and it
-          // is not on screen to say so.
-          disabled={anyRunning}
-          onClick={onPickWorkspace}
-          data-tip={
-            anyRunning
-              ? "Stop the running turn before switching workspace"
-              : `${workspace ? `${workspace} · ` : ""}Switch workspace (${SWITCH_SHORTCUT})`
-          }
-          data-tip-side="bottom"
-        >
-          <span className="mark">t</span>
-          <span className="rail-workspace-name flex-1 min-w-0">
-            <b className="block text-12-5 font-normal text-ink truncate">
-              {workspace ? basename(workspace) : "No workspace"}
-            </b>
-            <span className="block font-mono text-10 text-faint truncate">
-              {workspace ? parentDir(workspace) : "choose a folder"}
-            </span>
-          </span>
-          <span className="rail-workspace-swap flex-none inline-flex text-faint">
-            <SwapIcon size={12} />
-          </span>
-        </button>
-      </div>
+      {branded && <div className="rail-pad px-2 pt-2.5 pb-2.5">{workspaceButton(false)}</div>}
 
       <div className="rail-pad px-2 pb-2.5">
         {/* A row, not a filled button. It used to be the loudest thing in the
@@ -453,7 +498,7 @@ export const Rail = memo(function Rail({
       */}
       <div className="rail-scroll flex-auto min-h-24 overflow-y-auto">
         {sessions.length === 0 && (
-          <p className="rail-empty pt-1 px-gutter-rail text-12-5 text-faint">
+          <p className="rail-empty pt-1 px-gutter-rail text-13 text-faint">
             Nothing saved yet. Every conversation is written to disk as it
             happens.
           </p>
@@ -681,7 +726,7 @@ export const Rail = memo(function Rail({
         </div>
         <div className="rail-status flex items-center gap-2 py-2 px-3" data-tip={healthTitle(health)}>
           <span className={`dot ml-1 ${healthDot(health)}`} />
-          <span className="text-11-5 text-faint truncate">{healthLabel(health)}</span>
+          <span className="text-12 text-faint truncate">{healthLabel(health)}</span>
         </div>
       </div>
     </aside>
@@ -957,4 +1002,11 @@ function healthTitle(health: ProviderHealth): string {
     default:
       return "";
   }
+}
+
+/** The badge on the workspace row: the folder's first letter or digit. */
+export function workspaceInitial(workspace: string | null): string {
+  if (!workspace) return "+";
+  const first = [...basename(workspace)].find((c) => /[\p{L}\p{N}]/u.test(c));
+  return (first ?? "·").toLowerCase();
 }

@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
-import { FirstRun } from "./App";
+import { FirstRun, STARTERS } from "./App";
 import type { ProviderHealth } from "./components/Rail";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -27,6 +27,8 @@ afterEach(() => {
   cleanup.forEach((fn) => fn());
   cleanup = [];
 });
+
+let suggested = vi.fn();
 
 function mount(workspace: string | null, health: ProviderHealth, ready = false) {
   const host = document.createElement("div");
@@ -40,6 +42,7 @@ function mount(workspace: string | null, health: ProviderHealth, ready = false) 
         health={health}
         onPickWorkspace={() => {}}
         onSettings={() => {}}
+        onSuggest={suggested}
       />,
     );
   });
@@ -48,6 +51,7 @@ function mount(workspace: string | null, health: ProviderHealth, ready = false) 
     host.remove();
   });
   return {
+    host,
     heading: host.querySelector("h1")?.textContent,
     primary: host.querySelector(".hero-actions .primary")?.textContent,
   };
@@ -79,5 +83,22 @@ describe("the first-run hero", () => {
       true,
     );
     expect(heading).toBe("Ready in taurus");
+  });
+
+  it("offers somewhere to start once nothing is left to set up", () => {
+    suggested = vi.fn();
+    const { host, primary } = mount("/src/taurus", { state: "connected", id: "ollama", models: 2 }, true);
+    // No setup buttons: there is nothing left to set up.
+    expect(primary).toBeUndefined();
+    const starters = [...host.querySelectorAll<HTMLButtonElement>(".hero-starter")];
+    expect(starters.map((b) => b.querySelector("b")?.textContent)).toEqual(STARTERS.map((s) => s.label));
+    act(() => starters[2].click());
+    expect(suggested).toHaveBeenCalledWith(STARTERS[2].prompt);
+  });
+
+  it("keeps the setup buttons while the conversation is still opening", () => {
+    const { host, primary } = mount("/src/taurus", { state: "connected", id: "ollama", models: 2 }, false);
+    expect(host.querySelector(".hero-starter")).toBeNull();
+    expect(primary).toBe("Change workspace");
   });
 });

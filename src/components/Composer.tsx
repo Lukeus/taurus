@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Attachments } from "./Attachments";
 import { CommandMenu, commandQuery, matches } from "./CommandMenu";
 import { ContextMeter } from "./ContextMeter";
@@ -87,6 +87,8 @@ export function Composer({
   onPark,
   onPickWorkspace,
   onUnattended,
+  pickers,
+  showWorkspace = true,
   onSend,
   onSendQueued,
   onUnqueue,
@@ -190,6 +192,19 @@ export function Composer({
   onPark: (sessionKey: string, draft: Parked) => void;
   onPickWorkspace: () => void;
   onUnattended: (unattended: boolean) => void;
+  /**
+   * The model the next message goes to, and the provider when there is more
+   * than one. Drawn by `App`, which owns switching, and placed here because
+   * which model answers is decided while writing the message — the header,
+   * where it was, is about the conversation as a whole.
+   */
+  pickers?: ReactNode;
+  /**
+   * Whether to name the workspace here. Only while the rail is put away: the
+   * rail's first row names it otherwise, and this pill was then a second copy
+   * of the same fact a few hundred pixels away.
+   */
+  showWorkspace?: boolean;
   onSend: (
     text: string,
     images: Attachment[],
@@ -615,6 +630,8 @@ export function Composer({
           }}
         />
         <div className="composer-foot">
+          {pickers}
+          {showWorkspace && (
           <button
             className="pill composer-workspace"
             // The same rule the rail's workspace row follows: a switch closes
@@ -627,8 +644,9 @@ export function Composer({
                 : (workspace ?? "Choose a workspace")
             }
           >
-            ▤ {workspace ? basename(workspace) : "no workspace"}
+            {workspace ? basename(workspace) : "no workspace"}
           </button>
+          )}
           {/* Two words for the whole of what a turn does when it reaches
               something it needs a person for. Here rather than in Settings
               because it is not a preference: it is about this conversation and
@@ -643,7 +661,7 @@ export function Composer({
                 : "You are asked before anything that needs a decision, and the turn waits. Switch to unattended to leave a long one running."
             }
           >
-            {unattended ? "◐ unattended" : "◑ asks you"}
+            {unattended ? "Unattended" : "Asks you"}
           </button>
           <PlanFirst busy={busy} />
           <div className="spacer" />
@@ -724,7 +742,7 @@ function PlanFirst({ busy }: { busy: boolean }) {
           : "Plan first: the next turn writes a plan for you to approve or comment on, and changes nothing until you do."
       }
     >
-      {planning ? "◇ plans first" : "▷ does the work"}
+      {planning ? "Plans first" : "Does the work"}
     </button>
   );
 }

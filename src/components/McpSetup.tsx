@@ -15,6 +15,7 @@ import {
   withReferences,
 } from "../lib/mcp";
 import { Problem } from "./Problem";
+import { Select } from "./Select";
 
 /**
  * What a catalogue entry needs before it can be written down.
@@ -165,10 +166,10 @@ export function McpSetup({
 
       <label className="field">
         <span className="micro">Where to save it</span>
-        <select
+        <Select
           value={scope}
-          onChange={(e) => {
-            setScope(e.target.value as Scope);
+          onChange={(value) => {
+            setScope(value as Scope);
             // Re-asked on every change, so acknowledging the warning once does
             // not silently cover a later switch back into it.
             setAcknowledged(false);
@@ -178,7 +179,7 @@ export function McpSetup({
           <option value="workspace">
             This project only — .taurus/mcp.json
           </option>
-        </select>
+        </Select>
         <span className="field-help">
           {scope === "global"
             ? "Available in every workspace you open."
