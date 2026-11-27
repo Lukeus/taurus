@@ -764,6 +764,20 @@ describe("saving providers", () => {
     expect(save().disabled).toBe(false);
   });
 
+  it("puts every card back as it was on Discard", async () => {
+    withProviders();
+    const host = await mount();
+    const before = cards(host).length;
+    click(host, "Remove");
+    expect(cards(host)).toHaveLength(before - 1);
+
+    click(host, "Discard");
+    expect(cards(host)).toHaveLength(before);
+    expect(host.textContent).not.toContain("Unsaved changes");
+    // Nothing to throw away, so nothing offers to.
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Discard")).toBe(false);
+  });
+
   it("says why a save was refused, and keeps the edit", async () => {
     // The write used to fail quietly: the drawer said "Saved" and then
     // reloaded the old list over the edit.

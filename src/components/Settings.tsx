@@ -403,6 +403,20 @@ export function Settings({
                 {saved && !saving && <span className="text-dim text-12">Saved</span>}
                 {dirty && !saving && <span className="text-dim text-12">Unsaved changes</span>}
                 <div className="spacer" />
+                {/* The way back from an edit, beside the way forward. Without
+                    it, undoing a change meant remembering what each field had
+                    said, or closing and choosing to throw everything away. */}
+                {dirty && !saving && (
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      setDraft((d) => (loaded ? rowsOf(loaded, d) : d));
+                      setSaved(false);
+                    }}
+                  >
+                    Discard
+                  </button>
+                )}
                 <button
                   className="primary"
                   onClick={() => void save()}
